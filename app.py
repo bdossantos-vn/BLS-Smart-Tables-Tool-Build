@@ -85,7 +85,11 @@ def render_sidebar() -> str:
     """Render global sidebar controls and return the selected workflow step."""
     with st.sidebar:
         st.title("BLS Smart Tables Tool")
-        step = st.radio("Workflow", NAV_STEPS, key="nav_step")
+        if "nav_step" not in st.session_state or st.session_state.nav_step not in NAV_STEPS:
+            st.session_state.nav_step = NAV_STEPS[0]
+        current_index = NAV_STEPS.index(st.session_state.nav_step)
+        step = st.radio("Workflow", NAV_STEPS, index=current_index, key="nav_step_selector")
+        st.session_state.nav_step = step
         st.divider()
         if st.button("Reset Project", type="secondary", use_container_width=True):
             reset_project_state()
@@ -104,6 +108,33 @@ def render_sidebar() -> str:
     return step
 
 
+def can_advance_from_step(step: str) -> bool:
+    """Return whether the current step is ready to move forward."""
+    cleaned_df = st.session_state.get("cleaned_df")
+    question_metadata = st.session_state.get("question_metadata", [])
+
+    if step == "1. Data Intake":
+        return isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty
+    if step == "2. Base Size & Cell Distribution":
+        return bool(st.session_state.get("locked_cell_bases")) and bool(st.session_state.get("cell_letter_map"))
+    if step == "3. Survey Question Audit":
+        return bool(question_metadata)
+    if step == "4. Scale Mapping & Polarity":
+        scale_questions = identify_scale_questions(question_metadata)
+        if not scale_questions:
+            return True
+        mapped_variables = set(st.session_state.get("scale_mappings", {}).keys())
+        required_variables = {row["variable"] for row in scale_questions}
+        return required_variables.issubset(mapped_variables)
+    if step in {
+        "5. Custom Variable Builder",
+        "6. Analysis Configuration",
+        "7. Statistical Setup",
+    }:
+        return True
+    return False
+
+
 def render_page_navigation(current_step: str) -> None:
     """Render previous/next page buttons for the guided workflow."""
     current_index = NAV_STEPS.index(current_step)
@@ -113,13 +144,15 @@ def render_page_navigation(current_step: str) -> None:
             st.session_state.nav_step = NAV_STEPS[current_index - 1]
             st.rerun()
     with right:
-        if current_index < len(NAV_STEPS) - 1 and st.button(
-            "Next",
-            use_container_width=True,
-            key=f"next_{current_step}",
-        ):
-            st.session_state.nav_step = NAV_STEPS[current_index + 1]
-            st.rerun()
+        if current_index < len(NAV_STEPS) - 1 and can_advance_from_step(current_step):
+            if st.button(
+                "Next",
+                use_container_width=True,
+                key=f"next_{current_step}",
+            ):
+                st.session_state.nav_step = NAV_STEPS[current_index + 1]
+                st.session_state.nav_step_selector = NAV_STEPS[current_index + 1]
+                st.rerun()
 
 
 def _build_cell_summary_frame(cleaned_df: pd.DataFrame, cell_col: str) -> pd.DataFrame:
