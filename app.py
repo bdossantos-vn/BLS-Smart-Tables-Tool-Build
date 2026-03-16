@@ -49,8 +49,6 @@ from src.tables import (
 )
 from src.exporter import export_tables_to_excel_bytes
 from src.utils import (
-    alpha_letter_sequence,
-    coerce_int,
     dataframe_to_download_name,
     format_timestamp,
     normalize_text,
@@ -66,13 +64,12 @@ st.set_page_config(
 
 NAV_STEPS = [
     "1. Data Intake",
-    "2. Base Size & Cell Distribution",
-    "3. Survey Question Audit",
-    "4. Scale Mapping & Polarity",
-    "5. Custom Variable Builder",
-    "6. Analysis Configuration",
-    "7. Statistical Setup",
-    "8. Table Generator & Excel Export",
+    "2. Survey Question Audit",
+    "3. Scale Mapping & Polarity",
+    "4. Custom Variable Builder",
+    "5. Analysis Configuration",
+    "6. Statistical Setup",
+    "7. Table Generator & Excel Export",
 ]
 
 
@@ -114,12 +111,14 @@ def can_advance_from_step(step: str) -> bool:
     question_metadata = st.session_state.get("question_metadata", [])
 
     if step == "1. Data Intake":
-        return isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty
-    if step == "2. Base Size & Cell Distribution":
-        return bool(st.session_state.get("locked_cell_bases")) and bool(st.session_state.get("cell_letter_map"))
-    if step == "3. Survey Question Audit":
+        return (
+            isinstance(cleaned_df, pd.DataFrame)
+            and not cleaned_df.empty
+            and bool(st.session_state.get("comparison_configured"))
+        )
+    if step == "2. Survey Question Audit":
         return bool(question_metadata)
-    if step == "4. Scale Mapping & Polarity":
+    if step == "3. Scale Mapping & Polarity":
         scale_questions = identify_scale_questions(question_metadata)
         if not scale_questions:
             return True
@@ -127,9 +126,9 @@ def can_advance_from_step(step: str) -> bool:
         required_variables = {row["variable"] for row in scale_questions}
         return required_variables.issubset(mapped_variables)
     if step in {
-        "5. Custom Variable Builder",
-        "6. Analysis Configuration",
-        "7. Statistical Setup",
+        "4. Custom Variable Builder",
+        "5. Analysis Configuration",
+        "6. Statistical Setup",
     }:
         return True
     return False
@@ -173,6 +172,126 @@ def _build_cell_summary_frame(cleaned_df: pd.DataFrame, cell_col: str) -> pd.Dat
     return counts
 
 
+def _resolve_default_comparison(column_names: list[str], detected_cell: str | None, preferred: str | None) -> str | None:
+    """Choose the best comparison variable default for the current dataset."""
+    if preferred and preferred in column_names:
+        return preferred
+    if detected_cell and detected_cell in column_names:
+        return detected_cell
+    return None
+
+
+def _default_comparison_group_order(cleaned_df: pd.DataFrame, comparison_col: str | None) -> dict[str, int]:
+    """Build the default row order for the selected comparison variable."""
+    if not comparison_col:
+        return {"Total": 1}
+
+    values = [normalize_text(value) for value in cleaned_df[comparison_col].dropna().tolist()]
+    unique_values = sorted({value for value in values if value})
+    if comparison_col.lower() == "cell" and any("control" in value.lower() for value in unique_values):
+        ordered = sorted(unique_values, key=lambda value: (0 if "control" in value.lower() else 1, value.lower()))
+    else:
+        ordered = sorted(unique_values, key=str.lower)
+    return {value: index for index, value in enumerate(ordered, start=1)}
+
+
+def _apply_comparison_selection(comparison_col: str | None) -> None:
+    """Apply the selected comparison variable and rebuild the working dataset."""
+    survey_df = st.session_state.survey_df
+    if not isinstance(survey_df, pd.DataFrame) or survey_df.empty:
+        return
+
+    filtered_df = survey_df.copy()
+    rows_removed = 0
+
+    if comparison_col:
+        filtered_df[comparison_col] = filtered_df[comparison_col].map(normalize_text)
+        blank_mask = filtered_df[comparison_col] == ""
+        rows_removed = int(blank_mask.sum())
+        filtered_df = filtered_df.loc[~blank_mask].reset_index(drop=True)
+
+    if filtered_df.empty:
+        raise ValueError("The selected comparison variable removed all rows. Choose a different option.")
+
+    st.session_state.cleaned_df = filtered_df
+    st.session_state.comparison_col = comparison_col
+    st.session_state.cell_col = comparison_col
+    st.session_state.comparison_rows_removed = rows_removed
+    st.session_state.comparison_configured = True
+    st.session_state.comparison_group_order = _default_comparison_group_order(filtered_df, comparison_col)
+    st.session_state.locked_cell_bases = {
+        row["Cell"]: int(row["N"])
+        for row in _build_comparison_summary_frame(filtered_df, comparison_col).to_dict(orient="records")
+    }
+    st.session_state.cell_sort_order = dict(st.session_state.comparison_group_order)
+    st.session_state.cell_letter_map = {}
+    st.session_state.question_metadata = build_question_metadata(
+        filtered_df,
+        st.session_state.question_labels,
+        comparison_col,
+    )
+    st.session_state.scale_mappings = {}
+
+
+def _build_comparison_summary_frame(cleaned_df: pd.DataFrame, comparison_col: str | None) -> pd.DataFrame:
+    """Build the summary table for the selected comparison variable."""
+    if not comparison_col:
+        return pd.DataFrame([{"Cell": "Total", "N": int(len(cleaned_df))}])
+
+    counts = cleaned_df[comparison_col].astype(str).str.strip().value_counts().rename_axis("Cell").reset_index(name="N")
+    order_map = st.session_state.get("comparison_group_order", {})
+    if order_map:
+        counts["sort_order"] = counts["Cell"].map(lambda value: order_map.get(value, 9999))
+        counts = counts.sort_values(["sort_order", "Cell"]).drop(columns=["sort_order"]).reset_index(drop=True)
+    else:
+        counts = counts.sort_values("Cell").reset_index(drop=True)
+    return counts
+
+
+def _build_comparison_order_editor(cleaned_df: pd.DataFrame, comparison_col: str | None) -> pd.DataFrame:
+    """Build an editable order table for comparison groups."""
+    summary = _build_comparison_summary_frame(cleaned_df, comparison_col)
+    order_map = st.session_state.get("comparison_group_order", {})
+    summary["Sort Order"] = summary["Cell"].map(lambda value: order_map.get(value, 1)).astype(int)
+    return summary[["Cell", "N", "Sort Order"]]
+
+
+def _move_comparison_group(group_name: str, direction: str) -> None:
+    """Move a comparison group in the configured display order."""
+    order_map = dict(st.session_state.get("comparison_group_order", {}))
+    ordered_names = [name for name, _ in sorted(order_map.items(), key=lambda item: item[1])]
+    if group_name not in ordered_names:
+        return
+
+    current_index = ordered_names.index(group_name)
+    if direction == "top":
+        ordered_names.insert(0, ordered_names.pop(current_index))
+    elif direction == "up" and current_index > 0:
+        ordered_names[current_index - 1], ordered_names[current_index] = (
+            ordered_names[current_index],
+            ordered_names[current_index - 1],
+        )
+    elif direction == "down" and current_index < len(ordered_names) - 1:
+        ordered_names[current_index + 1], ordered_names[current_index] = (
+            ordered_names[current_index],
+            ordered_names[current_index + 1],
+        )
+    elif direction == "bottom":
+        ordered_names.append(ordered_names.pop(current_index))
+
+    st.session_state.comparison_group_order = {
+        name: index for index, name in enumerate(ordered_names, start=1)
+    }
+    st.session_state.cell_sort_order = dict(st.session_state.comparison_group_order)
+    st.session_state.locked_cell_bases = {
+        row["Cell"]: int(row["N"])
+        for row in _build_comparison_summary_frame(
+            st.session_state.cleaned_df,
+            st.session_state.comparison_col,
+        ).to_dict(orient="records")
+    }
+
+
 def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[str]) -> pd.DataFrame:
     """Build the editable blacklist state table for Step 1."""
     restored_lookup = {value.lower() for value in restored_columns}
@@ -190,18 +309,30 @@ def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[st
 def _apply_intake_result(result) -> None:
     """Persist a completed intake result into session state."""
     st.session_state.raw_df = result.raw_df
-    st.session_state.cleaned_df = result.cleaned_df
+    st.session_state.survey_df = result.cleaned_df.copy()
+    st.session_state.cleaned_df = result.cleaned_df.copy()
     st.session_state.question_labels = result.question_labels
     st.session_state.cell_col = result.cell_column
+    st.session_state.comparison_col = result.cell_column
+    st.session_state.comparison_options = [column for column in result.cleaned_df.columns]
+    st.session_state.comparison_configured = False
     st.session_state.blacklist_used = result.blacklist_used
     st.session_state.ingestion_log = result.log_lines
     st.session_state.metadata_rows_removed = result.metadata_rows_removed
     st.session_state.removed_column_count = len(result.removed_columns)
     st.session_state.removed_columns = result.removed_columns
-    st.session_state.blank_cell_rows_removed = result.blank_cell_rows_removed
+    st.session_state.blank_cell_rows_removed = 0
+    st.session_state.comparison_rows_removed = 0
     st.session_state.sheet_name = result.sheet_name
     st.session_state.ingestion_completed_at = result.completed_at
     st.session_state.cell_config_editor = None
+    st.session_state.comparison_group_order = _default_comparison_group_order(
+        result.cleaned_df,
+        result.cell_column,
+    )
+    st.session_state.locked_cell_bases = {}
+    st.session_state.cell_sort_order = {}
+    st.session_state.cell_letter_map = {}
     st.session_state.question_metadata = build_question_metadata(
         result.cleaned_df,
         result.question_labels,
@@ -212,6 +343,11 @@ def _apply_intake_result(result) -> None:
         st.session_state.blacklist_catalog,
         st.session_state.get("restored_columns", []),
     )
+    st.session_state.comparison_selector = _resolve_default_comparison(
+        st.session_state.comparison_options,
+        result.cell_column,
+        result.cell_column,
+    ) or "None / Total only"
 
 
 def render_step_1() -> None:
@@ -219,7 +355,7 @@ def render_step_1() -> None:
     st.header("1. Data Intake")
     st.write(
         "Upload a Qualtrics Excel export. The app will preserve question labels, "
-        "remove metadata rows, drop configurable technical columns, and require a valid `cell` column."
+        "remove metadata rows, drop configurable technical columns, and then let you choose a comparison variable."
     )
 
     upload = st.file_uploader(
@@ -258,34 +394,91 @@ def render_step_1() -> None:
                     st.session_state.blacklist_catalog = result.removed_columns.copy()
                     st.session_state.restored_columns = []
                     _apply_intake_result(result)
+                    default_comparison = _resolve_default_comparison(
+                        st.session_state.comparison_options,
+                        result.cell_column,
+                        result.cell_column,
+                    )
+                    _apply_comparison_selection(default_comparison)
                     st.session_state.metadata_change_log = []
                     _append_log(f"Ingestion complete for {upload.name}.")
                     st.success(f"File processed successfully from sheet `{selected_sheet}`.")
 
     cleaned_df = st.session_state.cleaned_df
-    if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty:
+    survey_df = st.session_state.survey_df
+    if isinstance(survey_df, pd.DataFrame) and not survey_df.empty:
+        st.subheader("Comparison Setup")
+        comparison_options = ["None / Total only", *st.session_state.comparison_options]
+        default_option = st.session_state.get("comparison_selector", "None / Total only")
+        if default_option not in comparison_options:
+            default_option = "None / Total only"
+
+        selected_option = st.selectbox(
+            "Comparison Variable",
+            options=comparison_options,
+            index=comparison_options.index(default_option),
+            key="comparison_selector",
+            help="`cell` is auto-selected when present, but you can choose another variable or total-only analysis.",
+        )
+        if st.button("Apply Comparison Variable", use_container_width=False):
+            selected_comparison = None if selected_option == "None / Total only" else selected_option
+            try:
+                _apply_comparison_selection(selected_comparison)
+            except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                st.error(str(exc))
+            else:
+                if selected_comparison is None:
+                    st.success("Comparison variable updated. The project is now set to total-only analysis.")
+                else:
+                    st.success(f"Comparison variable updated to `{selected_comparison}`.")
+                st.rerun()
+
+    if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty and st.session_state.get("comparison_configured"):
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Metadata rows removed", st.session_state.get("metadata_rows_removed", 0))
         col2.metric("Columns removed", st.session_state.get("removed_column_count", 0))
         col3.metric(
-            "Respondents removed for blank cell",
-            st.session_state.get("blank_cell_rows_removed", 0),
+            "Rows removed for blank comparison value",
+            st.session_state.get("comparison_rows_removed", 0),
         )
         col4.metric("Columns retained", len(cleaned_df.columns))
 
         st.subheader("Intake Summary")
         summary_left, summary_right = st.columns([1.2, 1])
         with summary_left:
-            if st.session_state.cell_col:
-                st.dataframe(
-                    _build_cell_summary_frame(cleaned_df, st.session_state.cell_col),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            st.dataframe(
+                _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col),
+                use_container_width=True,
+                hide_index=True,
+            )
         with summary_right:
             st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
             st.write(f"Columns Included: `{len(cleaned_df.columns)}`")
             st.write(f"Columns Excluded: `{st.session_state.removed_column_count}`")
+            current_comparison = st.session_state.comparison_col or "Total only"
+            st.write(f"Comparison Variable: `{current_comparison}`")
+
+        if st.session_state.comparison_col and len(st.session_state.comparison_group_order) > 1:
+            st.subheader("Comparison Group Order")
+            st.caption("Use the move buttons to control the display order for comparison groups.")
+            ordered_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
+            for row in ordered_summary.to_dict(orient="records"):
+                group_name = row["Cell"]
+                row_cols = st.columns([3, 1, 1, 1, 1, 1])
+                row_cols[0].write(group_name)
+                row_cols[1].write(int(row["N"]))
+                if row_cols[2].button("⇑", key=f"top_{group_name}", use_container_width=True):
+                    _move_comparison_group(group_name, "top")
+                    st.rerun()
+                if row_cols[3].button("↑", key=f"up_{group_name}", use_container_width=True):
+                    _move_comparison_group(group_name, "up")
+                    st.rerun()
+                if row_cols[4].button("↓", key=f"down_{group_name}", use_container_width=True):
+                    _move_comparison_group(group_name, "down")
+                    st.rerun()
+                if row_cols[5].button("⇓", key=f"bottom_{group_name}", use_container_width=True):
+                    _move_comparison_group(group_name, "bottom")
+                    st.rerun()
 
         with st.expander("Columns Excluded", expanded=True):
             if st.session_state.blacklist_catalog:
@@ -326,8 +519,15 @@ def render_step_1() -> None:
                             blacklist=st.session_state.blacklist_catalog,
                             whitelist_columns=restored_columns,
                         )
+                        previous_comparison = st.session_state.get("comparison_col")
                         st.session_state.restored_columns = restored_columns
                         _apply_intake_result(refreshed)
+                        selected_comparison = _resolve_default_comparison(
+                            st.session_state.comparison_options,
+                            refreshed.cell_column,
+                            previous_comparison,
+                        )
+                        _apply_comparison_selection(selected_comparison)
                         st.session_state.blacklist_editor = edited_blacklist.copy()
                         if restored_columns:
                             st.success(
@@ -349,6 +549,13 @@ def render_step_1() -> None:
                         )
                         st.session_state.restored_columns = []
                         _apply_intake_result(refreshed)
+                        _apply_comparison_selection(
+                            _resolve_default_comparison(
+                                st.session_state.comparison_options,
+                                refreshed.cell_column,
+                                refreshed.cell_column,
+                            )
+                        )
                         st.session_state.blacklist_editor = _build_blacklist_editor(
                             st.session_state.blacklist_catalog,
                             [],
@@ -359,108 +566,9 @@ def render_step_1() -> None:
                 st.caption("No blacklisted columns are configured for this intake.")
 
 
-def _default_cell_config(cleaned_df: pd.DataFrame, cell_col: str) -> pd.DataFrame:
-    """Build the default editable cell configuration table."""
-    cell_counts = (
-        cleaned_df[cell_col]
-        .astype(str)
-        .map(lambda x: x.strip())
-        .value_counts(dropna=False)
-        .sort_index()
-    )
-    letters = alpha_letter_sequence(len(cell_counts))
-    rows = []
-    for index, (cell_name, base_n) in enumerate(cell_counts.items(), start=1):
-        rows.append(
-            {
-                "Cell Name": cell_name,
-                "Locked N": int(base_n),
-                "Letter": letters[index - 1],
-                "Sort Order": index,
-            }
-        )
-    frame = pd.DataFrame(rows)
-    if not frame.empty:
-        control_mask = frame["Cell Name"].astype(str).str.contains("control", case=False, na=False)
-        if control_mask.any():
-            first_control = frame[control_mask].index[0]
-            frame.loc[first_control, "Notes"] = "Auto-detected control cell"
-        else:
-            frame["Notes"] = ""
-    return frame
-
-
-def render_step_2() -> None:
-    """Render the base size and cell distribution page."""
-    st.header("2. Base Size & Cell Distribution")
-    cleaned_df = st.session_state.cleaned_df
-    cell_col = st.session_state.cell_col
-
-    if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty or not cell_col:
-        st.info("Upload and process a dataset in Step 1 before configuring cell bases.")
-        return
-
-    st.write(
-        "This step locks the permanent starting base size for each cell before any later filtering. "
-        "These values are stored separately and are never recalculated automatically."
-    )
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total N", f"{len(cleaned_df):,}")
-    col2.metric("Questions detected", f"{len(cleaned_df.columns):,}")
-    col3.metric("Unique cells", f"{cleaned_df[cell_col].nunique(dropna=True):,}")
-
-    if "cell_config_editor" not in st.session_state:
-        st.session_state.cell_config_editor = _default_cell_config(cleaned_df, cell_col)
-
-    edited = st.data_editor(
-        st.session_state.cell_config_editor,
-        key="cell_config_grid",
-        use_container_width=True,
-        num_rows="fixed",
-        column_config={
-            "Cell Name": st.column_config.TextColumn(disabled=True),
-            "Locked N": st.column_config.NumberColumn(min_value=0, step=1, required=True),
-            "Letter": st.column_config.TextColumn(required=True, max_chars=3),
-            "Sort Order": st.column_config.NumberColumn(min_value=1, step=1, required=True),
-            "Notes": st.column_config.TextColumn(disabled=True),
-        },
-    )
-
-    validation_errors: list[str] = []
-    if not edited.empty:
-        letters = [normalize_text(value) for value in edited["Letter"].tolist()]
-        sort_orders = [coerce_int(value, default=-1) for value in edited["Sort Order"].tolist()]
-        if "" in letters:
-            validation_errors.append("Each cell needs a non-empty significance letter.")
-        if len(letters) != len(set(letters)):
-            validation_errors.append("Cell letters must be unique.")
-        if len(sort_orders) != len(set(sort_orders)):
-            validation_errors.append("Sort order values must be unique.")
-        if any(value < 1 for value in sort_orders):
-            validation_errors.append("Sort order values must be positive integers.")
-
-    if validation_errors:
-        for error in validation_errors:
-            st.error(error)
-    else:
-        st.session_state.cell_config_editor = edited.copy()
-        ordered = edited.sort_values("Sort Order").reset_index(drop=True)
-        st.session_state.cell_letter_map = dict(
-            zip(ordered["Cell Name"].astype(str), ordered["Letter"].astype(str))
-        )
-        st.session_state.locked_cell_bases = dict(
-            zip(ordered["Cell Name"].astype(str), ordered["Locked N"].astype(int))
-        )
-        st.session_state.cell_sort_order = dict(
-            zip(ordered["Cell Name"].astype(str), ordered["Sort Order"].astype(int))
-        )
-        st.success("Locked bases and significance letters saved.")
-
-
 def render_step_3() -> None:
     """Render the question audit page."""
-    st.header("3. Survey Question Audit")
+    st.header("2. Survey Question Audit")
     cleaned_df = st.session_state.cleaned_df
     question_labels = st.session_state.question_labels
     cell_col = st.session_state.cell_col
@@ -533,7 +641,7 @@ def render_step_3() -> None:
 
 def render_step_4() -> None:
     """Render the scale mapping and polarity page."""
-    st.header("4. Scale Mapping & Polarity")
+    st.header("3. Scale Mapping & Polarity")
     cleaned_df = st.session_state.cleaned_df
     question_labels = st.session_state.question_labels
     question_metadata = st.session_state.question_metadata
@@ -598,7 +706,7 @@ def render_step_4() -> None:
 
 def render_step_5() -> None:
     """Render the custom variable builder scaffold."""
-    st.header("5. Custom Variable Builder")
+    st.header("4. Custom Variable Builder")
     st.write(
         "V1 includes the structure and persistent state for custom variables. "
         "Production transformation logic is intentionally deferred to a later version."
@@ -630,7 +738,7 @@ def render_step_5() -> None:
 
 def render_step_6() -> None:
     """Render the analysis configuration scaffold."""
-    st.header("6. Analysis Configuration")
+    st.header("5. Analysis Configuration")
     st.write(
         "V1 stores banner, weighting, and filter settings so the workflow remains coherent across reruns."
     )
@@ -683,7 +791,7 @@ def render_step_6() -> None:
 
 def render_step_7() -> None:
     """Render the statistical setup scaffold."""
-    st.header("7. Statistical Setup")
+    st.header("6. Statistical Setup")
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 
@@ -723,7 +831,7 @@ def render_step_7() -> None:
 
 def render_step_8() -> None:
     """Render the table generator and export scaffold."""
-    st.header("8. Table Generator & Excel Export")
+    st.header("7. Table Generator & Excel Export")
     readiness = describe_generation_readiness(DEFAULT_STATE, st.session_state)
     for line in readiness:
         st.write(f"- {line}")
@@ -758,19 +866,17 @@ def main() -> None:
 
     if step == "1. Data Intake":
         render_step_1()
-    elif step == "2. Base Size & Cell Distribution":
-        render_step_2()
-    elif step == "3. Survey Question Audit":
+    elif step == "2. Survey Question Audit":
         render_step_3()
-    elif step == "4. Scale Mapping & Polarity":
+    elif step == "3. Scale Mapping & Polarity":
         render_step_4()
-    elif step == "5. Custom Variable Builder":
+    elif step == "4. Custom Variable Builder":
         render_step_5()
-    elif step == "6. Analysis Configuration":
+    elif step == "5. Analysis Configuration":
         render_step_6()
-    elif step == "7. Statistical Setup":
+    elif step == "6. Statistical Setup":
         render_step_7()
-    elif step == "8. Table Generator & Excel Export":
+    elif step == "7. Table Generator & Excel Export":
         render_step_8()
 
     render_page_navigation(step)

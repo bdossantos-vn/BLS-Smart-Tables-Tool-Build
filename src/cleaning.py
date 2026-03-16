@@ -46,12 +46,11 @@ class IngestionResult:
     raw_df: pd.DataFrame
     cleaned_df: pd.DataFrame
     question_labels: dict[str, str]
-    cell_column: str
+    cell_column: str | None
     blacklist_used: list[str]
     log_lines: list[str]
     metadata_rows_removed: int
     removed_columns: list[str]
-    blank_cell_rows_removed: int
     sheet_name: str
     completed_at: str
 
@@ -135,22 +134,10 @@ def _remove_blacklisted_columns(
     return cleaned_df, removed
 
 
-def _resolve_cell_column(columns: list[str]) -> str:
+def _resolve_cell_column(columns: list[str]) -> str | None:
     """Find the primary experimental split column named `cell`, case-insensitively."""
     matches = [column for column in columns if normalize_text(column).lower() == "cell"]
-    if not matches:
-        raise ValueError("No `cell` column was found. A case-insensitive `cell` column is required.")
-    return matches[0]
-
-
-def _clean_cell_rows(df: pd.DataFrame, cell_column: str) -> tuple[pd.DataFrame, int]:
-    """Remove respondents with blank experimental cell assignments."""
-    working = df.copy()
-    working[cell_column] = working[cell_column].map(normalize_text)
-    blank_mask = working[cell_column] == ""
-    removed = int(blank_mask.sum())
-    cleaned = working.loc[~blank_mask].reset_index(drop=True)
-    return cleaned, removed
+    return matches[0] if matches else None
 
 
 def ingest_qualtrics_dataframe(
@@ -177,31 +164,27 @@ def ingest_qualtrics_dataframe(
     log_lines.append(f"Removed {len(removed_columns)} blacklisted column(s).")
 
     cell_column = _resolve_cell_column(list(no_tech_df.columns))
-    cell_clean_df, blank_cell_rows_removed = _clean_cell_rows(no_tech_df, cell_column)
-    log_lines.append(f"Removed {blank_cell_rows_removed} respondent row(s) with blank `{cell_column}`.")
-
-    if cell_clean_df.empty:
+    if no_tech_df.empty:
         raise ValueError("All respondent rows were removed during cleaning. Check the source export.")
 
     # Preserve question labels only for columns that survived cleaning.
     question_labels = {
         column: question_labels.get(column, column)
-        for column in cell_clean_df.columns
+        for column in no_tech_df.columns
     }
     log_lines.append(
-        f"Final dataset contains {len(cell_clean_df):,} respondent rows and {len(cell_clean_df.columns):,} columns."
+        f"Final dataset contains {len(no_tech_df):,} respondent rows and {len(no_tech_df.columns):,} columns."
     )
 
     return IngestionResult(
         raw_df=raw_df,
-        cleaned_df=cell_clean_df,
+        cleaned_df=no_tech_df,
         question_labels=question_labels,
         cell_column=cell_column,
         blacklist_used=blacklist,
         log_lines=log_lines,
         metadata_rows_removed=metadata_rows_removed,
         removed_columns=removed_columns,
-        blank_cell_rows_removed=blank_cell_rows_removed,
         sheet_name=sheet_name,
         completed_at=completed_at,
     )
