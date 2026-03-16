@@ -149,7 +149,7 @@ def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[st
         rows.append(
             {
                 "Column": column,
-                "Blacklisted": column.lower() not in restored_lookup,
+                "Excluded": column.lower() not in restored_lookup,
             }
         )
     return pd.DataFrame(rows)
@@ -251,12 +251,11 @@ def render_step_1() -> None:
                     hide_index=True,
                 )
         with summary_right:
-            st.write(f"Sheet referenced: `{st.session_state.sheet_name}`")
-            st.write(f"Columns currently counted: `{len(cleaned_df.columns)}`")
-            st.write(f"Blacklisted columns removed: `{st.session_state.removed_column_count}`")
-            st.write(f"Time of completed intake: `{st.session_state.ingestion_completed_at}`")
+            st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
+            st.write(f"Columns Included: `{len(cleaned_df.columns)}`")
+            st.write(f"Columns Excluded: `{st.session_state.removed_column_count}`")
 
-        with st.expander("Blacklisted Columns", expanded=True):
+        with st.expander("Columns Excluded", expanded=True):
             if st.session_state.blacklist_catalog:
                 if st.session_state.blacklist_editor is None:
                     st.session_state.blacklist_editor = _build_blacklist_editor(
@@ -272,7 +271,7 @@ def render_step_1() -> None:
                     hide_index=True,
                     column_config={
                         "Column": st.column_config.TextColumn(disabled=True),
-                        "Blacklisted": st.column_config.CheckboxColumn(
+                        "Excluded": st.column_config.CheckboxColumn(
                             help="Checked means the column stays excluded from the cleaned dataset."
                         ),
                     },
@@ -286,7 +285,7 @@ def render_step_1() -> None:
                         restored_columns = [
                             row["Column"]
                             for row in blacklist_rows
-                            if not bool(row.get("Blacklisted", True))
+                            if not bool(row.get("Excluded", True))
                         ]
                         refreshed = ingest_qualtrics_dataframe(
                             raw_df=st.session_state.raw_df,
