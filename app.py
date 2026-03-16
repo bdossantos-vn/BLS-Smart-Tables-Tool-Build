@@ -151,7 +151,6 @@ def render_page_navigation(current_step: str) -> None:
                 key=f"next_{current_step}",
             ):
                 st.session_state.nav_step = NAV_STEPS[current_index + 1]
-                st.session_state.nav_step_selector = NAV_STEPS[current_index + 1]
                 st.rerun()
 
 
@@ -249,7 +248,7 @@ def render_step_1() -> None:
                 key="selected_sheet_name",
             )
 
-            if st.button("Process Intake", type="primary", use_container_width=False):
+            if st.button("Process Data", type="primary", use_container_width=False):
                 try:
                     result = ingest_qualtrics_excel(upload, sheet_name=selected_sheet)
                 except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
