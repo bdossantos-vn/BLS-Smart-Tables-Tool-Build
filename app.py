@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from src.cleaning import ingest_qualtrics_excel
+from src.cleaning import ingest_qualtrics_dataframe, ingest_qualtrics_excel
 from src.config import (
     build_default_banner_config,
     build_default_stat_config,
@@ -51,10 +51,8 @@ from src.utils import (
     alpha_letter_sequence,
     coerce_int,
     dataframe_to_download_name,
-    display_log_lines,
     format_timestamp,
     normalize_text,
-    unique_preserving_order,
 )
 
 st.set_page_config(
@@ -66,7 +64,7 @@ st.set_page_config(
 
 
 NAV_STEPS = [
-    "1. Data Ingestion",
+    "1. Data Intake",
     "2. Base Size & Cell Distribution",
     "3. Survey Question Audit",
     "4. Scale Mapping & Polarity",
@@ -105,9 +103,46 @@ def render_sidebar() -> str:
     return step
 
 
+def render_page_navigation(current_step: str) -> None:
+    """Render previous/next page buttons for the guided workflow."""
+    current_index = NAV_STEPS.index(current_step)
+    left, _, right = st.columns([1, 3, 1])
+    with left:
+        if current_index > 0 and st.button("Back", use_container_width=True, key=f"back_{current_step}"):
+            st.session_state.nav_step = NAV_STEPS[current_index - 1]
+            st.rerun()
+    with right:
+        if current_index < len(NAV_STEPS) - 1 and st.button(
+            "Next",
+            use_container_width=True,
+            key=f"next_{current_step}",
+        ):
+            st.session_state.nav_step = NAV_STEPS[current_index + 1]
+            st.rerun()
+
+
+def _build_cell_summary_frame(cleaned_df: pd.DataFrame, cell_col: str) -> pd.DataFrame:
+    """Build a compact intake summary table with control first."""
+    counts = (
+        cleaned_df[cell_col]
+        .astype(str)
+        .str.strip()
+        .value_counts()
+        .rename_axis("Cell")
+        .reset_index(name="N")
+    )
+    if counts.empty:
+        return counts
+    counts["sort_group"] = counts["Cell"].str.contains("control", case=False, na=False).map(
+        lambda is_control: 0 if is_control else 1
+    )
+    counts = counts.sort_values(["sort_group", "Cell"]).drop(columns=["sort_group"]).reset_index(drop=True)
+    return counts
+
+
 def render_step_1() -> None:
-    """Render the data ingestion page."""
-    st.header("1. Data Ingestion")
+    """Render the data intake page."""
+    st.header("1. Data Intake")
     st.write(
         "Upload a Qualtrics Excel export. The app will preserve question labels, "
         "remove metadata rows, drop configurable technical columns, and require a valid `cell` column."
@@ -133,10 +168,14 @@ def render_step_1() -> None:
             st.session_state.question_labels = result.question_labels
             st.session_state.cell_col = result.cell_column
             st.session_state.blacklist_used = result.blacklist_used
+            st.session_state.restored_columns = []
             st.session_state.ingestion_log = result.log_lines
             st.session_state.metadata_rows_removed = result.metadata_rows_removed
             st.session_state.removed_column_count = len(result.removed_columns)
+            st.session_state.removed_columns = result.removed_columns
             st.session_state.blank_cell_rows_removed = result.blank_cell_rows_removed
+            st.session_state.sheet_name = result.sheet_name
+            st.session_state.ingestion_completed_at = result.completed_at
             st.session_state.cell_config_editor = None
             st.session_state.question_metadata = build_question_metadata(
                 result.cleaned_df,
@@ -150,16 +189,70 @@ def render_step_1() -> None:
 
     cleaned_df = st.session_state.cleaned_df
     if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty:
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Metadata rows removed", st.session_state.get("metadata_rows_removed", 0))
         col2.metric("Columns removed", st.session_state.get("removed_column_count", 0))
         col3.metric(
             "Respondents removed for blank cell",
             st.session_state.get("blank_cell_rows_removed", 0),
         )
+        col4.metric("Columns retained", len(cleaned_df.columns))
 
-        with st.expander("Dataset Preview", expanded=True):
-            st.dataframe(cleaned_df.head(25), use_container_width=True)
+        st.subheader("Intake Summary")
+        summary_left, summary_right = st.columns([1.2, 1])
+        with summary_left:
+            if st.session_state.cell_col:
+                st.dataframe(
+                    _build_cell_summary_frame(cleaned_df, st.session_state.cell_col),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+        with summary_right:
+            st.write(f"Sheet referenced: `{st.session_state.sheet_name}`")
+            st.write(f"Columns currently counted: `{len(cleaned_df.columns)}`")
+            st.write(f"Blacklisted columns removed: `{st.session_state.removed_column_count}`")
+            st.write(f"Time of completed intake: `{st.session_state.ingestion_completed_at}`")
+
+        with st.expander("Blacklisted Columns", expanded=True):
+            removed_columns = st.session_state.get("removed_columns", [])
+            if removed_columns:
+                restore_selection = st.multiselect(
+                    "Select removed columns to add back in",
+                    options=removed_columns,
+                    default=st.session_state.get("restored_columns", []),
+                    key="restore_blacklisted_columns",
+                    help="Selected columns will be restored into the cleaned dataset immediately.",
+                )
+                if st.button("Apply Column Changes", use_container_width=False):
+                    refreshed = ingest_qualtrics_dataframe(
+                        raw_df=st.session_state.raw_df,
+                        source_name=st.session_state.uploaded_filename or "uploaded_file",
+                        sheet_name=st.session_state.sheet_name or "Sheet1",
+                        whitelist_columns=restore_selection,
+                    )
+                    st.session_state.cleaned_df = refreshed.cleaned_df
+                    st.session_state.question_labels = refreshed.question_labels
+                    st.session_state.cell_col = refreshed.cell_column
+                    st.session_state.blacklist_used = refreshed.blacklist_used
+                    st.session_state.restored_columns = restore_selection
+                    st.session_state.ingestion_log = refreshed.log_lines
+                    st.session_state.metadata_rows_removed = refreshed.metadata_rows_removed
+                    st.session_state.removed_column_count = len(refreshed.removed_columns)
+                    st.session_state.removed_columns = refreshed.removed_columns
+                    st.session_state.blank_cell_rows_removed = refreshed.blank_cell_rows_removed
+                    st.session_state.sheet_name = refreshed.sheet_name
+                    st.session_state.ingestion_completed_at = refreshed.completed_at
+                    st.session_state.cell_config_editor = None
+                    st.session_state.question_metadata = build_question_metadata(
+                        refreshed.cleaned_df,
+                        refreshed.question_labels,
+                        refreshed.cell_column,
+                    )
+                    st.session_state.scale_mappings = {}
+                    st.success("Column selection updated.")
+                    st.rerun()
+            else:
+                st.caption("No blacklisted columns were removed.")
 
         with st.expander("Question Labels", expanded=False):
             label_df = pd.DataFrame(
@@ -169,9 +262,6 @@ def render_step_1() -> None:
                 }
             )
             st.dataframe(label_df, use_container_width=True)
-
-    st.subheader("Ingestion Status Log")
-    display_log_lines(st.session_state.ingestion_log)
 
 
 def _default_cell_config(cleaned_df: pd.DataFrame, cell_col: str) -> pd.DataFrame:
@@ -571,7 +661,7 @@ def main() -> None:
     init_session_state()
     step = render_sidebar()
 
-    if step == "1. Data Ingestion":
+    if step == "1. Data Intake":
         render_step_1()
     elif step == "2. Base Size & Cell Distribution":
         render_step_2()
@@ -587,6 +677,8 @@ def main() -> None:
         render_step_7()
     elif step == "8. Table Generator & Excel Export":
         render_step_8()
+
+    render_page_navigation(step)
 
 
 if __name__ == "__main__":

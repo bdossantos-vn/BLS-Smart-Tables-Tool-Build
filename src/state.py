@@ -16,9 +16,13 @@ DEFAULT_STATE: dict[str, Any] = {
     "ingestion_log": [],
     "cell_col": None,
     "blacklist_used": [],
+    "restored_columns": [],
     "metadata_rows_removed": 0,
     "removed_column_count": 0,
+    "removed_columns": [],
     "blank_cell_rows_removed": 0,
+    "sheet_name": "",
+    "ingestion_completed_at": "",
     "cell_letter_map": {},
     "locked_cell_bases": {},
     "cell_sort_order": {},
@@ -48,4 +52,3 @@ def reset_project_state() -> None:
     """Reset the project-scoped state keys to their defaults."""
     for key, value in DEFAULT_STATE.items():
         st.session_state[key] = deepcopy(value)
-

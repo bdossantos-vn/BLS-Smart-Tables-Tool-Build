@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 
@@ -51,6 +52,8 @@ class IngestionResult:
     metadata_rows_removed: int
     removed_columns: list[str]
     blank_cell_rows_removed: int
+    sheet_name: str
+    completed_at: str
 
 
 def _looks_like_metadata_row(row: pd.Series, header_values: list[str], row_index: int) -> bool:
@@ -115,13 +118,17 @@ def _remove_blacklisted_columns(
     df: pd.DataFrame,
     blacklist: list[str],
     blacklist_prefixes: list[str] | None = None,
+    whitelist_columns: list[str] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Drop blacklisted system columns case-insensitively."""
     blacklist_lookup = {value.lower() for value in blacklist}
     prefix_lookup = [value.lower() for value in (blacklist_prefixes or [])]
+    whitelist_lookup = {value.lower() for value in (whitelist_columns or [])}
     removed = []
     for column in df.columns:
         normalized = normalize_text(column).lower()
+        if normalized in whitelist_lookup:
+            continue
         if normalized in blacklist_lookup or any(normalized.startswith(prefix) for prefix in prefix_lookup):
             removed.append(column)
     cleaned_df = df.drop(columns=removed, errors="ignore")
@@ -146,19 +153,26 @@ def _clean_cell_rows(df: pd.DataFrame, cell_column: str) -> tuple[pd.DataFrame, 
     return cleaned, removed
 
 
-def ingest_qualtrics_excel(uploaded_file, blacklist: list[str] | None = None) -> IngestionResult:
-    """Ingest, clean, and validate a Qualtrics Excel export."""
+def ingest_qualtrics_dataframe(
+    raw_df: pd.DataFrame,
+    source_name: str,
+    sheet_name: str,
+    blacklist: list[str] | None = None,
+    whitelist_columns: list[str] | None = None,
+) -> IngestionResult:
+    """Ingest, clean, and validate a Qualtrics dataframe already loaded into memory."""
     blacklist = unique_preserving_order(blacklist or DEFAULT_VARIABLE_BLACKLIST)
-    read_result = read_excel_upload(uploaded_file)
+    completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    log_lines = [f"Loaded sheet `{read_result.sheet_name}` from `{uploaded_file.name}`."]
-    prepared_df, question_labels, metadata_rows_removed = _prepare_qualtrics_dataframe(read_result.dataframe)
+    log_lines = [f"Loaded sheet `{sheet_name}` from `{source_name}`."]
+    prepared_df, question_labels, metadata_rows_removed = _prepare_qualtrics_dataframe(raw_df)
     log_lines.append(f"Preserved variable names and question labels. Removed {metadata_rows_removed} metadata row(s).")
 
     no_tech_df, removed_columns = _remove_blacklisted_columns(
         prepared_df,
         blacklist,
         DEFAULT_BLACKLIST_PREFIXES,
+        whitelist_columns,
     )
     log_lines.append(f"Removed {len(removed_columns)} blacklisted column(s).")
 
@@ -179,7 +193,7 @@ def ingest_qualtrics_excel(uploaded_file, blacklist: list[str] | None = None) ->
     )
 
     return IngestionResult(
-        raw_df=read_result.dataframe,
+        raw_df=raw_df,
         cleaned_df=cell_clean_df,
         question_labels=question_labels,
         cell_column=cell_column,
@@ -188,4 +202,22 @@ def ingest_qualtrics_excel(uploaded_file, blacklist: list[str] | None = None) ->
         metadata_rows_removed=metadata_rows_removed,
         removed_columns=removed_columns,
         blank_cell_rows_removed=blank_cell_rows_removed,
+        sheet_name=sheet_name,
+        completed_at=completed_at,
+    )
+
+
+def ingest_qualtrics_excel(
+    uploaded_file,
+    blacklist: list[str] | None = None,
+    whitelist_columns: list[str] | None = None,
+) -> IngestionResult:
+    """Ingest, clean, and validate a Qualtrics Excel export."""
+    read_result = read_excel_upload(uploaded_file)
+    return ingest_qualtrics_dataframe(
+        raw_df=read_result.dataframe,
+        source_name=uploaded_file.name,
+        sheet_name=read_result.sheet_name,
+        blacklist=blacklist,
+        whitelist_columns=whitelist_columns,
     )
