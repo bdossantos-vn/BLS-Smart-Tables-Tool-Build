@@ -88,7 +88,7 @@ def render_sidebar() -> str:
         if "nav_step" not in st.session_state or st.session_state.nav_step not in NAV_STEPS:
             st.session_state.nav_step = NAV_STEPS[0]
         current_index = NAV_STEPS.index(st.session_state.nav_step)
-        step = st.radio("Workflow", NAV_STEPS, index=current_index, key="nav_step_selector")
+        step = st.radio("Workflow", NAV_STEPS, index=current_index)
         st.session_state.nav_step = step
         st.divider()
         if st.button("Reset Project", type="secondary", use_container_width=True):
