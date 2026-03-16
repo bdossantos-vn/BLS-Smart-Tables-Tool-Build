@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from src.cleaning import ingest_qualtrics_dataframe, ingest_qualtrics_excel
+from src.io import get_excel_sheet_names
 from src.config import (
     build_default_banner_config,
     build_default_stat_config,
@@ -140,6 +141,47 @@ def _build_cell_summary_frame(cleaned_df: pd.DataFrame, cell_col: str) -> pd.Dat
     return counts
 
 
+def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[str]) -> pd.DataFrame:
+    """Build the editable blacklist state table for Step 1."""
+    restored_lookup = {value.lower() for value in restored_columns}
+    rows = []
+    for column in blacklist_used:
+        rows.append(
+            {
+                "Column": column,
+                "Blacklisted": column.lower() not in restored_lookup,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _apply_intake_result(result) -> None:
+    """Persist a completed intake result into session state."""
+    st.session_state.raw_df = result.raw_df
+    st.session_state.cleaned_df = result.cleaned_df
+    st.session_state.question_labels = result.question_labels
+    st.session_state.cell_col = result.cell_column
+    st.session_state.blacklist_used = result.blacklist_used
+    st.session_state.ingestion_log = result.log_lines
+    st.session_state.metadata_rows_removed = result.metadata_rows_removed
+    st.session_state.removed_column_count = len(result.removed_columns)
+    st.session_state.removed_columns = result.removed_columns
+    st.session_state.blank_cell_rows_removed = result.blank_cell_rows_removed
+    st.session_state.sheet_name = result.sheet_name
+    st.session_state.ingestion_completed_at = result.completed_at
+    st.session_state.cell_config_editor = None
+    st.session_state.question_metadata = build_question_metadata(
+        result.cleaned_df,
+        result.question_labels,
+        result.cell_column,
+    )
+    st.session_state.scale_mappings = {}
+    st.session_state.blacklist_editor = _build_blacklist_editor(
+        st.session_state.blacklist_catalog,
+        st.session_state.get("restored_columns", []),
+    )
+
+
 def render_step_1() -> None:
     """Render the data intake page."""
     st.header("1. Data Intake")
@@ -157,35 +199,36 @@ def render_step_1() -> None:
 
     if upload is not None:
         try:
-            result = ingest_qualtrics_excel(upload)
+            available_sheets = get_excel_sheet_names(upload)
         except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
             st.error(f"Upload failed: {exc}")
             _append_log(f"Upload failed for {upload.name}: {exc}")
         else:
             st.session_state.uploaded_filename = upload.name
-            st.session_state.raw_df = result.raw_df
-            st.session_state.cleaned_df = result.cleaned_df
-            st.session_state.question_labels = result.question_labels
-            st.session_state.cell_col = result.cell_column
-            st.session_state.blacklist_used = result.blacklist_used
-            st.session_state.restored_columns = []
-            st.session_state.ingestion_log = result.log_lines
-            st.session_state.metadata_rows_removed = result.metadata_rows_removed
-            st.session_state.removed_column_count = len(result.removed_columns)
-            st.session_state.removed_columns = result.removed_columns
-            st.session_state.blank_cell_rows_removed = result.blank_cell_rows_removed
-            st.session_state.sheet_name = result.sheet_name
-            st.session_state.ingestion_completed_at = result.completed_at
-            st.session_state.cell_config_editor = None
-            st.session_state.question_metadata = build_question_metadata(
-                result.cleaned_df,
-                result.question_labels,
-                result.cell_column,
+            st.session_state.available_sheets = available_sheets
+
+            if len(available_sheets) > 1:
+                st.info("This workbook has multiple sheets. Choose one sheet to process for this intake.")
+
+            selected_sheet = st.selectbox(
+                "Select sheet to process",
+                options=available_sheets,
+                key="selected_sheet_name",
             )
-            st.session_state.metadata_change_log = []
-            st.session_state.scale_mappings = {}
-            _append_log(f"Ingestion complete for {upload.name}.")
-            st.success("File processed successfully.")
+
+            if st.button("Process Intake", type="primary", use_container_width=False):
+                try:
+                    result = ingest_qualtrics_excel(upload, sheet_name=selected_sheet)
+                except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                    st.error(f"Upload failed: {exc}")
+                    _append_log(f"Upload failed for {upload.name}: {exc}")
+                else:
+                    st.session_state.blacklist_catalog = result.removed_columns.copy()
+                    st.session_state.restored_columns = []
+                    _apply_intake_result(result)
+                    st.session_state.metadata_change_log = []
+                    _append_log(f"Ingestion complete for {upload.name}.")
+                    st.success(f"File processed successfully from sheet `{selected_sheet}`.")
 
     cleaned_df = st.session_state.cleaned_df
     if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty:
@@ -214,54 +257,75 @@ def render_step_1() -> None:
             st.write(f"Time of completed intake: `{st.session_state.ingestion_completed_at}`")
 
         with st.expander("Blacklisted Columns", expanded=True):
-            removed_columns = st.session_state.get("removed_columns", [])
-            if removed_columns:
-                restore_selection = st.multiselect(
-                    "Select removed columns to add back in",
-                    options=removed_columns,
-                    default=st.session_state.get("restored_columns", []),
-                    key="restore_blacklisted_columns",
-                    help="Selected columns will be restored into the cleaned dataset immediately.",
-                )
-                if st.button("Apply Column Changes", use_container_width=False):
-                    refreshed = ingest_qualtrics_dataframe(
-                        raw_df=st.session_state.raw_df,
-                        source_name=st.session_state.uploaded_filename or "uploaded_file",
-                        sheet_name=st.session_state.sheet_name or "Sheet1",
-                        whitelist_columns=restore_selection,
+            if st.session_state.blacklist_catalog:
+                if st.session_state.blacklist_editor is None:
+                    st.session_state.blacklist_editor = _build_blacklist_editor(
+                        st.session_state.blacklist_catalog,
+                        st.session_state.get("restored_columns", []),
                     )
-                    st.session_state.cleaned_df = refreshed.cleaned_df
-                    st.session_state.question_labels = refreshed.question_labels
-                    st.session_state.cell_col = refreshed.cell_column
-                    st.session_state.blacklist_used = refreshed.blacklist_used
-                    st.session_state.restored_columns = restore_selection
-                    st.session_state.ingestion_log = refreshed.log_lines
-                    st.session_state.metadata_rows_removed = refreshed.metadata_rows_removed
-                    st.session_state.removed_column_count = len(refreshed.removed_columns)
-                    st.session_state.removed_columns = refreshed.removed_columns
-                    st.session_state.blank_cell_rows_removed = refreshed.blank_cell_rows_removed
-                    st.session_state.sheet_name = refreshed.sheet_name
-                    st.session_state.ingestion_completed_at = refreshed.completed_at
-                    st.session_state.cell_config_editor = None
-                    st.session_state.question_metadata = build_question_metadata(
-                        refreshed.cleaned_df,
-                        refreshed.question_labels,
-                        refreshed.cell_column,
-                    )
-                    st.session_state.scale_mappings = {}
-                    st.success("Column selection updated.")
-                    st.rerun()
-            else:
-                st.caption("No blacklisted columns were removed.")
 
-        with st.expander("Question Labels", expanded=False):
-            label_df = pd.DataFrame(
-                {
-                    "variable": list(st.session_state.question_labels.keys()),
-                    "label": list(st.session_state.question_labels.values()),
-                }
-            )
-            st.dataframe(label_df, use_container_width=True)
+                edited_blacklist = st.data_editor(
+                    st.session_state.blacklist_editor,
+                    key="blacklist_editor_grid",
+                    use_container_width=True,
+                    num_rows="fixed",
+                    hide_index=True,
+                    column_config={
+                        "Column": st.column_config.TextColumn(disabled=True),
+                        "Blacklisted": st.column_config.CheckboxColumn(
+                            help="Checked means the column stays excluded from the cleaned dataset."
+                        ),
+                    },
+                )
+
+                btn_left, btn_right = st.columns(2)
+                blacklist_rows = edited_blacklist.to_dict(orient="records")
+
+                with btn_left:
+                    if st.button("Update Columns", use_container_width=True):
+                        restored_columns = [
+                            row["Column"]
+                            for row in blacklist_rows
+                            if not bool(row.get("Blacklisted", True))
+                        ]
+                        refreshed = ingest_qualtrics_dataframe(
+                            raw_df=st.session_state.raw_df,
+                            source_name=st.session_state.uploaded_filename or "uploaded_file",
+                            sheet_name=st.session_state.sheet_name or "Sheet1",
+                            blacklist=st.session_state.blacklist_catalog,
+                            whitelist_columns=restored_columns,
+                        )
+                        st.session_state.restored_columns = restored_columns
+                        _apply_intake_result(refreshed)
+                        st.session_state.blacklist_editor = edited_blacklist.copy()
+                        if restored_columns:
+                            st.success(
+                                "Updated intake. Added back column(s): "
+                                + ", ".join(restored_columns)
+                            )
+                        else:
+                            st.success("Updated intake. All blacklisted columns remain excluded.")
+                        st.rerun()
+
+                with btn_right:
+                    if st.button("Reset Columns", use_container_width=True):
+                        refreshed = ingest_qualtrics_dataframe(
+                            raw_df=st.session_state.raw_df,
+                            source_name=st.session_state.uploaded_filename or "uploaded_file",
+                            sheet_name=st.session_state.sheet_name or "Sheet1",
+                            blacklist=st.session_state.blacklist_catalog,
+                            whitelist_columns=[],
+                        )
+                        st.session_state.restored_columns = []
+                        _apply_intake_result(refreshed)
+                        st.session_state.blacklist_editor = _build_blacklist_editor(
+                            st.session_state.blacklist_catalog,
+                            [],
+                        )
+                        st.success("Column choices reset to the default blacklist.")
+                        st.rerun()
+            else:
+                st.caption("No blacklisted columns are configured for this intake.")
 
 
 def _default_cell_config(cleaned_df: pd.DataFrame, cell_col: str) -> pd.DataFrame:

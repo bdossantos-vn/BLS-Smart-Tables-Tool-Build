@@ -211,9 +211,10 @@ def ingest_qualtrics_excel(
     uploaded_file,
     blacklist: list[str] | None = None,
     whitelist_columns: list[str] | None = None,
+    sheet_name: str | None = None,
 ) -> IngestionResult:
     """Ingest, clean, and validate a Qualtrics Excel export."""
-    read_result = read_excel_upload(uploaded_file)
+    read_result = read_excel_upload(uploaded_file, sheet_name=sheet_name)
     return ingest_qualtrics_dataframe(
         raw_df=read_result.dataframe,
         source_name=uploaded_file.name,

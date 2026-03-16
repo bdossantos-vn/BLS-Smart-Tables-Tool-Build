@@ -16,12 +16,23 @@ class ExcelReadResult:
     sheet_name: str
 
 
-def read_excel_upload(uploaded_file) -> ExcelReadResult:
-    """Read the first worksheet from an uploaded Excel file into a raw dataframe."""
+def get_excel_sheet_names(uploaded_file) -> list[str]:
+    """Return workbook sheet names from an uploaded Excel file."""
     content = uploaded_file.getvalue()
     workbook = pd.ExcelFile(BytesIO(content))
     if not workbook.sheet_names:
         raise ValueError("The workbook does not contain any sheets.")
-    sheet_name = workbook.sheet_names[0]
-    dataframe = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None, dtype=object)
-    return ExcelReadResult(dataframe=dataframe, sheet_name=sheet_name)
+    return workbook.sheet_names
+
+
+def read_excel_upload(uploaded_file, sheet_name: str | None = None) -> ExcelReadResult:
+    """Read a selected worksheet from an uploaded Excel file into a raw dataframe."""
+    content = uploaded_file.getvalue()
+    workbook = pd.ExcelFile(BytesIO(content))
+    if not workbook.sheet_names:
+        raise ValueError("The workbook does not contain any sheets.")
+    selected_sheet = sheet_name or workbook.sheet_names[0]
+    if selected_sheet not in workbook.sheet_names:
+        raise ValueError(f"Sheet `{selected_sheet}` was not found in the workbook.")
+    dataframe = pd.read_excel(BytesIO(content), sheet_name=selected_sheet, header=None, dtype=object)
+    return ExcelReadResult(dataframe=dataframe, sheet_name=selected_sheet)
