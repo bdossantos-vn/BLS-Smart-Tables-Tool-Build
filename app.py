@@ -101,17 +101,6 @@ def render_sidebar() -> str:
         if st.button("Reset Project", type="secondary", use_container_width=True):
             reset_project_state()
             st.rerun()
-
-        st.caption("Project status")
-        uploaded = st.session_state.uploaded_filename or "No file uploaded"
-        st.write(f"File: `{uploaded}`")
-        cleaned_df = st.session_state.cleaned_df
-        if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty:
-            st.write(f"Rows: `{len(cleaned_df):,}`")
-            st.write(f"Columns: `{len(cleaned_df.columns):,}`")
-        else:
-            st.write("Rows: `0`")
-            st.write("Columns: `0`")
     return step
 
 
