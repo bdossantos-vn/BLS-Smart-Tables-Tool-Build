@@ -265,6 +265,26 @@ def _build_comparison_order_editor(cleaned_df: pd.DataFrame, comparison_col: str
     return summary[["Cell", "N", "Sort Order"]]
 
 
+def _current_included_count() -> int:
+    """Return the current number of included columns in the working dataset."""
+    cleaned_df = st.session_state.get("cleaned_df")
+    if isinstance(cleaned_df, pd.DataFrame):
+        return len(cleaned_df.columns)
+    return 0
+
+
+def _current_excluded_count() -> int:
+    """Return the current total number of excluded columns across all intake controls."""
+    survey_df = st.session_state.get("survey_df")
+    survey_column_count = len(survey_df.columns) if isinstance(survey_df, pd.DataFrame) else 0
+    blacklist_catalog = st.session_state.get("blacklist_catalog", [])
+    restored_columns = set(st.session_state.get("restored_columns", []))
+    active_blacklist_count = sum(1 for column in blacklist_catalog if column not in restored_columns)
+    included_count = _current_included_count()
+    hidden_included_count = max(survey_column_count - included_count, 0)
+    return active_blacklist_count + hidden_included_count
+
+
 def _move_comparison_group(group_name: str, direction: str) -> None:
     """Move a comparison group in the configured display order."""
     order_map = dict(st.session_state.get("comparison_group_order", {}))
@@ -466,12 +486,12 @@ def render_step_1() -> None:
     if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty and st.session_state.get("comparison_configured"):
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Metadata rows removed", st.session_state.get("metadata_rows_removed", 0))
-        col2.metric("Columns removed", st.session_state.get("removed_column_count", 0))
+        col2.metric("Columns removed", _current_excluded_count())
         col3.metric(
             "Rows removed for blank comparison value",
             st.session_state.get("comparison_rows_removed", 0),
         )
-        col4.metric("Columns retained", len(cleaned_df.columns))
+        col4.metric("Columns retained", _current_included_count())
 
         st.subheader("Intake Summary")
         summary_left, summary_right = st.columns([1.2, 1])
@@ -483,8 +503,8 @@ def render_step_1() -> None:
             )
         with summary_right:
             st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
-            st.write(f"Columns Included: `{len(cleaned_df.columns)}`")
-            st.write(f"Columns Excluded: `{st.session_state.removed_column_count}`")
+            st.write(f"Columns Included: `{_current_included_count()}`")
+            st.write(f"Columns Excluded: `{_current_excluded_count()}`")
             current_comparison = st.session_state.comparison_col or "Total only"
             st.write(f"Comparison Variable: `{current_comparison}`")
 
