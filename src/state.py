@@ -21,6 +21,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "comparison_configured": False,
     "comparison_rows_removed": 0,
     "comparison_group_order": {},
+    "included_columns": [],
+    "included_editor": None,
     "blacklist_used": [],
     "blacklist_catalog": [],
     "restored_columns": [],

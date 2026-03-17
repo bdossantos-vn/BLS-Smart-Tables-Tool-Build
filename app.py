@@ -201,6 +201,13 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
     if not isinstance(survey_df, pd.DataFrame) or survey_df.empty:
         return
 
+    selected_columns = st.session_state.get("included_columns", list(survey_df.columns))
+    selected_columns = [column for column in selected_columns if column in survey_df.columns]
+    if comparison_col and comparison_col not in selected_columns:
+        selected_columns = [comparison_col, *selected_columns]
+    if not selected_columns:
+        raise ValueError("Select at least one included column.")
+
     filtered_df = survey_df.copy()
     rows_removed = 0
 
@@ -209,6 +216,8 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
         blank_mask = filtered_df[comparison_col] == ""
         rows_removed = int(blank_mask.sum())
         filtered_df = filtered_df.loc[~blank_mask].reset_index(drop=True)
+
+    filtered_df = filtered_df.loc[:, [column for column in selected_columns if column in filtered_df.columns]].copy()
 
     if filtered_df.empty:
         raise ValueError("The selected comparison variable removed all rows. Choose a different option.")
@@ -306,16 +315,39 @@ def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[st
     return pd.DataFrame(rows)
 
 
+def _build_included_editor(all_columns: list[str], selected_columns: list[str]) -> pd.DataFrame:
+    """Build the editable included-columns table for Step 1."""
+    selected_lookup = set(selected_columns)
+    rows = []
+    for column in all_columns:
+        rows.append(
+            {
+                "Column": column,
+                "Included": column in selected_lookup,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _apply_intake_result(result) -> None:
     """Persist a completed intake result into session state."""
+    available_columns = [column for column in result.cleaned_df.columns]
+    previous_included = st.session_state.get("included_columns", [])
+    if previous_included:
+        included_columns = [column for column in previous_included if column in available_columns]
+        included_columns.extend([column for column in available_columns if column not in included_columns])
+    else:
+        included_columns = available_columns.copy()
+
     st.session_state.raw_df = result.raw_df
     st.session_state.survey_df = result.cleaned_df.copy()
     st.session_state.cleaned_df = result.cleaned_df.copy()
     st.session_state.question_labels = result.question_labels
     st.session_state.cell_col = result.cell_column
     st.session_state.comparison_col = result.cell_column
-    st.session_state.comparison_options = [column for column in result.cleaned_df.columns]
+    st.session_state.comparison_options = available_columns
     st.session_state.comparison_configured = False
+    st.session_state.included_columns = included_columns
     st.session_state.blacklist_used = result.blacklist_used
     st.session_state.ingestion_log = result.log_lines
     st.session_state.metadata_rows_removed = result.metadata_rows_removed
@@ -342,6 +374,10 @@ def _apply_intake_result(result) -> None:
     st.session_state.blacklist_editor = _build_blacklist_editor(
         st.session_state.blacklist_catalog,
         st.session_state.get("restored_columns", []),
+    )
+    st.session_state.included_editor = _build_included_editor(
+        available_columns,
+        included_columns,
     )
 
 
@@ -404,15 +440,14 @@ def render_step_1() -> None:
     if isinstance(survey_df, pd.DataFrame) and not survey_df.empty:
         st.subheader("Comparison Setup")
         comparison_options = ["None / Total only", *st.session_state.comparison_options]
-        default_option = st.session_state.get("comparison_selector", "None / Total only")
+        default_option = st.session_state.get("comparison_col") or "None / Total only"
         if default_option not in comparison_options:
             default_option = "None / Total only"
-        st.session_state.comparison_selector = default_option
 
         selected_option = st.selectbox(
             "Comparison Variable",
             options=comparison_options,
-            key="comparison_selector",
+            index=comparison_options.index(default_option),
             help="`cell` is auto-selected when present, but you can choose another variable or total-only analysis.",
         )
         if st.button("Apply Comparison Variable", use_container_width=False):
@@ -427,6 +462,69 @@ def render_step_1() -> None:
                 else:
                     st.success(f"Comparison variable updated to `{selected_comparison}`.")
                 st.rerun()
+
+        with st.expander("Columns Included", expanded=True):
+            available_columns = list(survey_df.columns)
+            if st.session_state.included_editor is None:
+                st.session_state.included_editor = _build_included_editor(
+                    available_columns,
+                    st.session_state.get("included_columns", available_columns),
+                )
+
+            edited_included = st.data_editor(
+                st.session_state.included_editor,
+                key="included_editor_grid",
+                use_container_width=True,
+                num_rows="fixed",
+                hide_index=True,
+                column_config={
+                    "Column": st.column_config.TextColumn(disabled=True),
+                    "Included": st.column_config.CheckboxColumn(
+                        help="Checked means the column stays in the working dataset."
+                    ),
+                },
+            )
+
+            include_left, include_right = st.columns(2)
+            include_rows = edited_included.to_dict(orient="records")
+
+            with include_left:
+                if st.button("Update Columns", key="update_included_columns", use_container_width=True):
+                    included_columns = [
+                        row["Column"]
+                        for row in include_rows
+                        if bool(row.get("Included", True))
+                    ]
+                    current_comparison = st.session_state.get("comparison_col")
+                    if current_comparison and current_comparison not in included_columns:
+                        included_columns = [current_comparison, *included_columns]
+                    st.session_state.included_columns = included_columns
+                    st.session_state.included_editor = _build_included_editor(
+                        available_columns,
+                        included_columns,
+                    )
+                    try:
+                        _apply_comparison_selection(current_comparison)
+                    except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                        st.error(str(exc))
+                    else:
+                        st.success("Included columns updated.")
+                        st.rerun()
+
+            with include_right:
+                if st.button("Reset Columns", key="reset_included_columns", use_container_width=True):
+                    st.session_state.included_columns = available_columns.copy()
+                    st.session_state.included_editor = _build_included_editor(
+                        available_columns,
+                        available_columns,
+                    )
+                    try:
+                        _apply_comparison_selection(st.session_state.get("comparison_col"))
+                    except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                        st.error(str(exc))
+                    else:
+                        st.success("Included columns reset to all available columns.")
+                        st.rerun()
 
     if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty and st.session_state.get("comparison_configured"):
         col1, col2, col3, col4 = st.columns(4)
@@ -517,6 +615,10 @@ def render_step_1() -> None:
                             previous_comparison,
                         )
                         _apply_comparison_selection(selected_comparison)
+                        st.session_state.included_editor = _build_included_editor(
+                            list(st.session_state.survey_df.columns),
+                            st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
+                        )
                         st.session_state.blacklist_editor = edited_blacklist.copy()
                         if restored_columns:
                             st.success(
@@ -544,6 +646,10 @@ def render_step_1() -> None:
                                 refreshed.cell_column,
                                 refreshed.cell_column,
                             )
+                        )
+                        st.session_state.included_editor = _build_included_editor(
+                            list(st.session_state.survey_df.columns),
+                            st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
                         )
                         st.session_state.blacklist_editor = _build_blacklist_editor(
                             st.session_state.blacklist_catalog,
