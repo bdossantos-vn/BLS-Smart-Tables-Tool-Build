@@ -86,9 +86,40 @@ def build_scale_mapping_editor_frame(
     return pd.DataFrame(editor_rows)
 
 
-def save_scale_mapping_editor(editor_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
+def build_scale_mapping_options(scale_mappings: dict[str, dict[str, Any]]) -> list[str]:
+    """Build a global option list for scale-point dropdowns."""
+    options: list[str] = [""]
+    for mapping in scale_mappings.values():
+        for row in mapping.get("rows", []):
+            value = normalize_text(row.get("response_value"))
+            if value and value not in options:
+                options.append(value)
+    return options
+
+
+def validate_scale_mapping_editor(editor_df: pd.DataFrame) -> list[str]:
+    """Validate that each row uses unique scale-point values."""
+    issues: list[str] = []
+    for row in editor_df.to_dict(orient="records"):
+        variable = normalize_text(row.get("variable"))
+        selected_values: list[str] = []
+        for key, value in row.items():
+            if key.startswith("scale_point_"):
+                text = normalize_text(value)
+                if text:
+                    selected_values.append(text)
+        if len(selected_values) != len(set(selected_values)):
+            issues.append(f"{variable}: Each scale point must use a unique response option.")
+    return issues
+
+
+def save_scale_mapping_editor(
+    editor_df: pd.DataFrame,
+    previous_mappings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Convert the wide editor frame back into the stored mapping structure."""
     mappings: dict[str, dict[str, Any]] = {}
+    previous_mappings = previous_mappings or {}
     for row in editor_df.to_dict(orient="records"):
         variable = normalize_text(row.get("variable"))
         polarity = normalize_text(row.get("polarity")) or "standard"
@@ -103,6 +134,10 @@ def save_scale_mapping_editor(editor_df: pd.DataFrame) -> dict[str, dict[str, An
         for value in ordered_values:
             if value not in deduped_values:
                 deduped_values.append(value)
+
+        previous_polarity = normalize_text(previous_mappings.get(variable, {}).get("polarity", "standard")) or "standard"
+        if previous_polarity != polarity and len(deduped_values) > 1:
+            deduped_values = list(reversed(deduped_values))
 
         rows = []
         for index, value in enumerate(deduped_values, start=1):
@@ -119,6 +154,46 @@ def save_scale_mapping_editor(editor_df: pd.DataFrame) -> dict[str, dict[str, An
             "polarity": polarity if polarity in {"standard", "flipped"} else "standard",
         }
     return mappings
+
+
+def build_scale_change_log(
+    previous_mappings: dict[str, dict[str, Any]],
+    current_mappings: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Build specific before/after change-log entries for scale mapping edits."""
+    change_log: list[str] = []
+    for variable, current_mapping in current_mappings.items():
+        previous_mapping = previous_mappings.get(variable, {})
+        previous_polarity = normalize_text(previous_mapping.get("polarity", "standard")) or "standard"
+        current_polarity = normalize_text(current_mapping.get("polarity", "standard")) or "standard"
+
+        previous_values = [
+            normalize_text(row.get("response_value"))
+            for row in sorted(previous_mapping.get("rows", []), key=lambda item: int(item.get("bucket", 0)))
+            if normalize_text(row.get("response_value"))
+        ]
+        current_values = [
+            normalize_text(row.get("response_value"))
+            for row in sorted(current_mapping.get("rows", []), key=lambda item: int(item.get("bucket", 0)))
+            if normalize_text(row.get("response_value"))
+        ]
+
+        if previous_polarity != current_polarity:
+            change_log.append(
+                f"{variable}: Polarity changed from {previous_polarity} to {current_polarity}"
+            )
+        if previous_values != current_values:
+            previous_text = " | ".join(previous_values) or "(blank)"
+            current_text = " | ".join(current_values) or "(blank)"
+            if len(previous_text) + len(current_text) <= 180:
+                change_log.append(
+                    f'{variable}: Scale points changed "{previous_text}" -> "{current_text}"'
+                )
+            else:
+                change_log.append(
+                    f"{variable}: Scale points changed {len(previous_values)} option(s) -> {len(current_values)} option(s)"
+                )
+    return change_log
 
 
 def update_scale_mapping_from_editor(current_mapping: dict[str, Any], editor_df: pd.DataFrame) -> dict[str, Any]:

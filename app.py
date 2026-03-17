@@ -19,11 +19,13 @@ from src.custom_vars import (
     validate_custom_variable_name,
 )
 from src.mapping import (
+    build_scale_change_log,
     build_scale_mapping_editor_frame,
+    build_scale_mapping_options,
     ensure_scale_mappings,
-    flip_scale_mapping,
     identify_scale_questions,
     save_scale_mapping_editor,
+    validate_scale_mapping_editor,
 )
 from src.metadata import (
     build_metadata_change_log_entry,
@@ -780,6 +782,7 @@ def render_step_4() -> None:
         scale_questions,
         st.session_state.scale_mappings,
     )
+    scale_options = build_scale_mapping_options(st.session_state.scale_mappings)
 
     point_columns = [column for column in editor_df.columns if column.startswith("scale_point_")]
     column_config = {
@@ -793,8 +796,9 @@ def render_step_4() -> None:
         ),
     }
     for index, column in enumerate(point_columns, start=1):
-        column_config[column] = st.column_config.TextColumn(
+        column_config[column] = st.column_config.SelectboxColumn(
             f"Scale Point {index}",
+            options=scale_options,
             width=220,
         )
 
@@ -808,26 +812,32 @@ def render_step_4() -> None:
         column_config=column_config,
     )
 
-    action_left, action_right = st.columns(2)
-    with action_left:
-        if st.button("Save Mappings", type="primary", use_container_width=True):
-            st.session_state.scale_mappings = save_scale_mapping_editor(edited)
-            st.success("Scale mappings saved.")
-
-    with action_right:
-        variable_options = edited["variable"].tolist()
-        selected_variable = st.selectbox(
-            "Flip polarity for",
-            options=variable_options,
-            key="scale_flip_variable",
-            label_visibility="collapsed",
-        )
-        if st.button("Flip Selected Polarity", use_container_width=True):
-            st.session_state.scale_mappings[selected_variable] = flip_scale_mapping(
-                st.session_state.scale_mappings[selected_variable]
+    if st.button("Save Mappings", type="primary", use_container_width=True):
+        issues = validate_scale_mapping_editor(edited)
+        if issues:
+            for issue in issues:
+                st.error(issue)
+        else:
+            previous_mappings = {
+                key: value.copy()
+                for key, value in st.session_state.scale_mappings.items()
+            }
+            st.session_state.scale_mappings = save_scale_mapping_editor(
+                edited,
+                previous_mappings=st.session_state.scale_mappings,
             )
-            st.success(f"Polarity flipped for {selected_variable}.")
+            timestamp = format_timestamp()
+            for change in build_scale_change_log(previous_mappings, st.session_state.scale_mappings):
+                st.session_state.scale_change_log.append(f"[{timestamp}] {change}")
+            st.success("Scale mappings saved.")
             st.rerun()
+
+    st.subheader("Change Log")
+    if st.session_state.scale_change_log:
+        for entry in reversed(st.session_state.scale_change_log[-15:]):
+            st.code(entry)
+    else:
+        st.caption("No scale mapping changes yet.")
 
 
 def render_step_5() -> None:
