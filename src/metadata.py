@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+import re
 
 import pandas as pd
 
@@ -96,12 +97,50 @@ def get_metadata_editor_columns() -> dict[str, Any]:
     import streamlit as st
 
     return {
-        "variable": st.column_config.TextColumn("variable name", disabled=True),
-        "question_label": st.column_config.TextColumn("question label", disabled=True),
-        "detected_type": st.column_config.SelectboxColumn("detected type", options=QUESTION_TYPES, required=True),
-        "include": st.column_config.CheckboxColumn("include/exclude toggle"),
-        "notes": st.column_config.TextColumn("notes"),
+        "variable": st.column_config.TextColumn("Variable Name", disabled=True),
+        "question_label": st.column_config.TextColumn("Question Text", disabled=True),
+        "detected_type": st.column_config.SelectboxColumn("Question Type", options=QUESTION_TYPES, required=True),
+        "answer_choices": st.column_config.TextColumn(
+            "Answer Choices",
+            help="Edit answer choices using `|` between labels for clear separation.",
+        ),
     }
+
+
+def extract_answer_choices(series: pd.Series, question_type: str) -> list[str]:
+    """Extract unique answer choices in display order for supported question types."""
+    values = [normalize_text(value) for value in series.dropna().tolist()]
+    if not values:
+        return []
+
+    if question_type == "Multi-Select":
+        choices: list[str] = []
+        for value in values:
+            parts = [part.strip() for part in re.split(r"[;,]", value) if part.strip()]
+            for part in parts:
+                if part not in choices:
+                    choices.append(part)
+        return choices
+
+    if question_type in {"Open-End Text", "Numeric Data", "Ignore"}:
+        return []
+
+    choices = []
+    for value in values:
+        if value and value not in choices:
+            choices.append(value)
+    return choices
+
+
+def serialize_answer_choices(answer_choices: list[str]) -> str:
+    """Serialize answer choices into an editable display string."""
+    return " | ".join(answer_choices)
+
+
+def parse_answer_choices(answer_choices_text: str) -> list[str]:
+    """Parse edited answer-choice text back into a normalized list."""
+    parts = [part.strip() for part in re.split(r"\||\n", answer_choices_text) if part.strip()]
+    return parts
 
 
 def detect_question_types(
@@ -129,11 +168,14 @@ def build_question_metadata(
     metadata: list[dict[str, Any]] = []
     for column in df.columns:
         question_type = detected[column]
+        answer_choices = extract_answer_choices(df[column], question_type)
         metadata.append(
             {
                 "variable": column,
                 "question_label": question_labels.get(column, column),
                 "detected_type": question_type,
+                "answer_choices": serialize_answer_choices(answer_choices),
+                "answer_choices_list": answer_choices,
                 "include": DEFAULT_INCLUDE_VALUE if question_type != "Ignore" else False,
                 "notes": "System split variable" if column == cell_col else "",
             }
@@ -143,7 +185,17 @@ def build_question_metadata(
 
 def prepare_metadata_editor_frame(metadata_rows: list[dict[str, Any]]) -> pd.DataFrame:
     """Convert metadata rows to a dataframe for `st.data_editor`."""
-    return pd.DataFrame(metadata_rows)
+    editor_rows = []
+    for row in metadata_rows:
+        editor_rows.append(
+            {
+                "variable": row.get("variable", ""),
+                "question_label": row.get("question_label", ""),
+                "detected_type": row.get("detected_type", "Single-Select"),
+                "answer_choices": row.get("answer_choices", ""),
+            }
+        )
+    return pd.DataFrame(editor_rows)
 
 
 def sanitize_metadata_editor(editor_df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -155,16 +207,51 @@ def sanitize_metadata_editor(editor_df: pd.DataFrame) -> list[dict[str, Any]]:
         detected_type = normalize_text(row.get("detected_type")) or "Single-Select"
         if detected_type not in QUESTION_TYPES:
             detected_type = "Single-Select"
+        answer_choices_text = normalize_text(row.get("answer_choices"))
         sanitized.append(
             {
                 "variable": normalize_text(row.get("variable")),
                 "question_label": normalize_text(row.get("question_label")),
                 "detected_type": detected_type,
-                "include": bool(row.get("include", DEFAULT_INCLUDE_VALUE)),
-                "notes": normalize_text(row.get("notes")),
+                "answer_choices": answer_choices_text,
+                "answer_choices_list": parse_answer_choices(answer_choices_text),
+                "include": detected_type != "Ignore",
+                "notes": "",
             }
         )
     return sanitized
+
+
+def merge_metadata_editor_with_source(
+    editor_df: pd.DataFrame,
+    previous_metadata: list[dict[str, Any]],
+    source_df: pd.DataFrame,
+) -> list[dict[str, Any]]:
+    """Merge edited metadata with source data, recalculating answer choices when type changes."""
+    sanitized = sanitize_metadata_editor(editor_df)
+    previous_lookup = {row.get("variable"): row for row in previous_metadata}
+    merged: list[dict[str, Any]] = []
+
+    for row in sanitized:
+        variable = row["variable"]
+        previous_row = previous_lookup.get(variable, {})
+        old_type = previous_row.get("detected_type")
+        new_type = row["detected_type"]
+        previous_answer_text = normalize_text(previous_row.get("answer_choices", ""))
+        edited_answer_text = normalize_text(row.get("answer_choices", ""))
+
+        if (
+            variable in source_df.columns
+            and old_type != new_type
+            and edited_answer_text == previous_answer_text
+        ):
+            recalculated_choices = extract_answer_choices(source_df[variable], new_type)
+            row["answer_choices"] = serialize_answer_choices(recalculated_choices)
+            row["answer_choices_list"] = recalculated_choices
+
+        merged.append(row)
+
+    return merged
 
 
 def restore_metadata_defaults(

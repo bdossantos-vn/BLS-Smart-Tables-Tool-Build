@@ -25,15 +25,13 @@ from src.mapping import (
     update_scale_mapping_from_editor,
 )
 from src.metadata import (
-    DEFAULT_INCLUDE_VALUE,
     build_metadata_change_log_entry,
     build_question_metadata,
-    detect_question_types,
     get_metadata_editor_columns,
+    merge_metadata_editor_with_source,
     prepare_metadata_editor_frame,
     restore_metadata_defaults,
     sanitize_metadata_editor,
-    summarize_included_questions,
 )
 from src.state import DEFAULT_STATE, init_session_state, reset_project_state
 from src.stats import (
@@ -695,11 +693,7 @@ def render_step_3() -> None:
     if not st.session_state.question_metadata:
         st.session_state.question_metadata = build_question_metadata(cleaned_df, question_labels, cell_col)
 
-    detected_types = detect_question_types(cleaned_df, question_labels, cell_col)
-    st.caption(
-        f"Included questions: {summarize_included_questions(st.session_state.question_metadata)}. "
-        f"Defaults use the heuristic classifier in `src/metadata.py`."
-    )
+    st.caption("Review question types and edit answer-choice labels where needed.")
 
     editor_df = prepare_metadata_editor_frame(st.session_state.question_metadata)
     edited = st.data_editor(
@@ -711,10 +705,14 @@ def render_step_3() -> None:
         column_config=get_metadata_editor_columns(),
     )
 
-    log_col, action_col = st.columns([2, 1])
-    with action_col:
+    action_left, action_right = st.columns(2)
+    with action_left:
         if st.button("Update Changes", type="primary", use_container_width=True):
-            sanitized = sanitize_metadata_editor(edited)
+            sanitized = merge_metadata_editor_with_source(
+                edited,
+                st.session_state.question_metadata,
+                cleaned_df,
+            )
             previous = {row["variable"]: row for row in st.session_state.question_metadata}
             for row in sanitized:
                 variable = row["variable"]
@@ -727,6 +725,7 @@ def render_step_3() -> None:
             st.session_state.question_metadata = sanitized
             st.success("Question audit changes saved.")
 
+    with action_right:
         if st.button("Reset Defaults", use_container_width=True):
             st.session_state.question_metadata = restore_metadata_defaults(
                 cleaned_df,
@@ -735,16 +734,6 @@ def render_step_3() -> None:
             )
             st.success("Question metadata restored to defaults.")
             st.rerun()
-
-    with log_col:
-        st.subheader("Heuristic Summary")
-        summary_df = pd.DataFrame(
-            {
-                "variable": list(detected_types.keys()),
-                "detected_type": list(detected_types.values()),
-            }
-        )
-        st.dataframe(summary_df, use_container_width=True, height=220)
 
     st.subheader("Change Log")
     if st.session_state.metadata_change_log:
