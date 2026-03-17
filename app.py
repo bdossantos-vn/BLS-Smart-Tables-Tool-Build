@@ -412,11 +412,11 @@ def render_step_1() -> None:
         default_option = st.session_state.get("comparison_selector", "None / Total only")
         if default_option not in comparison_options:
             default_option = "None / Total only"
+        st.session_state.comparison_selector = default_option
 
         selected_option = st.selectbox(
             "Comparison Variable",
             options=comparison_options,
-            index=comparison_options.index(default_option),
             key="comparison_selector",
             help="`cell` is auto-selected when present, but you can choose another variable or total-only analysis.",
         )
