@@ -33,6 +33,37 @@ LIKERT_PATTERNS = [
     "very satisfied",
 ]
 
+SCALE_LABEL_HINTS = [
+    "agree or disagree",
+    "how likely",
+    "to what extent",
+    "feel about",
+    "how interested",
+    "brand affinity",
+    "affinity",
+    "relationship with",
+]
+
+SCALE_VALUE_HINTS = [
+    "very interested",
+    "somewhat interested",
+    "not very interested",
+    "not at all interested",
+    "love it",
+    "like it",
+    "neutral",
+    "dislike it",
+    "hate it",
+    "very likely",
+    "somewhat likely",
+    "not likely",
+    "very unlikely",
+    "somewhat better",
+    "about the same",
+    "much worse",
+    "much better",
+]
+
 
 def _is_multi_select(series: pd.Series) -> bool:
     values = series.dropna().astype(str).str.strip()
@@ -50,11 +81,14 @@ def _is_scale(series: pd.Series, question_label: str = "") -> bool:
     if len(unique_values) > 11:
         return False
     label_lower = question_label.lower()
-    if any(token in label_lower for token in ["agree or disagree", "how likely", "to what extent", "feel about"]):
+    if any(token in label_lower for token in SCALE_LABEL_HINTS):
         if len(unique_values) <= 7:
             return True
     pattern_hits = sum(any(pattern in value for pattern in LIKERT_PATTERNS) for value in unique_values)
     if pattern_hits >= 2:
+        return True
+    value_hint_hits = sum(any(pattern in value for pattern in SCALE_VALUE_HINTS) for value in unique_values)
+    if value_hint_hits >= 2 and len(unique_values) <= 7:
         return True
     numeric_like = pd.to_numeric(pd.Series(unique_values), errors="coerce")
     if numeric_like.notna().all() and len(unique_values) <= 10:
@@ -100,9 +134,11 @@ def get_metadata_editor_columns() -> dict[str, Any]:
         "variable": st.column_config.TextColumn("Variable Name", disabled=True),
         "question_label": st.column_config.TextColumn("Question Text", disabled=True),
         "detected_type": st.column_config.SelectboxColumn("Question Type", options=QUESTION_TYPES, required=True),
+        "answer_choice_count": st.column_config.NumberColumn("Answer Choices Count", disabled=True),
         "answer_choices": st.column_config.TextColumn(
             "Answer Choices",
-            help="Edit answer choices using `|` between labels for clear separation.",
+            width="large",
+            help="Edit answer choices using a new line or `|` between labels for clear separation.",
         ),
     }
 
@@ -134,7 +170,7 @@ def extract_answer_choices(series: pd.Series, question_type: str) -> list[str]:
 
 def serialize_answer_choices(answer_choices: list[str]) -> str:
     """Serialize answer choices into an editable display string."""
-    return " | ".join(answer_choices)
+    return "\n".join(answer_choices)
 
 
 def parse_answer_choices(answer_choices_text: str) -> list[str]:
@@ -192,6 +228,7 @@ def prepare_metadata_editor_frame(metadata_rows: list[dict[str, Any]]) -> pd.Dat
                 "variable": row.get("variable", ""),
                 "question_label": row.get("question_label", ""),
                 "detected_type": row.get("detected_type", "Single-Select"),
+                "answer_choice_count": len(row.get("answer_choices_list", [])),
                 "answer_choices": row.get("answer_choices", ""),
             }
         )
@@ -213,6 +250,7 @@ def sanitize_metadata_editor(editor_df: pd.DataFrame) -> list[dict[str, Any]]:
                 "variable": normalize_text(row.get("variable")),
                 "question_label": normalize_text(row.get("question_label")),
                 "detected_type": detected_type,
+                "answer_choice_count": len(parse_answer_choices(answer_choices_text)),
                 "answer_choices": answer_choices_text,
                 "answer_choices_list": parse_answer_choices(answer_choices_text),
                 "include": detected_type != "Ignore",
@@ -246,6 +284,7 @@ def merge_metadata_editor_with_source(
             and edited_answer_text == previous_answer_text
         ):
             recalculated_choices = extract_answer_choices(source_df[variable], new_type)
+            row["answer_choice_count"] = len(recalculated_choices)
             row["answer_choices"] = serialize_answer_choices(recalculated_choices)
             row["answer_choices_list"] = recalculated_choices
 

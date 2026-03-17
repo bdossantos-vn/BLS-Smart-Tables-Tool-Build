@@ -702,6 +702,7 @@ def render_step_3() -> None:
         use_container_width=True,
         num_rows="fixed",
         hide_index=True,
+        height=620,
         column_config=get_metadata_editor_columns(),
     )
 
