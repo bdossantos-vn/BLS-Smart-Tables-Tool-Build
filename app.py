@@ -19,10 +19,11 @@ from src.custom_vars import (
     validate_custom_variable_name,
 )
 from src.mapping import (
-    build_default_scale_mapping,
+    build_scale_mapping_editor_frame,
+    ensure_scale_mappings,
     flip_scale_mapping,
     identify_scale_questions,
-    update_scale_mapping_from_editor,
+    save_scale_mapping_editor,
 )
 from src.metadata import (
     build_metadata_change_log_entry,
@@ -765,7 +766,6 @@ def render_step_4() -> None:
     """Render the scale mapping and polarity page."""
     st.header("3. Scale Mapping & Polarity")
     cleaned_df = st.session_state.cleaned_df
-    question_labels = st.session_state.question_labels
     question_metadata = st.session_state.question_metadata
 
     if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty:
@@ -778,52 +778,67 @@ def render_step_4() -> None:
         return
 
     st.write(
-        "Map each response option to an ordered numeric bucket. Use `Flip Polarity` when higher "
-        "numbers should represent more negative sentiment."
+        "Review scale questions in one table. Each row is a scale question and each column is a "
+        "scale point in order from 1 to n."
+    )
+    st.session_state.scale_mappings = ensure_scale_mappings(
+        scale_questions,
+        cleaned_df,
+        st.session_state.scale_mappings,
     )
 
-    for question in scale_questions:
-        variable = question["variable"]
-        label = question["question_label"]
-        st.markdown(f"### {variable}")
-        st.caption(label)
+    editor_df = build_scale_mapping_editor_frame(
+        scale_questions,
+        st.session_state.scale_mappings,
+    )
 
-        if variable not in st.session_state.scale_mappings:
-            st.session_state.scale_mappings[variable] = build_default_scale_mapping(cleaned_df[variable])
-
-        mapping_df = pd.DataFrame(st.session_state.scale_mappings[variable]["rows"])
-        editor_key = f"scale_editor_{variable}"
-        edited = st.data_editor(
-            mapping_df,
-            key=editor_key,
-            use_container_width=True,
-            num_rows="fixed",
-            hide_index=True,
-            column_config={
-                "response_value": st.column_config.TextColumn("Response Value", disabled=True),
-                "bucket": st.column_config.NumberColumn("Bucket", min_value=1, step=1),
-                "top_box_eligible": st.column_config.CheckboxColumn("Top/Bottom Box Eligible"),
-            },
+    point_columns = [column for column in editor_df.columns if column.startswith("scale_point_")]
+    column_config = {
+        "variable": st.column_config.TextColumn("Variable Name", disabled=True, width=180),
+        "question_label": st.column_config.TextColumn("Question Text", disabled=True, width=420),
+        "polarity": st.column_config.SelectboxColumn(
+            "Polarity",
+            options=["standard", "flipped"],
+            width=120,
+            help="Use `flipped` when the lowest score should become the highest score.",
+        ),
+    }
+    for index, column in enumerate(point_columns, start=1):
+        column_config[column] = st.column_config.TextColumn(
+            f"Scale Point {index}",
+            width=220,
         )
 
-        btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 2])
-        with btn_col1:
-            if st.button("Save Mapping", key=f"save_mapping_{variable}", use_container_width=True):
-                st.session_state.scale_mappings[variable] = update_scale_mapping_from_editor(
-                    st.session_state.scale_mappings[variable],
-                    edited,
-                )
-                st.success(f"Saved mapping for {variable}.")
-        with btn_col2:
-            if st.button("Flip Polarity", key=f"flip_mapping_{variable}", use_container_width=True):
-                st.session_state.scale_mappings[variable] = flip_scale_mapping(
-                    st.session_state.scale_mappings[variable]
-                )
-                st.success(f"Polarity flipped for {variable}.")
-                st.rerun()
-        with btn_col3:
-            direction = st.session_state.scale_mappings[variable]["polarity"]
-            st.caption(f"Current polarity: `{direction}`")
+    edited = st.data_editor(
+        editor_df,
+        key="scale_mapping_grid",
+        use_container_width=False,
+        num_rows="fixed",
+        hide_index=True,
+        height=560,
+        column_config=column_config,
+    )
+
+    action_left, action_right = st.columns(2)
+    with action_left:
+        if st.button("Save Mappings", type="primary", use_container_width=True):
+            st.session_state.scale_mappings = save_scale_mapping_editor(edited)
+            st.success("Scale mappings saved.")
+
+    with action_right:
+        variable_options = edited["variable"].tolist()
+        selected_variable = st.selectbox(
+            "Flip polarity for",
+            options=variable_options,
+            key="scale_flip_variable",
+            label_visibility="collapsed",
+        )
+        if st.button("Flip Selected Polarity", use_container_width=True):
+            st.session_state.scale_mappings[selected_variable] = flip_scale_mapping(
+                st.session_state.scale_mappings[selected_variable]
+            )
+            st.success(f"Polarity flipped for {selected_variable}.")
+            st.rerun()
 
 
 def render_step_5() -> None:
