@@ -717,11 +717,19 @@ def render_step_3() -> None:
             previous = {row["variable"]: row for row in st.session_state.question_metadata}
             for row in sanitized:
                 variable = row["variable"]
-                old_type = previous.get(variable, {}).get("detected_type")
+                previous_row = previous.get(variable, {})
+                old_type = previous_row.get("detected_type")
                 new_type = row["detected_type"]
                 if old_type != new_type:
                     st.session_state.metadata_change_log.append(
                         build_metadata_change_log_entry(variable, old_type, new_type)
+                    )
+                old_choices = normalize_text(previous_row.get("answer_choices", ""))
+                new_choices = normalize_text(row.get("answer_choices", ""))
+                if old_choices != new_choices:
+                    timestamp = format_timestamp()
+                    st.session_state.metadata_change_log.append(
+                        f"[{timestamp}] {variable}: Answer choices updated"
                     )
             st.session_state.question_metadata = sanitized
             st.success("Question audit changes saved.")

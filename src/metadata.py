@@ -40,6 +40,9 @@ SCALE_LABEL_HINTS = [
     "feel about",
     "how interested",
     "brand affinity",
+    "brand sentiment",
+    "sentiment",
+    "interest",
     "affinity",
     "relationship with",
 ]
@@ -63,10 +66,15 @@ SCALE_VALUE_HINTS = [
     "much worse",
     "much better",
     "somewhat worse",
-    "very interested",
-    "somewhat interested",
-    "not very interested",
-    "not at all interested",
+    "dedicated harry potter fan",
+    "new to the series but interested",
+    "nostalgic toward it",
+    "not a fan",
+    "about the same",
+    "somewhat worse",
+    "much worse",
+    "somewhat better",
+    "much better",
 ]
 
 AGE_PATTERNS = [
@@ -87,6 +95,12 @@ AGE_PATTERNS = [
 
 SCALE_ORDER_PATTERNS = [
     ("love it", 0),
+    ("very unlikely", 4),
+    ("not at all interested", 4),
+    ("not very interested", 3),
+    ("strongly disagree", 4),
+    ("dislike it", 3),
+    ("hate it", 4),
     ("very likely", 0),
     ("very interested", 0),
     ("strongly agree", 0),
@@ -101,14 +115,8 @@ SCALE_ORDER_PATTERNS = [
     ("neither agree nor disagree", 2),
     ("somewhat worse", 3),
     ("not likely", 3),
-    ("not very interested", 3),
     ("somewhat disagree", 3),
-    ("dislike it", 3),
-    ("much worse", 3),
-    ("very unlikely", 4),
-    ("not at all interested", 4),
-    ("strongly disagree", 4),
-    ("hate it", 4),
+    ("much worse", 4),
 ]
 
 HP_INTEREST_ORDER_PATTERNS = [
@@ -119,6 +127,43 @@ HP_INTEREST_ORDER_PATTERNS = [
     ("i'm not a fan", 3),
     ("i’m not a fan", 3),
 ]
+
+EXCLUSIVE_RESPONSE_PATTERNS = [
+    "none of the above",
+    "none",
+    "other",
+    "prefer not to say",
+    "don't know",
+    "dont know",
+    "unsure",
+    "not applicable",
+    "n/a",
+]
+
+
+def _count_pattern_hits(values: list[str], patterns: list[str]) -> int:
+    """Count how many values match any pattern in a hint list."""
+    return sum(any(pattern in value for pattern in patterns) for value in values)
+
+
+def _count_scored_scale_hits(choices: list[str]) -> int:
+    """Count how many choices match one of the known ordered scale patterns."""
+    hits = 0
+    for choice in choices:
+        normalized = choice.lower()
+        if any(pattern in normalized for pattern, _ in SCALE_ORDER_PATTERNS):
+            hits += 1
+    return hits
+
+
+def _count_hp_interest_hits(choices: list[str]) -> int:
+    """Count how many choices match the Harry Potter fandom ordering patterns."""
+    hits = 0
+    for choice in choices:
+        normalized = choice.lower()
+        if any(pattern in normalized for pattern, _ in HP_INTEREST_ORDER_PATTERNS):
+            hits += 1
+    return hits
 
 
 def _is_multi_select(series: pd.Series) -> bool:
@@ -140,12 +185,19 @@ def _is_scale(series: pd.Series, question_label: str = "") -> bool:
     if any(token in label_lower for token in SCALE_LABEL_HINTS):
         if len(unique_values) <= 7:
             return True
-    pattern_hits = sum(any(pattern in value for pattern in LIKERT_PATTERNS) for value in unique_values)
+    pattern_hits = _count_pattern_hits(unique_values, LIKERT_PATTERNS)
     if pattern_hits >= 2:
         return True
-    value_hint_hits = sum(any(pattern in value for pattern in SCALE_VALUE_HINTS) for value in unique_values)
+    value_hint_hits = _count_pattern_hits(unique_values, SCALE_VALUE_HINTS)
     if value_hint_hits >= 2 and len(unique_values) <= 7:
         return True
+    scored_scale_hits = _count_scored_scale_hits(unique_values)
+    if scored_scale_hits >= max(3, len(unique_values) - 1) and len(unique_values) <= 7:
+        return True
+    if len(unique_values) in {4, 5}:
+        ordered_candidates = _sort_scale_choices(unique_values)
+        if _count_scored_scale_hits(ordered_candidates) >= 3:
+            return True
     numeric_like = pd.to_numeric(pd.Series(unique_values), errors="coerce")
     if numeric_like.notna().all() and len(unique_values) <= 10:
         return True
@@ -274,6 +326,19 @@ def _sort_pattern_list(choices: list[str], ordered_patterns: list[tuple[str, int
     return ordered
 
 
+def _anchor_exclusive_choices_last(choices: list[str]) -> list[str]:
+    """Move exclusive response options like none/other/prefer not to say to the end."""
+    regular_choices: list[str] = []
+    exclusive_choices: list[str] = []
+    for choice in choices:
+        normalized = choice.lower()
+        if any(pattern in normalized for pattern in EXCLUSIVE_RESPONSE_PATTERNS):
+            exclusive_choices.append(choice)
+        else:
+            regular_choices.append(choice)
+    return regular_choices + exclusive_choices
+
+
 def sort_answer_choices(answer_choices: list[str], question_type: str, question_label: str = "") -> list[str]:
     """Apply practical default ordering for common answer-choice patterns."""
     if not answer_choices:
@@ -281,12 +346,15 @@ def sort_answer_choices(answer_choices: list[str], question_type: str, question_
 
     label_lower = question_label.lower()
     if "how old" in label_lower or label_lower.strip() == "age":
-        return _sort_age_choices(answer_choices)
-    if "relationship with the harry potter series" in label_lower:
-        return _sort_pattern_list(answer_choices, HP_INTEREST_ORDER_PATTERNS)
+        return _anchor_exclusive_choices_last(_sort_age_choices(answer_choices))
+    if (
+        "relationship with the harry potter series" in label_lower
+        or _count_hp_interest_hits(answer_choices) >= 2
+    ):
+        return _anchor_exclusive_choices_last(_sort_pattern_list(answer_choices, HP_INTEREST_ORDER_PATTERNS))
     if question_type == "Scale / Likert":
-        return _sort_scale_choices(answer_choices)
-    return answer_choices
+        return _anchor_exclusive_choices_last(_sort_scale_choices(answer_choices))
+    return _anchor_exclusive_choices_last(answer_choices)
 
 
 def extract_answer_choices(series: pd.Series, question_type: str, question_label: str = "") -> list[str]:
