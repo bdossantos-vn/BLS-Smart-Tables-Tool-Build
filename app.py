@@ -343,11 +343,6 @@ def _apply_intake_result(result) -> None:
         st.session_state.blacklist_catalog,
         st.session_state.get("restored_columns", []),
     )
-    st.session_state.comparison_selector = _resolve_default_comparison(
-        st.session_state.comparison_options,
-        result.cell_column,
-        result.cell_column,
-    ) or "None / Total only"
 
 
 def render_step_1() -> None:
