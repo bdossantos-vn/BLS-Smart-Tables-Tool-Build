@@ -463,6 +463,47 @@ def render_step_1() -> None:
                     st.success(f"Comparison variable updated to `{selected_comparison}`.")
                 st.rerun()
 
+    if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty and st.session_state.get("comparison_configured"):
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Metadata rows removed", st.session_state.get("metadata_rows_removed", 0))
+        col2.metric("Columns removed", st.session_state.get("removed_column_count", 0))
+        col3.metric(
+            "Rows removed for blank comparison value",
+            st.session_state.get("comparison_rows_removed", 0),
+        )
+        col4.metric("Columns retained", len(cleaned_df.columns))
+
+        st.subheader("Intake Summary")
+        summary_left, summary_right = st.columns([1.2, 1])
+        with summary_left:
+            st.dataframe(
+                _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col),
+                use_container_width=True,
+                hide_index=True,
+            )
+        with summary_right:
+            st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
+            st.write(f"Columns Included: `{len(cleaned_df.columns)}`")
+            st.write(f"Columns Excluded: `{st.session_state.removed_column_count}`")
+            current_comparison = st.session_state.comparison_col or "Total only"
+            st.write(f"Comparison Variable: `{current_comparison}`")
+
+        if st.session_state.comparison_col and len(st.session_state.comparison_group_order) > 1:
+            st.subheader("Comparison Group Order")
+            st.caption("Use the move buttons to control the display order for comparison groups.")
+            ordered_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
+            for row in ordered_summary.to_dict(orient="records"):
+                group_name = row["Cell"]
+                row_cols = st.columns([4, 1, 0.8, 0.8])
+                row_cols[0].write(group_name)
+                row_cols[1].write(int(row["N"]))
+                if row_cols[2].button("↑", key=f"up_{group_name}", use_container_width=True):
+                    _move_comparison_group(group_name, "up")
+                    st.rerun()
+                if row_cols[3].button("↓", key=f"down_{group_name}", use_container_width=True):
+                    _move_comparison_group(group_name, "down")
+                    st.rerun()
+
         with st.expander("Columns Included", expanded=True):
             available_columns = list(survey_df.columns)
             if st.session_state.included_editor is None:
@@ -525,47 +566,6 @@ def render_step_1() -> None:
                     else:
                         st.success("Included columns reset to all available columns.")
                         st.rerun()
-
-    if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty and st.session_state.get("comparison_configured"):
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Metadata rows removed", st.session_state.get("metadata_rows_removed", 0))
-        col2.metric("Columns removed", st.session_state.get("removed_column_count", 0))
-        col3.metric(
-            "Rows removed for blank comparison value",
-            st.session_state.get("comparison_rows_removed", 0),
-        )
-        col4.metric("Columns retained", len(cleaned_df.columns))
-
-        st.subheader("Intake Summary")
-        summary_left, summary_right = st.columns([1.2, 1])
-        with summary_left:
-            st.dataframe(
-                _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col),
-                use_container_width=True,
-                hide_index=True,
-            )
-        with summary_right:
-            st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
-            st.write(f"Columns Included: `{len(cleaned_df.columns)}`")
-            st.write(f"Columns Excluded: `{st.session_state.removed_column_count}`")
-            current_comparison = st.session_state.comparison_col or "Total only"
-            st.write(f"Comparison Variable: `{current_comparison}`")
-
-        if st.session_state.comparison_col and len(st.session_state.comparison_group_order) > 1:
-            st.subheader("Comparison Group Order")
-            st.caption("Use the move buttons to control the display order for comparison groups.")
-            ordered_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
-            for row in ordered_summary.to_dict(orient="records"):
-                group_name = row["Cell"]
-                row_cols = st.columns([4, 1, 0.8, 0.8])
-                row_cols[0].write(group_name)
-                row_cols[1].write(int(row["N"]))
-                if row_cols[2].button("↑", key=f"up_{group_name}", use_container_width=True):
-                    _move_comparison_group(group_name, "up")
-                    st.rerun()
-                if row_cols[3].button("↓", key=f"down_{group_name}", use_container_width=True):
-                    _move_comparison_group(group_name, "down")
-                    st.rerun()
 
         with st.expander("Columns Excluded", expanded=True):
             if st.session_state.blacklist_catalog:
