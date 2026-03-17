@@ -29,6 +29,7 @@ from src.metadata import (
     build_question_metadata,
     get_metadata_editor_columns,
     merge_metadata_editor_with_source,
+    parse_answer_choices,
     prepare_metadata_editor_frame,
     restore_metadata_defaults,
     sanitize_metadata_editor,
@@ -74,6 +75,16 @@ NAV_STEPS = [
 def _append_log(message: str) -> None:
     """Append a timestamped log message to the session log."""
     st.session_state.ingestion_log.append(f"[{format_timestamp()}] {message}")
+
+
+def _summarize_choice_change(old_choices: str, new_choices: str, max_len: int = 140) -> str:
+    """Build a compact before/after summary for answer-choice edits."""
+    old_display = old_choices or "(blank)"
+    new_display = new_choices or "(blank)"
+    summary = f'"{old_display}" -> "{new_display}"'
+    if len(summary) <= max_len:
+        return summary
+    return f"{len(parse_answer_choices(old_choices))} choice(s) -> {len(parse_answer_choices(new_choices))} choice(s)"
 
 
 def render_sidebar() -> str:
@@ -726,7 +737,8 @@ def render_step_3() -> None:
                 if old_choices != new_choices:
                     timestamp = format_timestamp()
                     st.session_state.metadata_change_log.append(
-                        f"[{timestamp}] {variable}: Answer choices updated"
+                        f"[{timestamp}] {variable}: Answer choices changed "
+                        f"{_summarize_choice_change(old_choices, new_choices)}"
                     )
             st.session_state.question_metadata = sanitized
             st.success("Question audit changes saved.")
