@@ -464,20 +464,14 @@ def render_step_1() -> None:
             ordered_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
             for row in ordered_summary.to_dict(orient="records"):
                 group_name = row["Cell"]
-                row_cols = st.columns([3, 1, 1, 1, 1, 1])
+                row_cols = st.columns([4, 1, 0.8, 0.8])
                 row_cols[0].write(group_name)
                 row_cols[1].write(int(row["N"]))
-                if row_cols[2].button("⇑", key=f"top_{group_name}", use_container_width=True):
-                    _move_comparison_group(group_name, "top")
-                    st.rerun()
-                if row_cols[3].button("↑", key=f"up_{group_name}", use_container_width=True):
+                if row_cols[2].button("↑", key=f"up_{group_name}", use_container_width=True):
                     _move_comparison_group(group_name, "up")
                     st.rerun()
-                if row_cols[4].button("↓", key=f"down_{group_name}", use_container_width=True):
+                if row_cols[3].button("↓", key=f"down_{group_name}", use_container_width=True):
                     _move_comparison_group(group_name, "down")
-                    st.rerun()
-                if row_cols[5].button("⇓", key=f"bottom_{group_name}", use_container_width=True):
-                    _move_comparison_group(group_name, "bottom")
                     st.rerun()
 
         with st.expander("Columns Excluded", expanded=True):
