@@ -403,8 +403,7 @@ def render_step_1() -> None:
     """Render the data intake page."""
     st.header("1. Data Intake")
     st.write(
-        "Upload a Qualtrics Excel export. The app will preserve question labels, "
-        "remove metadata rows, drop configurable technical columns, and then let you choose a comparison variable."
+        "Upload your Excel file to get started."
     )
 
     upload = st.file_uploader(
