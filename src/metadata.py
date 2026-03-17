@@ -64,6 +64,47 @@ SCALE_VALUE_HINTS = [
     "much better",
 ]
 
+AGE_PATTERNS = [
+    ("under 18", 0),
+    ("18 - 24", 1),
+    ("18-24", 1),
+    ("25 - 34", 2),
+    ("25-34", 2),
+    ("35 - 44", 3),
+    ("35-44", 3),
+    ("45+", 4),
+    ("45 +", 4),
+    ("55+", 5),
+    ("55 +", 5),
+    ("65+", 6),
+    ("65 +", 6),
+]
+
+SCALE_ORDER_PATTERNS = [
+    ("love it", 0),
+    ("very likely", 0),
+    ("very interested", 0),
+    ("strongly agree", 0),
+    ("much better", 0),
+    ("somewhat likely", 1),
+    ("somewhat interested", 1),
+    ("somewhat agree", 1),
+    ("somewhat better", 1),
+    ("like it", 1),
+    ("about the same", 2),
+    ("neutral", 2),
+    ("neither agree nor disagree", 2),
+    ("not likely", 3),
+    ("not very interested", 3),
+    ("somewhat disagree", 3),
+    ("dislike it", 3),
+    ("much worse", 3),
+    ("very unlikely", 4),
+    ("not at all interested", 4),
+    ("strongly disagree", 4),
+    ("hate it", 4),
+]
+
 
 def _is_multi_select(series: pd.Series) -> bool:
     values = series.dropna().astype(str).str.strip()
@@ -143,7 +184,64 @@ def get_metadata_editor_columns() -> dict[str, Any]:
     }
 
 
-def extract_answer_choices(series: pd.Series, question_type: str) -> list[str]:
+def _sort_age_choices(choices: list[str]) -> list[str]:
+    """Sort common age bucket labels into ascending age order."""
+    scored: list[tuple[int, str]] = []
+    unmatched: list[str] = []
+    for choice in choices:
+        normalized = choice.lower()
+        matched_score = None
+        for pattern, score in AGE_PATTERNS:
+            if pattern in normalized:
+                matched_score = score
+                break
+        if matched_score is None:
+            unmatched.append(choice)
+        else:
+            scored.append((matched_score, choice))
+    if not scored:
+        return choices
+    ordered = [choice for _, choice in sorted(scored, key=lambda item: item[0])]
+    ordered.extend(unmatched)
+    return ordered
+
+
+def _sort_scale_choices(choices: list[str]) -> list[str]:
+    """Sort common scale labels from most positive to most negative."""
+    scored: list[tuple[int, int, str]] = []
+    unmatched: list[tuple[int, str]] = []
+    for index, choice in enumerate(choices):
+        normalized = choice.lower()
+        matched_score = None
+        for pattern, score in SCALE_ORDER_PATTERNS:
+            if pattern in normalized:
+                matched_score = score
+                break
+        if matched_score is None:
+            unmatched.append((index, choice))
+        else:
+            scored.append((matched_score, index, choice))
+    if not scored:
+        return choices
+    ordered = [choice for _, _, choice in sorted(scored, key=lambda item: (item[0], item[1]))]
+    ordered.extend(choice for _, choice in unmatched)
+    return ordered
+
+
+def sort_answer_choices(answer_choices: list[str], question_type: str, question_label: str = "") -> list[str]:
+    """Apply practical default ordering for common answer-choice patterns."""
+    if not answer_choices:
+        return []
+
+    label_lower = question_label.lower()
+    if "how old" in label_lower or label_lower.strip() == "age":
+        return _sort_age_choices(answer_choices)
+    if question_type == "Scale / Likert":
+        return _sort_scale_choices(answer_choices)
+    return answer_choices
+
+
+def extract_answer_choices(series: pd.Series, question_type: str, question_label: str = "") -> list[str]:
     """Extract unique answer choices in display order for supported question types."""
     values = [normalize_text(value) for value in series.dropna().tolist()]
     if not values:
@@ -156,7 +254,7 @@ def extract_answer_choices(series: pd.Series, question_type: str) -> list[str]:
             for part in parts:
                 if part not in choices:
                     choices.append(part)
-        return choices
+        return sort_answer_choices(choices, question_type, question_label)
 
     if question_type in {"Open-End Text", "Numeric Data", "Ignore"}:
         return []
@@ -165,12 +263,12 @@ def extract_answer_choices(series: pd.Series, question_type: str) -> list[str]:
     for value in values:
         if value and value not in choices:
             choices.append(value)
-    return choices
+    return sort_answer_choices(choices, question_type, question_label)
 
 
 def serialize_answer_choices(answer_choices: list[str]) -> str:
     """Serialize answer choices into an editable display string."""
-    return "\n".join(answer_choices)
+    return " | ".join(answer_choices)
 
 
 def parse_answer_choices(answer_choices_text: str) -> list[str]:
@@ -204,7 +302,7 @@ def build_question_metadata(
     metadata: list[dict[str, Any]] = []
     for column in df.columns:
         question_type = detected[column]
-        answer_choices = extract_answer_choices(df[column], question_type)
+        answer_choices = extract_answer_choices(df[column], question_type, question_labels.get(column, column))
         metadata.append(
             {
                 "variable": column,
@@ -283,7 +381,11 @@ def merge_metadata_editor_with_source(
             and old_type != new_type
             and edited_answer_text == previous_answer_text
         ):
-            recalculated_choices = extract_answer_choices(source_df[variable], new_type)
+            recalculated_choices = extract_answer_choices(
+                source_df[variable],
+                new_type,
+                row.get("question_label", variable),
+            )
             row["answer_choice_count"] = len(recalculated_choices)
             row["answer_choices"] = serialize_answer_choices(recalculated_choices)
             row["answer_choices_list"] = recalculated_choices
