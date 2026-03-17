@@ -62,6 +62,11 @@ SCALE_VALUE_HINTS = [
     "about the same",
     "much worse",
     "much better",
+    "somewhat worse",
+    "very interested",
+    "somewhat interested",
+    "not very interested",
+    "not at all interested",
 ]
 
 AGE_PATTERNS = [
@@ -94,6 +99,7 @@ SCALE_ORDER_PATTERNS = [
     ("about the same", 2),
     ("neutral", 2),
     ("neither agree nor disagree", 2),
+    ("somewhat worse", 3),
     ("not likely", 3),
     ("not very interested", 3),
     ("somewhat disagree", 3),
@@ -103,6 +109,15 @@ SCALE_ORDER_PATTERNS = [
     ("not at all interested", 4),
     ("strongly disagree", 4),
     ("hate it", 4),
+]
+
+HP_INTEREST_ORDER_PATTERNS = [
+    ("i am a dedicated harry potter fan", 0),
+    ("i enjoyed it in the past and feel nostalgic toward it", 1),
+    ("i'm new to the series but interested", 2),
+    ("i’m new to the series but interested", 2),
+    ("i'm not a fan", 3),
+    ("i’m not a fan", 3),
 ]
 
 
@@ -172,10 +187,19 @@ def get_metadata_editor_columns() -> dict[str, Any]:
     import streamlit as st
 
     return {
-        "variable": st.column_config.TextColumn("Variable Name", disabled=True),
-        "question_label": st.column_config.TextColumn("Question Text", disabled=True),
-        "detected_type": st.column_config.SelectboxColumn("Question Type", options=QUESTION_TYPES, required=True),
-        "answer_choice_count": st.column_config.NumberColumn("Answer Choices Count", disabled=True),
+        "variable": st.column_config.TextColumn("Variable Name", disabled=True, width="small"),
+        "question_label": st.column_config.TextColumn("Question Text", disabled=True, width="medium"),
+        "detected_type": st.column_config.SelectboxColumn(
+            "Question Type",
+            options=QUESTION_TYPES,
+            required=True,
+            width="small",
+        ),
+        "answer_choice_count": st.column_config.NumberColumn(
+            "Answer Choices Count",
+            disabled=True,
+            width="small",
+        ),
         "answer_choices": st.column_config.TextColumn(
             "Answer Choices",
             width="large",
@@ -228,6 +252,28 @@ def _sort_scale_choices(choices: list[str]) -> list[str]:
     return ordered
 
 
+def _sort_pattern_list(choices: list[str], ordered_patterns: list[tuple[str, int]]) -> list[str]:
+    """Sort choices by a custom ordered pattern list, preserving unmatched items afterward."""
+    scored: list[tuple[int, int, str]] = []
+    unmatched: list[tuple[int, str]] = []
+    for index, choice in enumerate(choices):
+        normalized = choice.lower()
+        matched_score = None
+        for pattern, score in ordered_patterns:
+            if pattern in normalized:
+                matched_score = score
+                break
+        if matched_score is None:
+            unmatched.append((index, choice))
+        else:
+            scored.append((matched_score, index, choice))
+    if not scored:
+        return choices
+    ordered = [choice for _, _, choice in sorted(scored, key=lambda item: (item[0], item[1]))]
+    ordered.extend(choice for _, choice in unmatched)
+    return ordered
+
+
 def sort_answer_choices(answer_choices: list[str], question_type: str, question_label: str = "") -> list[str]:
     """Apply practical default ordering for common answer-choice patterns."""
     if not answer_choices:
@@ -236,6 +282,8 @@ def sort_answer_choices(answer_choices: list[str], question_type: str, question_
     label_lower = question_label.lower()
     if "how old" in label_lower or label_lower.strip() == "age":
         return _sort_age_choices(answer_choices)
+    if "relationship with the harry potter series" in label_lower:
+        return _sort_pattern_list(answer_choices, HP_INTEREST_ORDER_PATTERNS)
     if question_type == "Scale / Likert":
         return _sort_scale_choices(answer_choices)
     return answer_choices
