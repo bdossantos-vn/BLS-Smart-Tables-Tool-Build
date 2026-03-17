@@ -187,22 +187,22 @@ def get_metadata_editor_columns() -> dict[str, Any]:
     import streamlit as st
 
     return {
-        "variable": st.column_config.TextColumn("Variable Name", disabled=True, width="medium"),
-        "question_label": st.column_config.TextColumn("Question Text", disabled=True, width="large"),
+        "variable": st.column_config.TextColumn("Variable Name", disabled=True, width=220),
+        "question_label": st.column_config.TextColumn("Question Text", disabled=True, width=620),
         "detected_type": st.column_config.SelectboxColumn(
             "Question Type",
             options=QUESTION_TYPES,
             required=True,
-            width="medium",
+            width=170,
         ),
         "answer_choice_count": st.column_config.NumberColumn(
             "Answer Choices Count",
             disabled=True,
-            width="medium",
+            width=190,
         ),
         "answer_choices": st.column_config.TextColumn(
             "Answer Choices",
-            width="large",
+            width=1400,
             help="Edit answer choices using a new line or `|` between labels for clear separation.",
         ),
     }

@@ -699,7 +699,7 @@ def render_step_3() -> None:
     edited = st.data_editor(
         editor_df,
         key="question_audit_grid",
-        use_container_width=True,
+        use_container_width=False,
         num_rows="fixed",
         hide_index=True,
         height=620,
