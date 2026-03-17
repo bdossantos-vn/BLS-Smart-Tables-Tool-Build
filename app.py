@@ -481,14 +481,12 @@ def render_step_1() -> None:
                 st.rerun()
 
     if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty and st.session_state.get("comparison_configured"):
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2 = st.columns(2)
         col1.metric("Metadata rows removed", st.session_state.get("metadata_rows_removed", 0))
-        col2.metric("Columns removed", _current_excluded_count())
-        col3.metric(
+        col2.metric(
             "Rows removed for blank comparison value",
             st.session_state.get("comparison_rows_removed", 0),
         )
-        col4.metric("Columns retained", _current_included_count())
 
         st.subheader("Intake Summary")
         summary_left, summary_right = st.columns([1.2, 1])
