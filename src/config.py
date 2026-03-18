@@ -125,6 +125,7 @@ def build_default_filter_row() -> dict[str, str]:
         "variable": "",
         "operator": "",
         "values": "",
+        "applies_to": [],
     }
 
 
