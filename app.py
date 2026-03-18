@@ -18,6 +18,7 @@ from src.custom_vars import (
     build_complex_variable_record,
     build_question_lookup,
     build_simple_variable_record,
+    compute_simple_variable_counts,
     list_custom_variable_summaries,
     CONDITION_OPERATORS,
     MATCH_LOGIC_OPTIONS,
@@ -953,6 +954,7 @@ def render_step_5() -> None:
             "This is the simpler one-question builder. Use `All others` if you want a catch-all final option."
         )
         source_choices = question_lookup.get(source_variable, {}).get("answer_choices_list", [])
+        simple_bucket_preview: list[dict[str, Any]] = []
         for bucket_index in range(int(bucket_count)):
             st.markdown(f"### Choice Option {bucket_index + 1}")
             bucket_label = st.text_input(
@@ -971,13 +973,33 @@ def render_step_5() -> None:
                     key=f"custom_bucket_simple_choices_{bucket_index}",
                 )
 
-            bucket_definitions.append(
-                {
-                    "label": bucket_label,
-                    "catch_all": bucket_catch_all,
-                    "choices": selected_choices,
-                }
+            bucket_record = {
+                "label": bucket_label,
+                "catch_all": bucket_catch_all,
+                "choices": selected_choices,
+            }
+            bucket_definitions.append(bucket_record)
+            simple_bucket_preview.append(bucket_record)
+
+        if isinstance(st.session_state.cleaned_df, pd.DataFrame) and not st.session_state.cleaned_df.empty:
+            bucket_counts, unmatched_count = compute_simple_variable_counts(
+                st.session_state.cleaned_df,
+                source_variable,
+                simple_bucket_preview,
             )
+            st.subheader("Preview Counts")
+            preview_rows = []
+            for index, bucket in enumerate(simple_bucket_preview):
+                preview_rows.append(
+                    {
+                        "Option": bucket.get("label") or f"Choice Option {index + 1}",
+                        "N": bucket_counts[index],
+                    }
+                )
+            preview_rows.append({"Option": "Unmatched", "N": unmatched_count})
+            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+
+            bucket_definitions = simple_bucket_preview
     else:
         st.caption(
             "Complex Variable works more like Qualtrics filter logic. Each choice option gets its own "

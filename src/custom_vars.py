@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+import re
+
+import pandas as pd
 
 from src.utils import normalize_text
 
@@ -228,3 +231,52 @@ def list_custom_variable_summaries(existing: list[dict[str, Any]]) -> list[dict[
         }
         for item in existing
     ]
+
+
+def _value_matches_selected_choices(value: object, selected_choices: list[str]) -> bool:
+    """Return whether a respondent value matches any selected choice."""
+    normalized_value = normalize_text(value)
+    if not normalized_value:
+        return False
+    normalized_choices = {normalize_text(choice) for choice in selected_choices if normalize_text(choice)}
+    if not normalized_choices:
+        return False
+    if normalized_value in normalized_choices:
+        return True
+
+    parts = {
+        normalize_text(part)
+        for part in re.split(r"[;,]", normalized_value)
+        if normalize_text(part)
+    }
+    return bool(parts & normalized_choices)
+
+
+def compute_simple_variable_counts(
+    df: pd.DataFrame,
+    source_variable: str,
+    buckets: list[dict[str, Any]],
+) -> tuple[list[int], int]:
+    """Compute top-down bucket counts and unmatched count for a simple variable."""
+    if source_variable not in df.columns:
+        return [0 for _ in buckets], 0
+
+    remaining_mask = pd.Series(True, index=df.index)
+    bucket_counts: list[int] = []
+
+    for bucket in buckets:
+        if bucket.get("catch_all"):
+            count = int(remaining_mask.sum())
+            bucket_counts.append(count)
+            remaining_mask = pd.Series(False, index=df.index)
+            continue
+
+        selected_choices = bucket.get("choices", [])
+        matched_mask = df[source_variable].map(
+            lambda value: _value_matches_selected_choices(value, selected_choices)
+        )
+        bucket_mask = remaining_mask & matched_mask.fillna(False)
+        bucket_counts.append(int(bucket_mask.sum()))
+        remaining_mask = remaining_mask & ~bucket_mask
+
+    return bucket_counts, int(remaining_mask.sum())
