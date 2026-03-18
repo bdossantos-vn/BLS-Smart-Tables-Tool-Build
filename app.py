@@ -14,9 +14,16 @@ from src.config import (
     validate_analysis_config,
 )
 from src.custom_vars import (
-    add_custom_variable_stub,
+    BUILDER_TYPES,
+    build_bucketed_variable_record,
+    build_boolean_flag_record,
+    build_question_lookup,
+    build_simple_copy_record,
     list_custom_variable_summaries,
-    validate_custom_variable_name,
+    upsert_custom_variable,
+    validate_bucketed_variable_definition,
+    validate_boolean_flag_definition,
+    validate_simple_copy_definition,
 )
 from src.mapping import (
     build_scale_change_log,
@@ -849,29 +856,172 @@ def render_step_4() -> None:
 
 
 def render_step_5() -> None:
-    """Render the custom variable builder scaffold."""
+    """Render the custom variable builder."""
     st.header("4. Custom Variable Builder")
     st.write(
-        "V1 includes the structure and persistent state for custom variables. "
-        "Production transformation logic is intentionally deferred to a later version."
+        "Build custom variables by bucketing one question or combining multiple source questions "
+        "into grouped outputs."
     )
+    question_lookup = build_question_lookup(st.session_state.question_metadata)
+    question_options = list(question_lookup.keys())
+    question_labels = {
+        variable: f"{variable} - {question_lookup[variable]['question_label']}"
+        for variable in question_options
+    }
+    if not question_options:
+        st.info("No eligible source questions are available yet for custom variable building.")
+        return
+
+    builder_type = st.selectbox("Build Type", options=BUILDER_TYPES, key="custom_var_builder_type")
     name = st.text_input("Custom variable name", key="custom_var_name")
-    expression = st.text_area(
-        "Logic description",
-        key="custom_var_expression",
-        help="Describe the rule or formula you want this derived variable to apply later.",
-    )
-    if st.button("Save Custom Variable", use_container_width=False):
-        valid, message = validate_custom_variable_name(name, st.session_state.custom_variables)
-        if not valid:
-            st.error(message)
-        else:
-            st.session_state.custom_variables = add_custom_variable_stub(
+
+    if builder_type == "Simple Copy":
+        source_variable = st.selectbox(
+            "Source Question",
+            options=question_options,
+            format_func=lambda value: question_labels.get(value, value),
+            key="custom_var_simple_source",
+        )
+        if st.button("Save Custom Variable", use_container_width=False):
+            issues = validate_simple_copy_definition(
+                name,
                 st.session_state.custom_variables,
-                name=name,
-                expression=expression,
+                source_variable,
             )
-            st.success(f"Stored custom variable scaffold for `{name}`.")
+            if issues:
+                for issue in issues:
+                    st.error(issue)
+            else:
+                record = build_simple_copy_record(name, source_variable)
+                st.session_state.custom_variables = upsert_custom_variable(
+                    st.session_state.custom_variables,
+                    record,
+                )
+                st.success(f"Saved custom variable `{name}`.")
+                st.rerun()
+    elif builder_type == "Boolean Flag":
+        source_variables = st.multiselect(
+            "Source Questions",
+            options=question_options,
+            format_func=lambda value: question_labels.get(value, value),
+            key="custom_var_boolean_source_questions",
+            help="Select one or more source questions to use in this yes/no style variable.",
+        )
+        true_label, false_label = st.columns(2)
+        with true_label:
+            custom_true_label = st.text_input(
+                "True Label",
+                value="True",
+                key="custom_var_true_label",
+            )
+        with false_label:
+            custom_false_label = st.text_input(
+                "False Label",
+                value="False",
+                key="custom_var_false_label",
+            )
+
+        boolean_selections: dict[str, list[str]] = {}
+        st.caption("Choose the answer choices that should evaluate to the true label.")
+        for variable in source_variables:
+            choices = question_lookup.get(variable, {}).get("answer_choices_list", [])
+            boolean_selections[variable] = st.multiselect(
+                f"{question_labels.get(variable, variable)}",
+                options=choices,
+                key=f"custom_boolean_{variable}",
+            )
+
+        if st.button("Save Custom Variable", use_container_width=False):
+            issues = validate_boolean_flag_definition(
+                name,
+                st.session_state.custom_variables,
+                source_variables,
+                custom_true_label,
+                custom_false_label,
+                boolean_selections,
+            )
+            if issues:
+                for issue in issues:
+                    st.error(issue)
+            else:
+                record = build_boolean_flag_record(
+                    name=name,
+                    source_variables=source_variables,
+                    true_label=custom_true_label,
+                    false_label=custom_false_label,
+                    selections=boolean_selections,
+                )
+                st.session_state.custom_variables = upsert_custom_variable(
+                    st.session_state.custom_variables,
+                    record,
+                )
+                st.success(f"Saved custom variable `{name}`.")
+                st.rerun()
+    else:
+        source_variables = st.multiselect(
+            "Source Questions",
+            options=question_options,
+            format_func=lambda value: question_labels.get(value, value),
+            key="custom_var_source_questions",
+            help="Select one or more source questions to use in this custom variable.",
+        )
+        bucket_count = st.number_input(
+            "Number of Buckets",
+            min_value=2,
+            max_value=8,
+            value=int(st.session_state.get("custom_var_bucket_count", 2) or 2),
+            step=1,
+            key="custom_var_bucket_count",
+        )
+        st.caption(
+            "Selections within a bucket are treated as an OR across the chosen source questions."
+        )
+
+        bucket_definitions: list[dict[str, Any]] = []
+        for bucket_index in range(int(bucket_count)):
+            st.markdown(f"### Bucket {bucket_index + 1}")
+            bucket_label = st.text_input(
+                "Bucket Label",
+                key=f"custom_bucket_label_{bucket_index}",
+            )
+            selections: dict[str, list[str]] = {}
+            for variable in source_variables:
+                choices = question_lookup.get(variable, {}).get("answer_choices_list", [])
+                selected_choices = st.multiselect(
+                    f"{question_labels.get(variable, variable)}",
+                    options=choices,
+                    key=f"custom_bucket_{bucket_index}_{variable}",
+                )
+                selections[variable] = selected_choices
+            bucket_definitions.append(
+                {
+                    "label": bucket_label,
+                    "selections": selections,
+                }
+            )
+
+        if st.button("Save Custom Variable", use_container_width=False):
+            issues = validate_bucketed_variable_definition(
+                name,
+                st.session_state.custom_variables,
+                source_variables,
+                bucket_definitions,
+            )
+            if issues:
+                for issue in issues:
+                    st.error(issue)
+            else:
+                record = build_bucketed_variable_record(
+                    name=name,
+                    source_variables=source_variables,
+                    buckets=bucket_definitions,
+                )
+                st.session_state.custom_variables = upsert_custom_variable(
+                    st.session_state.custom_variables,
+                    record,
+                )
+                st.success(f"Saved custom variable `{name}`.")
+                st.rerun()
 
     summaries = list_custom_variable_summaries(st.session_state.custom_variables)
     if summaries:
