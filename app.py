@@ -182,9 +182,30 @@ def render_sidebar() -> str:
         step = st.radio("Workflow", NAV_STEPS, index=current_index)
         st.session_state.nav_step = step
         st.divider()
-        if st.button("Reset Project", type="secondary", use_container_width=True):
-            reset_project_state()
+        if "confirm_new_project" not in st.session_state:
+            st.session_state.confirm_new_project = False
+
+        if st.button("Start New Project", type="secondary", use_container_width=True):
+            st.session_state.confirm_new_project = True
             st.rerun()
+
+        if st.session_state.get("confirm_new_project"):
+            st.warning(
+                "Starting a new project will delete your current progress and data, and return you to step 1 to upload a new file. Continue"
+            )
+            confirm_left, confirm_right = st.columns(2)
+            with confirm_left:
+                if st.button("Yes", use_container_width=True, key="confirm_start_new_project_yes"):
+                    reset_project_state()
+                    st.session_state.nav_step = NAV_STEPS[0]
+                    st.session_state.confirm_new_project = False
+                    if "qualtrics_upload" in st.session_state:
+                        del st.session_state["qualtrics_upload"]
+                    st.rerun()
+            with confirm_right:
+                if st.button("No", use_container_width=True, key="confirm_start_new_project_no"):
+                    st.session_state.confirm_new_project = False
+                    st.rerun()
     return step
 
 
@@ -989,9 +1010,6 @@ def render_step_5() -> None:
             key="custom_var_simple_source",
             help="Use one existing question and create your own grouped buckets from it.",
         )
-        st.caption(
-            "This is the simpler one-question builder."
-        )
         source_choices = question_lookup.get(source_variable, {}).get("answer_choices_list", [])
         simple_bucket_preview: list[dict[str, Any]] = []
         for bucket_index in range(int(bucket_count)):
@@ -1055,10 +1073,6 @@ def render_step_5() -> None:
 
             bucket_definitions = simple_bucket_preview
     else:
-        st.caption(
-            "Complex Variable works more like Qualtrics filter logic. Each choice option gets its own "
-            "condition logic across one or more source questions."
-        )
         complex_bucket_preview: list[dict[str, Any]] = []
         for bucket_index in range(int(bucket_count)):
             st.markdown(f"### Choice Option {bucket_index + 1}")
