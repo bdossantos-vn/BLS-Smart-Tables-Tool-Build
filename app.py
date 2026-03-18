@@ -1575,7 +1575,11 @@ def render_step_7() -> None:
 def render_step_8() -> None:
     """Render the filter configuration page."""
     st.header("7. Filter Configuration")
-    st.write("Create project filters and choose where each filter applies.")
+    st.write(
+        "Create filters and choose where each one applies. Filters assigned to `All Tables` act as the base layer. "
+        "If a filter is also assigned to a banner, that banner uses both the `All Tables` filter(s) and its own "
+        "banner-specific filter(s)."
+    )
 
     if not st.session_state.global_filters:
         st.session_state.global_filters = {"rows": []}
@@ -1656,7 +1660,7 @@ def render_step_8() -> None:
             options=apply_targets,
             default=default_targets,
             key=f"global_filter_applies_to_{index}",
-            help="Choose which outputs should use this filter.",
+            help="`All Tables` is the base filter layer. Banner-level filters stack on top of it.",
         )
         if "All Tables" in applies_to and len(applies_to) > 1:
             applies_to = ["All Tables"]
