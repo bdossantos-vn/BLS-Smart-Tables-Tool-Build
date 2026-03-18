@@ -8,9 +8,13 @@ import streamlit as st
 from src.cleaning import ingest_qualtrics_dataframe, ingest_qualtrics_excel
 from src.io import get_excel_sheet_names
 from src.config import (
+    build_analysis_variable_catalog,
     build_default_banner_config,
+    build_default_filter_row,
     build_default_stat_config,
     build_default_weighting_config,
+    build_filter_operator_options,
+    build_weight_variable_options,
     validate_analysis_config,
 )
 from src.custom_vars import (
@@ -1427,56 +1431,190 @@ def render_step_6() -> None:
 
 
 def render_step_7() -> None:
-    """Render the analysis configuration scaffold."""
+    """Render the analysis configuration page."""
     st.header("6. Analysis Configuration")
-    st.write(
-        "V1 stores banner, weighting, and filter settings so the workflow remains coherent across reruns."
-    )
+    st.write("Configure banners, weighting, and filters for the table build.")
 
     if not st.session_state.weighting_config:
         st.session_state.weighting_config = build_default_weighting_config()
     if not st.session_state.banner_config:
         st.session_state.banner_config = build_default_banner_config()
+    if not st.session_state.global_filters:
+        st.session_state.global_filters = {"rows": [build_default_filter_row()]}
+    if not st.session_state.local_overrides:
+        st.session_state.local_overrides = {}
 
-    left, right = st.columns(2)
-    with left:
-        weighting_enabled = st.checkbox(
-            "Enable weighting scaffold",
-            value=st.session_state.weighting_config.get("enabled", False),
-        )
-        weight_var = st.text_input(
-            "Weight variable",
-            value=st.session_state.weighting_config.get("weight_variable", ""),
-        )
-    with right:
-        banner_variables = st.text_input(
-            "Banner variables (comma separated)",
-            value=", ".join(st.session_state.banner_config.get("banner_variables", [])),
-        )
-        global_filter = st.text_input(
-            "Global filter expression",
-            value=st.session_state.global_filters.get("expression", ""),
-        )
+    variable_catalog = build_analysis_variable_catalog(
+        st.session_state.question_metadata,
+        st.session_state.custom_variables,
+    )
+    variable_options = [item["id"] for item in variable_catalog]
+    variable_labels = {item["id"]: item["label"] for item in variable_catalog}
+    variable_types = {item["id"]: item["question_type"] for item in variable_catalog}
+    weight_options = ["", *build_weight_variable_options(st.session_state.question_metadata)]
 
+    st.subheader("Banners")
+    include_total = st.checkbox(
+        "Include total column",
+        value=bool(st.session_state.banner_config.get("include_total", True)),
+    )
+    selected_banners = st.multiselect(
+        "Banner Variables",
+        options=variable_options,
+        default=st.session_state.banner_config.get("banner_variables", []),
+        format_func=lambda value: variable_labels.get(value, value),
+        help="The selected order becomes the banner order used later in the workflow.",
+    )
+    st.session_state.banner_config = {
+        "banner_variables": selected_banners,
+        "include_total": include_total,
+    }
+
+    st.subheader("Weighting")
+    weighting_enabled = st.checkbox(
+        "Enable weighting",
+        value=bool(st.session_state.weighting_config.get("enabled", False)),
+    )
+    weight_variable = st.selectbox(
+        "Weight Variable",
+        options=weight_options,
+        index=weight_options.index(st.session_state.weighting_config.get("weight_variable", ""))
+        if st.session_state.weighting_config.get("weight_variable", "") in weight_options
+        else 0,
+        format_func=lambda value: value if value else "Select weight variable",
+    )
+    weight_mode = st.selectbox(
+        "Weight Mode",
+        options=["Use as provided", "Normalize to total sample"],
+        index=["Use as provided", "Normalize to total sample"].index(
+            st.session_state.weighting_config.get("weight_mode", "Use as provided")
+        )
+        if st.session_state.weighting_config.get("weight_mode", "Use as provided")
+        in ["Use as provided", "Normalize to total sample"]
+        else 0,
+    )
     st.session_state.weighting_config = {
         "enabled": weighting_enabled,
-        "weight_variable": weight_var.strip(),
+        "weight_variable": weight_variable,
+        "weight_mode": weight_mode,
     }
-    st.session_state.banner_config = {
-        "banner_variables": [value.strip() for value in banner_variables.split(",") if value.strip()],
-    }
-    st.session_state.global_filters = {"expression": global_filter.strip()}
+
+    st.subheader("Global Filters")
+    global_filter_rows = int(st.number_input(
+        "Number of Global Filter Rows",
+        min_value=1,
+        max_value=6,
+        value=max(1, len(st.session_state.global_filters.get("rows", []))),
+        step=1,
+        key="global_filter_row_count",
+    ))
+    existing_global_rows = list(st.session_state.global_filters.get("rows", []))
+    while len(existing_global_rows) < global_filter_rows:
+        existing_global_rows.append(build_default_filter_row())
+    existing_global_rows = existing_global_rows[:global_filter_rows]
+    rendered_global_rows: list[dict[str, str]] = []
+    for index in range(global_filter_rows):
+        row = existing_global_rows[index]
+        st.markdown(f"**Global Filter {index + 1}**")
+        col1, col2, col3 = st.columns([2, 1, 2])
+        variable = col1.selectbox(
+            "Variable",
+            options=["", *variable_options],
+            index=(["", *variable_options].index(row.get("variable", "")) if row.get("variable", "") in ["", *variable_options] else 0),
+            format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
+            key=f"global_filter_variable_{index}",
+        )
+        operator_options = ["", *build_filter_operator_options(variable_types.get(variable, ""))]
+        operator = col2.selectbox(
+            "Operator",
+            options=operator_options,
+            index=(operator_options.index(row.get("operator", "")) if row.get("operator", "") in operator_options else 0),
+            format_func=lambda value: value if value else "Select operator",
+            key=f"global_filter_operator_{index}",
+        )
+        values = col3.text_input(
+            "Values",
+            value=row.get("values", ""),
+            key=f"global_filter_values_{index}",
+            help="Enter one or more values separated by `|`.",
+        )
+        rendered_global_rows.append(
+            {
+                "variable": variable,
+                "operator": operator,
+                "values": values.strip(),
+            }
+        )
+    st.session_state.global_filters = {"rows": rendered_global_rows}
+
+    st.subheader("Banner-Specific Overrides")
+    local_overrides: dict[str, list[dict[str, str]]] = {}
+    if selected_banners:
+        for banner_variable in selected_banners:
+            with st.expander(variable_labels.get(banner_variable, banner_variable)):
+                override_enabled = st.checkbox(
+                    "Enable banner-specific override",
+                    value=bool(st.session_state.local_overrides.get(banner_variable)),
+                    key=f"override_enabled_{banner_variable}",
+                )
+                if override_enabled:
+                    existing_rows = list(st.session_state.local_overrides.get(banner_variable, [build_default_filter_row()]))
+                    row_count = int(st.number_input(
+                        "Number of Override Rows",
+                        min_value=1,
+                        max_value=4,
+                        value=max(1, len(existing_rows)),
+                        step=1,
+                        key=f"override_row_count_{banner_variable}",
+                    ))
+                    while len(existing_rows) < row_count:
+                        existing_rows.append(build_default_filter_row())
+                    existing_rows = existing_rows[:row_count]
+                    rendered_rows: list[dict[str, str]] = []
+                    for index in range(row_count):
+                        row = existing_rows[index]
+                        c1, c2, c3 = st.columns([2, 1, 2])
+                        variable = c1.selectbox(
+                            "Variable",
+                            options=["", *variable_options],
+                            index=(["", *variable_options].index(row.get("variable", "")) if row.get("variable", "") in ["", *variable_options] else 0),
+                            format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
+                            key=f"override_variable_{banner_variable}_{index}",
+                        )
+                        operator_options = ["", *build_filter_operator_options(variable_types.get(variable, ""))]
+                        operator = c2.selectbox(
+                            "Operator",
+                            options=operator_options,
+                            index=(operator_options.index(row.get("operator", "")) if row.get("operator", "") in operator_options else 0),
+                            format_func=lambda value: value if value else "Select operator",
+                            key=f"override_operator_{banner_variable}_{index}",
+                        )
+                        values = c3.text_input(
+                            "Values",
+                            value=row.get("values", ""),
+                            key=f"override_values_{banner_variable}_{index}",
+                        )
+                        rendered_rows.append(
+                            {
+                                "variable": variable,
+                                "operator": operator,
+                                "values": values.strip(),
+                            }
+                        )
+                    local_overrides[banner_variable] = rendered_rows
+    st.session_state.local_overrides = local_overrides
 
     validation = validate_analysis_config(
         st.session_state.weighting_config,
         st.session_state.banner_config,
         st.session_state.global_filters,
+        st.session_state.local_overrides,
     )
     if validation:
         for message in validation:
             st.warning(message)
     else:
-        st.success("Analysis configuration scaffold is valid.")
+        st.success("Analysis configuration saved.")
 
 
 def render_step_8() -> None:

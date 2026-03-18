@@ -1,20 +1,26 @@
-"""Analysis configuration scaffolding for V1."""
+"""Analysis configuration helpers."""
 
 from __future__ import annotations
 
+from typing import Any
+
+from src.utils import normalize_text
+
 
 def build_default_weighting_config() -> dict:
-    """Return the default weighting scaffold."""
+    """Return the default weighting configuration."""
     return {
         "enabled": False,
         "weight_variable": "",
+        "weight_mode": "Use as provided",
     }
 
 
 def build_default_banner_config() -> dict:
-    """Return the default banner scaffold."""
+    """Return the default banner configuration."""
     return {
         "banner_variables": [],
+        "include_total": True,
     }
 
 
@@ -27,12 +33,84 @@ def build_default_stat_config() -> dict:
     }
 
 
+def build_analysis_variable_catalog(
+    question_metadata: list[dict[str, Any]],
+    custom_variables: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Build a catalog of variables available for banners and filters."""
+    catalog: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for row in question_metadata:
+        variable = normalize_text(row.get("variable"))
+        question_type = normalize_text(row.get("detected_type"))
+        if not variable or variable in seen:
+            continue
+        if question_type in {"Ignore", "Open-End Text"}:
+            continue
+        catalog.append(
+            {
+                "id": variable,
+                "label": f"{variable} - {normalize_text(row.get('question_label'))}",
+                "kind": "Survey Question",
+                "question_type": question_type,
+            }
+        )
+        seen.add(variable)
+
+    for record in custom_variables:
+        name = normalize_text(record.get("name"))
+        if not name or name in seen:
+            continue
+        catalog.append(
+            {
+                "id": name,
+                "label": f"{name} - Custom Variable",
+                "kind": "Custom Variable",
+                "question_type": normalize_text(record.get("builder_type")) or "Custom",
+            }
+        )
+        seen.add(name)
+
+    return catalog
+
+
+def build_weight_variable_options(question_metadata: list[dict[str, Any]]) -> list[str]:
+    """Return variables that are reasonable weight candidates."""
+    options: list[str] = []
+    for row in question_metadata:
+        variable = normalize_text(row.get("variable"))
+        question_type = normalize_text(row.get("detected_type"))
+        if not variable:
+            continue
+        if question_type in {"Numeric Data", "Single-Select"}:
+            options.append(variable)
+    return options
+
+
+def build_filter_operator_options(question_type: str) -> list[str]:
+    """Return supported operators for a filterable variable."""
+    if question_type == "Numeric Data":
+        return ["Equals", "Does not equal", "Greater than", "Less than"]
+    return ["Includes any", "Excludes all", "Is exactly"]
+
+
+def build_default_filter_row() -> dict[str, str]:
+    """Return a blank filter row."""
+    return {
+        "variable": "",
+        "operator": "",
+        "values": "",
+    }
+
+
 def validate_analysis_config(
     weighting_config: dict,
     banner_config: dict,
     global_filters: dict,
+    local_overrides: dict | None = None,
 ) -> list[str]:
-    """Validate the V1 analysis configuration scaffold."""
+    """Validate the analysis configuration payload."""
     issues: list[str] = []
     if weighting_config.get("enabled") and not weighting_config.get("weight_variable"):
         issues.append("Weighting is enabled but no weight variable is set.")
@@ -40,4 +118,21 @@ def validate_analysis_config(
         issues.append("Banner variables must be stored as a list.")
     if not isinstance(global_filters, dict):
         issues.append("Global filters must be stored as a dictionary.")
+    else:
+        for index, row in enumerate(global_filters.get("rows", []), start=1):
+            variable = normalize_text(row.get("variable"))
+            operator = normalize_text(row.get("operator"))
+            values = normalize_text(row.get("values"))
+            if any([variable, operator, values]) and not all([variable, operator, values]):
+                issues.append(f"Global filter row {index} is incomplete.")
+    if not isinstance(local_overrides or {}, dict):
+        issues.append("Local overrides must be stored as a dictionary.")
+    else:
+        for banner_variable, rows in (local_overrides or {}).items():
+            for index, row in enumerate(rows or [], start=1):
+                variable = normalize_text(row.get("variable"))
+                operator = normalize_text(row.get("operator"))
+                values = normalize_text(row.get("values"))
+                if any([variable, operator, values]) and not all([variable, operator, values]):
+                    issues.append(f"{banner_variable} override row {index} is incomplete.")
     return issues
