@@ -20,7 +20,17 @@ def build_default_banner_config() -> dict:
     """Return the default banner configuration."""
     return {
         "banner_variables": [],
+        "banners": [],
         "include_total": True,
+    }
+
+
+def build_default_banner_row() -> dict[str, str]:
+    """Return a blank nested-banner row."""
+    return {
+        "level_1": "",
+        "level_2": "",
+        "level_3": "",
     }
 
 
@@ -116,6 +126,28 @@ def validate_analysis_config(
         issues.append("Weighting is enabled but no weight variable is set.")
     if not isinstance(banner_config.get("banner_variables", []), list):
         issues.append("Banner variables must be stored as a list.")
+    if not isinstance(banner_config.get("banners", []), list):
+        issues.append("Nested banners must be stored as a list.")
+    else:
+        seen_banner_paths: set[tuple[str, ...]] = set()
+        for index, row in enumerate(banner_config.get("banners", []), start=1):
+            level_values = [
+                normalize_text(row.get("level_1")),
+                normalize_text(row.get("level_2")),
+                normalize_text(row.get("level_3")),
+            ]
+            if not level_values[0]:
+                issues.append(f"Banner {index} needs a Level 1 variable.")
+                continue
+            trimmed_values = [value for value in level_values if value]
+            if len(trimmed_values) != len(set(trimmed_values)):
+                issues.append(f"Banner {index} cannot repeat the same variable across levels.")
+            if level_values[2] and not level_values[1]:
+                issues.append(f"Banner {index} cannot use Level 3 without Level 2.")
+            banner_path = tuple(trimmed_values)
+            if banner_path in seen_banner_paths:
+                issues.append(f"Banner {index} duplicates another banner path.")
+            seen_banner_paths.add(banner_path)
     if not isinstance(global_filters, dict):
         issues.append("Global filters must be stored as a dictionary.")
     else:

@@ -10,6 +10,7 @@ from src.io import get_excel_sheet_names
 from src.config import (
     build_analysis_variable_catalog,
     build_default_banner_config,
+    build_default_banner_row,
     build_default_filter_row,
     build_default_stat_config,
     build_default_weighting_config,
@@ -1458,15 +1459,85 @@ def render_step_7() -> None:
         "Include total column",
         value=bool(st.session_state.banner_config.get("include_total", True)),
     )
-    selected_banners = st.multiselect(
-        "Banner Variables",
-        options=variable_options,
-        default=st.session_state.banner_config.get("banner_variables", []),
-        format_func=lambda value: variable_labels.get(value, value),
-        help="The selected order becomes the banner order used later in the workflow.",
+    existing_banners = list(st.session_state.banner_config.get("banners", []))
+    banner_count = int(
+        st.number_input(
+            "Number of Banners",
+            min_value=1,
+            max_value=12,
+            value=max(1, len(existing_banners) or 1),
+            step=1,
+            key="banner_row_count",
+        )
     )
+    while len(existing_banners) < banner_count:
+        existing_banners.append(build_default_banner_row())
+    existing_banners = existing_banners[:banner_count]
+
+    rendered_banners: list[dict[str, str]] = []
+    for index in range(banner_count):
+        row = existing_banners[index]
+        st.markdown(f"**Banner {index + 1}**")
+        col1, col2, col3 = st.columns(3)
+        options_with_blank = ["", *variable_options]
+
+        level_1 = col1.selectbox(
+            "Level 1",
+            options=options_with_blank,
+            index=(
+                options_with_blank.index(row.get("level_1", ""))
+                if row.get("level_1", "") in options_with_blank
+                else 0
+            ),
+            format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
+            key=f"banner_level_1_{index}",
+        )
+
+        level_2_options = ["", *[value for value in variable_options if value != level_1]]
+        level_2 = col2.selectbox(
+            "Level 2",
+            options=level_2_options,
+            index=(
+                level_2_options.index(row.get("level_2", ""))
+                if row.get("level_2", "") in level_2_options
+                else 0
+            ),
+            format_func=lambda value: variable_labels.get(value, value) if value else "Optional",
+            key=f"banner_level_2_{index}",
+        )
+
+        excluded_level_3 = {value for value in [level_1, level_2] if value}
+        level_3_options = ["", *[value for value in variable_options if value not in excluded_level_3]]
+        level_3 = col3.selectbox(
+            "Level 3",
+            options=level_3_options,
+            index=(
+                level_3_options.index(row.get("level_3", ""))
+                if row.get("level_3", "") in level_3_options
+                else 0
+            ),
+            format_func=lambda value: variable_labels.get(value, value) if value else "Optional",
+            key=f"banner_level_3_{index}",
+            disabled=not bool(level_2),
+        )
+
+        rendered_banners.append(
+            {
+                "level_1": level_1,
+                "level_2": level_2,
+                "level_3": level_3 if level_2 else "",
+            }
+        )
+
+    selected_banners = []
+    for banner_row in rendered_banners:
+        for level_value in [banner_row.get("level_1"), banner_row.get("level_2"), banner_row.get("level_3")]:
+            if level_value and level_value not in selected_banners:
+                selected_banners.append(level_value)
+
     st.session_state.banner_config = {
         "banner_variables": selected_banners,
+        "banners": rendered_banners,
         "include_total": include_total,
     }
 
