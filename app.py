@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 import streamlit as st
 
@@ -10,6 +12,7 @@ from src.io import get_excel_sheet_names
 from src.config import (
     build_analysis_variable_catalog,
     build_default_banner_config,
+    build_default_filter_condition,
     build_default_banner_row,
     build_default_filter_row,
     build_default_stat_config,
@@ -201,6 +204,58 @@ def _build_filter_value_options(
         if normalize_text(record.get("name")) == normalize_text(variable):
             return [normalize_text(bucket.get("label")) for bucket in record.get("buckets", []) if normalize_text(bucket.get("label"))]
     return []
+
+
+def _normalize_filter_targets(targets: list[str], apply_targets: list[str]) -> list[str]:
+    """Normalize filter targets while keeping `All Tables` exclusive."""
+    valid_targets = [target for target in targets if target in apply_targets]
+    if "Total" in targets and "All Tables" not in valid_targets and "All Tables" in apply_targets:
+        valid_targets = ["All Tables", *valid_targets]
+    if "All Tables" in valid_targets:
+        return ["All Tables"]
+    return valid_targets
+
+
+def _coerce_filter_rows(existing_rows: list[dict[str, Any]], desired_count: int) -> list[dict[str, Any]]:
+    """Upgrade older saved filter rows and match the requested row count."""
+    upgraded_rows: list[dict[str, Any]] = []
+    for row in existing_rows[:desired_count]:
+        if "conditions" in row:
+            conditions = [
+                {
+                    "variable": normalize_text(condition.get("variable")),
+                    "operator": normalize_text(condition.get("operator")),
+                    "values": list(condition.get("values", [])),
+                }
+                for condition in row.get("conditions", [])
+            ] or [build_default_filter_condition()]
+            upgraded_rows.append(
+                {
+                    "name": normalize_text(row.get("name")),
+                    "match_logic": normalize_text(row.get("match_logic")) or "ALL",
+                    "conditions": conditions,
+                    "applies_to": list(row.get("applies_to", [])),
+                }
+            )
+        else:
+            upgraded_rows.append(
+                {
+                    "name": "",
+                    "match_logic": "ALL",
+                    "conditions": [
+                        {
+                            "variable": normalize_text(row.get("variable")),
+                            "operator": normalize_text(row.get("operator")),
+                            "values": list(row.get("values", [])),
+                        }
+                    ],
+                    "applies_to": list(row.get("applies_to", [])),
+                }
+            )
+
+    while len(upgraded_rows) < desired_count:
+        upgraded_rows.append(build_default_filter_row())
+    return upgraded_rows[:desired_count]
 
 
 def render_sidebar() -> str:
@@ -1562,7 +1617,7 @@ def render_step_7() -> None:
     issues = validate_analysis_config(
         st.session_state.weighting_config or build_default_weighting_config(),
         st.session_state.banner_config,
-        st.session_state.global_filters or {"rows": [build_default_filter_row()]},
+        st.session_state.global_filters or {"rows": []},
         st.session_state.local_overrides,
     )
     banner_issues = [message for message in issues if message.startswith("Banner")]
@@ -1577,9 +1632,9 @@ def render_step_8() -> None:
     """Render the filter configuration page."""
     st.header("7. Filter Configuration")
     st.write(
-        "Create filters and choose where each one applies. Filters assigned to `All Tables` act as the base layer. "
-        "If a filter is also assigned to a banner, that banner uses both the `All Tables` filter(s) and its own "
-        "banner-specific filter(s)."
+        "Create named filters with one or more conditions and choose where each one applies. Filters assigned to "
+        "`All Tables` act as the base layer. If a filter is also assigned to a banner, that banner uses both the "
+        "`All Tables` filter(s) and its own banner-specific filter(s)."
     )
 
     if not st.session_state.global_filters:
@@ -1608,54 +1663,93 @@ def render_step_8() -> None:
         if banner_name and banner_name not in apply_targets:
             apply_targets.append(banner_name)
 
-    global_filter_rows = int(st.number_input(
-        "Number of Filters",
-        min_value=0,
-        max_value=6,
-        value=max(0, len(st.session_state.global_filters.get("rows", []))),
-        step=1,
-        key="global_filter_row_count",
-    ))
-    existing_global_rows = list(st.session_state.global_filters.get("rows", []))
-    while len(existing_global_rows) < global_filter_rows:
-        existing_global_rows.append(build_default_filter_row())
-    existing_global_rows = existing_global_rows[:global_filter_rows]
-    rendered_global_rows: list[dict[str, str]] = []
+    global_filter_rows = int(
+        st.number_input(
+            "Number of Filters",
+            min_value=0,
+            max_value=6,
+            value=max(0, len(st.session_state.global_filters.get("rows", []))),
+            step=1,
+            key="global_filter_row_count",
+        )
+    )
+    existing_global_rows = _coerce_filter_rows(
+        list(st.session_state.global_filters.get("rows", [])),
+        global_filter_rows,
+    )
+    rendered_global_rows: list[dict[str, Any]] = []
     for index in range(global_filter_rows):
         row = existing_global_rows[index]
-        st.markdown(f"**Filter {index + 1}**")
-        col1, col2, col3 = st.columns([2, 1, 2])
-        variable = col1.selectbox(
-            "Variable",
-            options=["", *variable_options],
-            index=(["", *variable_options].index(row.get("variable", "")) if row.get("variable", "") in ["", *variable_options] else 0),
-            format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
-            key=f"global_filter_variable_{index}",
-        )
-        operator_options = ["", *build_filter_operator_options(variable_types.get(variable, ""))]
-        operator = col2.selectbox(
-            "Operator",
-            options=operator_options,
-            index=(operator_options.index(row.get("operator", "")) if row.get("operator", "") in operator_options else 0),
-            format_func=lambda value: value if value else "Select operator",
-            key=f"global_filter_operator_{index}",
-        )
-        value_options = _build_filter_value_options(
-            variable,
-            question_lookup,
-            st.session_state.custom_variables,
-        )
-        values = col3.multiselect(
-            "Values",
-            options=value_options,
-            default=[value for value in row.get("values", []) if value in value_options],
-            key=f"global_filter_values_{index}",
-            help="Select one or more values for this filter.",
-        )
-        default_targets = [target for target in row.get("applies_to", []) if target in apply_targets]
-        if "Total" in row.get("applies_to", []) and "All Tables" not in default_targets:
-            default_targets = ["All Tables"]
+        st.markdown(f"### Filter {index + 1}")
 
+        filter_name = st.text_input(
+            "Filter Name",
+            value=row.get("name", ""),
+            key=f"global_filter_name_{index}",
+        )
+        match_logic = st.selectbox(
+            "Show only responses where",
+            options=MATCH_LOGIC_OPTIONS,
+            index=(MATCH_LOGIC_OPTIONS.index(row.get("match_logic", "ALL")) if row.get("match_logic", "ALL") in MATCH_LOGIC_OPTIONS else 0),
+            format_func=lambda value: "All of the following are true" if value == "ALL" else "Any of the following are true",
+            key=f"global_filter_match_logic_{index}",
+        )
+        condition_count = int(
+            st.number_input(
+                "Number of Conditions",
+                min_value=1,
+                max_value=8,
+                value=max(1, len(row.get("conditions", []))),
+                step=1,
+                key=f"global_filter_condition_count_{index}",
+            )
+        )
+        condition_rows = list(row.get("conditions", []))
+        while len(condition_rows) < condition_count:
+            condition_rows.append(build_default_filter_condition())
+        condition_rows = condition_rows[:condition_count]
+
+        rendered_conditions: list[dict[str, Any]] = []
+        for condition_index in range(condition_count):
+            condition = condition_rows[condition_index]
+            st.markdown(f"**Condition {condition_index + 1}**")
+            col1, col2, col3 = st.columns([2, 1, 2])
+            variable = col1.selectbox(
+                "Variable",
+                options=["", *variable_options],
+                index=(["", *variable_options].index(condition.get("variable", "")) if condition.get("variable", "") in ["", *variable_options] else 0),
+                format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
+                key=f"global_filter_variable_{index}_{condition_index}",
+            )
+            operator_options = ["", *build_filter_operator_options(variable_types.get(variable, ""))]
+            operator = col2.selectbox(
+                "Operator",
+                options=operator_options,
+                index=(operator_options.index(condition.get("operator", "")) if condition.get("operator", "") in operator_options else 0),
+                format_func=lambda value: value if value else "Select operator",
+                key=f"global_filter_operator_{index}_{condition_index}",
+            )
+            value_options = _build_filter_value_options(
+                variable,
+                question_lookup,
+                st.session_state.custom_variables,
+            )
+            values = col3.multiselect(
+                "Values",
+                options=value_options,
+                default=[value for value in condition.get("values", []) if value in value_options],
+                key=f"global_filter_values_{index}_{condition_index}",
+                help="Select one or more values for this condition.",
+            )
+            rendered_conditions.append(
+                {
+                    "variable": variable,
+                    "operator": operator,
+                    "values": values,
+                }
+            )
+
+        default_targets = _normalize_filter_targets(row.get("applies_to", []), apply_targets)
         applies_to = st.multiselect(
             "Applies To",
             options=apply_targets,
@@ -1663,16 +1757,17 @@ def render_step_8() -> None:
             key=f"global_filter_applies_to_{index}",
             help="`All Tables` is the base filter layer. Banner-level filters stack on top of it.",
         )
-        if "All Tables" in applies_to and len(applies_to) > 1:
-            applies_to = ["All Tables"]
+        applies_to = _normalize_filter_targets(applies_to, apply_targets)
+
         rendered_global_rows.append(
             {
-                "variable": variable,
-                "operator": operator,
-                "values": values,
+                "name": filter_name,
+                "match_logic": match_logic,
+                "conditions": rendered_conditions,
                 "applies_to": applies_to,
             }
         )
+
     st.session_state.global_filters = {"rows": rendered_global_rows}
 
     validation = validate_analysis_config(
@@ -1681,7 +1776,7 @@ def render_step_8() -> None:
         st.session_state.global_filters,
         {},
     )
-    filter_issues = [message for message in validation if "Global filter row" in message]
+    filter_issues = [message for message in validation if message.startswith("Filter ")]
     if filter_issues:
         for message in filter_issues:
             st.warning(message)
@@ -1805,7 +1900,7 @@ def render_step_9() -> None:
     validation = validate_analysis_config(
         st.session_state.weighting_config,
         st.session_state.banner_config or build_default_banner_config(),
-        st.session_state.global_filters or {"rows": [build_default_filter_row()]},
+        st.session_state.global_filters or {"rows": []},
         {},
     )
     weight_issues = [message for message in validation if message.startswith("Weight ")]

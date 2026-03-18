@@ -128,12 +128,21 @@ def build_filter_operator_options(question_type: str) -> list[str]:
     return ["Includes any", "Excludes all", "Is exactly"]
 
 
-def build_default_filter_row() -> dict[str, str]:
-    """Return a blank filter row."""
+def build_default_filter_condition() -> dict[str, Any]:
+    """Return a blank filter condition."""
     return {
         "variable": "",
         "operator": "",
         "values": [],
+    }
+
+
+def build_default_filter_row() -> dict[str, Any]:
+    """Return a blank named filter definition."""
+    return {
+        "name": "",
+        "match_logic": "ALL",
+        "conditions": [build_default_filter_condition()],
         "applies_to": [],
     }
 
@@ -199,11 +208,31 @@ def validate_analysis_config(
         issues.append("Global filters must be stored as a dictionary.")
     else:
         for index, row in enumerate(global_filters.get("rows", []), start=1):
-            variable = normalize_text(row.get("variable"))
-            operator = normalize_text(row.get("operator"))
-            values = row.get("values", [])
-            if any([variable, operator, values]) and not (variable and operator and values):
-                issues.append(f"Global filter row {index} is incomplete.")
+            name = normalize_text(row.get("name"))
+            match_logic = normalize_text(row.get("match_logic"))
+            conditions = row.get("conditions", [])
+            applies_to = row.get("applies_to", [])
+            if not name:
+                issues.append(f"Filter {index} needs a name.")
+            if match_logic not in {"ALL", "ANY"}:
+                issues.append(f"Filter {index} needs `ALL` or `ANY` logic.")
+            if not applies_to:
+                issues.append(f"Filter {index} needs at least one apply target.")
+            if not conditions:
+                issues.append(f"Filter {index} needs at least one condition.")
+                continue
+            for condition_index, condition in enumerate(conditions, start=1):
+                variable = normalize_text(condition.get("variable"))
+                operator = normalize_text(condition.get("operator"))
+                values = condition.get("values", [])
+                if any([variable, operator, values]) and not (variable and operator and values):
+                    issues.append(
+                        f"Filter {index} condition {condition_index} is incomplete."
+                    )
+                elif not any([variable, operator, values]):
+                    issues.append(
+                        f"Filter {index} condition {condition_index} is incomplete."
+                    )
     if not isinstance(local_overrides or {}, dict):
         issues.append("Local overrides must be stored as a dictionary.")
     else:
