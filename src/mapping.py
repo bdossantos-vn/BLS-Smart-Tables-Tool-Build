@@ -18,10 +18,16 @@ def identify_scale_questions(question_metadata: list[dict[str, Any]]) -> list[di
     ]
 
 
-def build_default_scale_mapping(series: pd.Series) -> dict[str, Any]:
+def build_default_scale_mapping(series: pd.Series, preferred_order: list[str] | None = None) -> dict[str, Any]:
     """Build the default response-to-bucket mapping for a scale question."""
-    unique_values = [normalize_text(value) for value in series.dropna().tolist()]
     ordered_values: list[str] = []
+
+    preferred_order = preferred_order or []
+    for value in preferred_order:
+        if value and value not in ordered_values:
+            ordered_values.append(value)
+
+    unique_values = [normalize_text(value) for value in series.dropna().tolist()]
     for value in unique_values:
         if value and value not in ordered_values:
             ordered_values.append(value)
@@ -52,7 +58,10 @@ def ensure_scale_mappings(
     for question in scale_questions:
         variable = question["variable"]
         if variable not in mappings and variable in cleaned_df.columns:
-            mappings[variable] = build_default_scale_mapping(cleaned_df[variable])
+            mappings[variable] = build_default_scale_mapping(
+                cleaned_df[variable],
+                preferred_order=question.get("answer_choices_list", []),
+            )
     return mappings
 
 

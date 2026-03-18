@@ -755,6 +755,7 @@ def render_step_3() -> None:
 
 def render_step_4() -> None:
     """Render the scale mapping and polarity page."""
+    scale_seed_version = 1
     st.header("3. Scale Mapping & Polarity")
     cleaned_df = st.session_state.cleaned_df
     question_metadata = st.session_state.question_metadata
@@ -772,6 +773,13 @@ def render_step_4() -> None:
         "Review scale questions in one table. Each row is a scale question and each column is a "
         "scale point in order from 1 to n."
     )
+    if (
+        st.session_state.get("scale_mapping_seed_version", 0) < scale_seed_version
+        and not st.session_state.get("scale_change_log")
+    ):
+        st.session_state.scale_mappings = {}
+        st.session_state.scale_mapping_seed_version = scale_seed_version
+
     st.session_state.scale_mappings = ensure_scale_mappings(
         scale_questions,
         cleaned_df,
