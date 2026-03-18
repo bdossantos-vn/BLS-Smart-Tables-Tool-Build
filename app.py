@@ -930,6 +930,9 @@ def render_step_5() -> None:
     if st.session_state.get("custom_var_reset_requested"):
         _reset_custom_variable_builder_state()
         st.session_state.custom_var_reset_requested = False
+    if st.session_state.get("custom_var_edit_payload"):
+        _load_custom_variable_into_builder(st.session_state.custom_var_edit_payload)
+        st.session_state.custom_var_edit_payload = None
 
     st.header("4. Custom Variable Builder")
     st.write(
@@ -953,17 +956,19 @@ def render_step_5() -> None:
             st.info(f"Editing custom variable: `{editing_name}`")
         with edit_right:
             if st.button("Cancel Edit", use_container_width=True):
-                _reset_custom_variable_builder_state()
+                st.session_state.custom_var_reset_requested = True
                 st.rerun()
 
     build_type = st.selectbox("Build Type", options=BUILD_TYPES, key="custom_var_build_type")
     name = st.text_input("Custom variable name", key="custom_var_name")
 
+    if "custom_var_bucket_count" not in st.session_state:
+        st.session_state.custom_var_bucket_count = 2
+
     bucket_count = st.number_input(
         "Number of Choice Options",
         min_value=2,
         max_value=8,
-        value=int(st.session_state.get("custom_var_bucket_count", 2) or 2),
         step=1,
         key="custom_var_bucket_count",
     )
@@ -1071,7 +1076,6 @@ def render_step_5() -> None:
                 "Number of Conditions",
                 min_value=1,
                 max_value=6,
-                value=int(st.session_state.get(f"custom_bucket_condition_count_{bucket_index}", 1) or 1),
                 step=1,
                 key=f"custom_bucket_condition_count_{bucket_index}",
             )
@@ -1187,7 +1191,7 @@ def render_step_5() -> None:
                         key=f"edit_custom_var_{custom_variable.get('name', '')}",
                         use_container_width=True,
                     ):
-                        _load_custom_variable_into_builder(custom_variable)
+                        st.session_state.custom_var_edit_payload = custom_variable
                         st.rerun()
                 with action_right:
                     if st.button(
@@ -1201,7 +1205,7 @@ def render_step_5() -> None:
                             if normalize_text(item.get("name")) != normalize_text(custom_variable.get("name"))
                         ]
                         if normalize_text(editing_name) == normalize_text(custom_variable.get("name")):
-                            _reset_custom_variable_builder_state()
+                            st.session_state.custom_var_reset_requested = True
                         st.success(f"Deleted custom variable `{custom_variable.get('name', '')}`.")
                         st.rerun()
                 st.write(f"Build Type: `{custom_variable.get('builder_type', '')}`")
