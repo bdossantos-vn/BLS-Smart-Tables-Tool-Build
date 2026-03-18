@@ -942,7 +942,7 @@ def render_step_5() -> None:
     st.header("4. Custom Variable Builder")
     st.write(
         "Build either a simple variable from one source question or a complex variable using "
-        "Qualtrics-style condition logic."
+        "multi question condition logic."
     )
     question_lookup = build_question_lookup(st.session_state.question_metadata)
     question_options = list(question_lookup.keys())
@@ -1279,10 +1279,6 @@ def render_step_5() -> None:
                             else:
                                 fallback_text = "Ignore / Missing"
                             st.caption(f"Unmatched N: {unmatched_count} | Handling: {fallback_text}")
-                            if unmatched_count > 0:
-                                st.warning(
-                                    f"{unmatched_count} respondent(s) are not currently captured by the named buckets."
-                                )
                     else:
                         bucket_counts = []
                         unmatched_count = 0
@@ -1310,10 +1306,6 @@ def render_step_5() -> None:
                             else:
                                 fallback_text = "Ignore / Missing"
                             st.caption(f"Unmatched N: {unmatched_count} | Handling: {fallback_text}")
-                            if unmatched_count > 0:
-                                st.warning(
-                                    f"{unmatched_count} respondent(s) are not currently captured by the named buckets."
-                                )
     else:
         st.caption("No custom variables configured yet.")
 
