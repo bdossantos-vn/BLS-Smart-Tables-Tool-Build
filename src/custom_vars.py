@@ -8,7 +8,17 @@ from typing import Any
 from src.utils import normalize_text
 
 
+BUILD_TYPES = [
+    "Simple Variable",
+    "Complex Variable",
+]
+
 MATCH_LOGIC_OPTIONS = ["ALL", "ANY"]
+CONDITION_OPERATORS = [
+    "Includes any",
+    "Includes all",
+    "Is exactly",
+]
 
 
 def build_question_catalog(question_metadata: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -56,64 +66,135 @@ def validate_custom_variable_name(
     return True, ""
 
 
-def validate_bucketed_variable_definition(
+def validate_simple_variable_definition(
     name: str,
     existing: list[dict[str, Any]],
-    source_variables: list[str],
-    match_logic: str,
+    source_variable: str,
     buckets: list[dict[str, Any]],
     current_name: str | None = None,
 ) -> list[str]:
-    """Validate a custom-variable definition."""
+    """Validate a simple-variable definition."""
     issues: list[str] = []
     valid_name, message = validate_custom_variable_name(name, existing, current_name=current_name)
     if not valid_name:
         issues.append(message)
-    if not source_variables:
-        issues.append("Select at least one source question.")
-    if match_logic not in MATCH_LOGIC_OPTIONS:
-        issues.append("Match logic must be `ALL` or `ANY`.")
+    if not normalize_text(source_variable):
+        issues.append("Select a source question.")
     if not buckets:
         issues.append("Create at least one bucket.")
 
-    bucket_labels: list[str] = []
+    labels: list[str] = []
     catch_all_count = 0
     for index, bucket in enumerate(buckets, start=1):
         label = normalize_text(bucket.get("label"))
         if not label:
             issues.append(f"Bucket {index} needs a label.")
         else:
-            bucket_labels.append(label)
-
-        catch_all = bool(bucket.get("catch_all", False))
-        selections = bucket.get("selections", {})
-        if catch_all:
+            labels.append(label)
+        if bucket.get("catch_all"):
             catch_all_count += 1
-        elif not any(bool(values) for values in selections.values()):
-            issues.append(f"{label or f'Bucket {index}'} needs at least one selected answer choice.")
+        elif not bucket.get("choices"):
+            issues.append(f"{label or f'Bucket {index}'} needs at least one selected choice.")
 
-    if len(bucket_labels) != len(set(bucket_labels)):
+    if len(labels) != len(set(labels)):
         issues.append("Bucket labels must be unique.")
     if catch_all_count > 1:
         issues.append("Only one bucket can be marked as `All others`.")
     return issues
 
 
-def build_bucketed_variable_record(
+def validate_complex_variable_definition(
     name: str,
-    source_variables: list[str],
-    match_logic: str,
+    existing: list[dict[str, Any]],
+    buckets: list[dict[str, Any]],
+    current_name: str | None = None,
+) -> list[str]:
+    """Validate a complex-variable definition."""
+    issues: list[str] = []
+    valid_name, message = validate_custom_variable_name(name, existing, current_name=current_name)
+    if not valid_name:
+        issues.append(message)
+    if not buckets:
+        issues.append("Create at least one output bucket.")
+
+    labels: list[str] = []
+    catch_all_count = 0
+    for index, bucket in enumerate(buckets, start=1):
+        label = normalize_text(bucket.get("label"))
+        if not label:
+            issues.append(f"Bucket {index} needs a label.")
+        else:
+            labels.append(label)
+
+        if bucket.get("catch_all"):
+            catch_all_count += 1
+            continue
+
+        if normalize_text(bucket.get("match_logic")) not in MATCH_LOGIC_OPTIONS:
+            issues.append(f"{label or f'Bucket {index}'} needs `ALL` or `ANY` logic.")
+
+        conditions = bucket.get("conditions", [])
+        if not conditions:
+            issues.append(f"{label or f'Bucket {index}'} needs at least one condition.")
+            continue
+
+        for condition_index, condition in enumerate(conditions, start=1):
+            variable = normalize_text(condition.get("variable"))
+            operator = normalize_text(condition.get("operator"))
+            choices = condition.get("choices", [])
+            if not variable:
+                issues.append(
+                    f"{label or f'Bucket {index}'} condition {condition_index} needs a source question."
+                )
+            if operator not in CONDITION_OPERATORS:
+                issues.append(
+                    f"{label or f'Bucket {index}'} condition {condition_index} needs a valid operator."
+                )
+            if not choices:
+                issues.append(
+                    f"{label or f'Bucket {index}'} condition {condition_index} needs selected choices."
+                )
+
+    if len(labels) != len(set(labels)):
+        issues.append("Bucket labels must be unique.")
+    if catch_all_count > 1:
+        issues.append("Only one bucket can be marked as `All others`.")
+    return issues
+
+
+def build_simple_variable_record(
+    name: str,
+    source_variable: str,
     buckets: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build a stored record for a bucketed custom variable."""
+    """Build a stored record for a simple custom variable."""
     return {
         "name": normalize_text(name),
-        "builder_type": "Bucketed Variable",
-        "source_variables": source_variables,
-        "match_logic": match_logic,
+        "builder_type": "Simple Variable",
+        "source_variables": [normalize_text(source_variable)],
         "bucket_count": len(buckets),
-        # Practical assumption: source-question conditions are evaluated using the
-        # saved match logic per bucket, and buckets are evaluated top-to-bottom.
+        "buckets": buckets,
+        "status": "configured",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def build_complex_variable_record(
+    name: str,
+    buckets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build a stored record for a complex custom variable."""
+    source_variables: list[str] = []
+    for bucket in buckets:
+        for condition in bucket.get("conditions", []):
+            variable = normalize_text(condition.get("variable"))
+            if variable and variable not in source_variables:
+                source_variables.append(variable)
+    return {
+        "name": normalize_text(name),
+        "builder_type": "Complex Variable",
+        "source_variables": source_variables,
+        "bucket_count": len(buckets),
         "buckets": buckets,
         "status": "configured",
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -139,7 +220,7 @@ def list_custom_variable_summaries(existing: list[dict[str, Any]]) -> list[dict[
     return [
         {
             "name": item.get("name", ""),
-            "match_logic": item.get("match_logic", ""),
+            "builder_type": item.get("builder_type", ""),
             "source_questions": len(item.get("source_variables", [])),
             "bucket_count": item.get("bucket_count", 0),
             "status": item.get("status", ""),

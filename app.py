@@ -14,12 +14,16 @@ from src.config import (
     validate_analysis_config,
 )
 from src.custom_vars import (
-    build_bucketed_variable_record,
+    BUILD_TYPES,
+    build_complex_variable_record,
     build_question_lookup,
+    build_simple_variable_record,
     list_custom_variable_summaries,
+    CONDITION_OPERATORS,
     MATCH_LOGIC_OPTIONS,
     upsert_custom_variable,
-    validate_bucketed_variable_definition,
+    validate_complex_variable_definition,
+    validate_simple_variable_definition,
 )
 from src.mapping import (
     build_scale_change_log,
@@ -98,7 +102,7 @@ def _reset_custom_variable_builder_state() -> None:
     keys_to_delete = [
         key
         for key in list(st.session_state.keys())
-        if key.startswith("custom_var_") or key.startswith("custom_bucket_")
+        if key.startswith("custom_var_") or key.startswith("custom_bucket_") or key.startswith("custom_condition_")
     ]
     for key in keys_to_delete:
         del st.session_state[key]
@@ -109,17 +113,37 @@ def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
     """Load a saved custom variable back into the builder form for editing."""
     _reset_custom_variable_builder_state()
     st.session_state.custom_var_edit_name = record.get("name")
+    st.session_state.custom_var_build_type = record.get("builder_type", BUILD_TYPES[0])
     st.session_state.custom_var_name = record.get("name", "")
-    st.session_state.custom_var_source_questions = list(record.get("source_variables", []))
-    st.session_state.custom_var_match_logic = record.get("match_logic", MATCH_LOGIC_OPTIONS[0])
     st.session_state.custom_var_bucket_count = int(record.get("bucket_count", 2) or 2)
-
-    for index, bucket in enumerate(record.get("buckets", [])):
-        st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
-        st.session_state[f"custom_bucket_catch_all_{index}"] = bool(bucket.get("catch_all", False))
-        st.session_state[f"custom_bucket_groups_{index}"] = list(bucket.get("comparison_groups", []))
-        for variable, values in bucket.get("selections", {}).items():
-            st.session_state[f"custom_bucket_{index}_{variable}"] = list(values)
+    if record.get("builder_type") == "Simple Variable":
+        source_variables = list(record.get("source_variables", []))
+        st.session_state.custom_var_simple_source = source_variables[0] if source_variables else ""
+        for index, bucket in enumerate(record.get("buckets", [])):
+            st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
+            st.session_state[f"custom_bucket_catch_all_{index}"] = bool(bucket.get("catch_all", False))
+            st.session_state[f"custom_bucket_groups_{index}"] = list(bucket.get("comparison_groups", []))
+            st.session_state[f"custom_bucket_simple_choices_{index}"] = list(bucket.get("choices", []))
+    else:
+        for index, bucket in enumerate(record.get("buckets", [])):
+            st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
+            st.session_state[f"custom_bucket_catch_all_{index}"] = bool(bucket.get("catch_all", False))
+            st.session_state[f"custom_bucket_match_logic_{index}"] = bucket.get("match_logic", MATCH_LOGIC_OPTIONS[0])
+            st.session_state[f"custom_bucket_condition_count_{index}"] = int(
+                bucket.get("condition_count", len(bucket.get("conditions", [])) or 1)
+            )
+            for condition_index, condition in enumerate(bucket.get("conditions", [])):
+                st.session_state[f"custom_condition_variable_{index}_{condition_index}"] = condition.get("variable", "")
+                st.session_state[f"custom_condition_operator_{index}_{condition_index}"] = condition.get(
+                    "operator",
+                    CONDITION_OPERATORS[0],
+                )
+                st.session_state[f"custom_condition_choices_{index}_{condition_index}"] = list(
+                    condition.get("choices", [])
+                )
+                st.session_state[f"custom_condition_groups_{index}_{condition_index}"] = list(
+                    condition.get("comparison_groups", [])
+                )
 
 
 def render_sidebar() -> str:
@@ -884,7 +908,8 @@ def render_step_5() -> None:
     """Render the custom variable builder."""
     st.header("4. Custom Variable Builder")
     st.write(
-        "Build custom variables using bucket logic across one or more source questions."
+        "Build either a simple variable from one source question or a complex variable using "
+        "Qualtrics-style condition logic."
     )
     question_lookup = build_question_lookup(st.session_state.question_metadata)
     question_options = list(question_lookup.keys())
@@ -906,23 +931,11 @@ def render_step_5() -> None:
                 _reset_custom_variable_builder_state()
                 st.rerun()
 
+    build_type = st.selectbox("Build Type", options=BUILD_TYPES, key="custom_var_build_type")
     name = st.text_input("Custom variable name", key="custom_var_name")
-    source_variables = st.multiselect(
-        "Source Questions",
-        options=question_options,
-        format_func=lambda value: question_labels.get(value, value),
-        key="custom_var_source_questions",
-        help="Select one or more source questions to use in this custom variable.",
-    )
-    match_logic = st.selectbox(
-        "Match Logic",
-        options=MATCH_LOGIC_OPTIONS,
-        key="custom_var_match_logic",
-        help="Use `ALL` when all populated source-question selections in a bucket must match. "
-        "Use `ANY` when any populated source-question selection can match.",
-    )
+
     bucket_count = st.number_input(
-        "Number of Buckets",
+        "Number of Choice Options",
         min_value=2,
         max_value=8,
         value=int(st.session_state.get("custom_var_bucket_count", 2) or 2),
@@ -933,71 +946,165 @@ def render_step_5() -> None:
     comparison_groups: list[str] = []
     if st.session_state.get("comparison_col") and st.session_state.get("comparison_group_order"):
         comparison_groups = list(st.session_state.comparison_group_order.keys())
-    st.caption(
-        "Buckets are evaluated from top to bottom. Use an `All others` bucket when you want a catch-all group."
-    )
-
     bucket_definitions: list[dict[str, Any]] = []
-    for bucket_index in range(int(bucket_count)):
-        st.markdown(f"### Bucket {bucket_index + 1}")
-        bucket_label = st.text_input(
-            "Bucket Label",
-            key=f"custom_bucket_label_{bucket_index}",
+
+    if build_type == "Simple Variable":
+        source_variable = st.selectbox(
+            "Source Question",
+            options=question_options,
+            format_func=lambda value: question_labels.get(value, value),
+            key="custom_var_simple_source",
+            help="Use one existing question and create your own grouped buckets from it.",
         )
-        bucket_catch_all = st.checkbox(
-            "All others",
-            key=f"custom_bucket_catch_all_{bucket_index}",
-            help="Use this bucket as a catch-all for respondents not matched earlier.",
+        st.caption(
+            "This is the simpler one-question builder. Use `All others` if you want a catch-all final option."
         )
-        selected_groups: list[str] = []
-        if comparison_groups:
-            selected_groups = st.multiselect(
-                "Comparison Groups",
-                options=comparison_groups,
-                key=f"custom_bucket_groups_{bucket_index}",
-                help="Optional. Leave blank to apply this bucket to all comparison groups.",
+        source_choices = question_lookup.get(source_variable, {}).get("answer_choices_list", [])
+        for bucket_index in range(int(bucket_count)):
+            st.markdown(f"### Choice Option {bucket_index + 1}")
+            bucket_label = st.text_input(
+                "Option Label",
+                key=f"custom_bucket_label_{bucket_index}",
+            )
+            bucket_catch_all = st.checkbox(
+                "All others",
+                key=f"custom_bucket_catch_all_{bucket_index}",
+            )
+            selected_groups: list[str] = []
+            if comparison_groups:
+                selected_groups = st.multiselect(
+                    "Comparison Groups",
+                    options=comparison_groups,
+                    key=f"custom_bucket_groups_{bucket_index}",
+                    help="Optional. Leave blank to apply this option to all comparison groups.",
+                )
+            selected_choices: list[str] = []
+            if not bucket_catch_all:
+                selected_choices = st.multiselect(
+                    question_labels.get(source_variable, source_variable),
+                    options=source_choices,
+                    key=f"custom_bucket_simple_choices_{bucket_index}",
+                )
+
+            bucket_definitions.append(
+                {
+                    "label": bucket_label,
+                    "catch_all": bucket_catch_all,
+                    "comparison_groups": selected_groups,
+                    "choices": selected_choices,
+                }
+            )
+    else:
+        st.caption(
+            "Complex Variable works more like Qualtrics filter logic. Each choice option gets its own "
+            "condition logic, and each condition can target different source questions or comparison groups."
+        )
+        for bucket_index in range(int(bucket_count)):
+            st.markdown(f"### Choice Option {bucket_index + 1}")
+            bucket_label = st.text_input(
+                "Option Label",
+                key=f"custom_bucket_label_{bucket_index}",
+            )
+            bucket_catch_all = st.checkbox(
+                "All others",
+                key=f"custom_bucket_catch_all_{bucket_index}",
+            )
+            bucket_match_logic = st.selectbox(
+                "Show only responses where",
+                options=MATCH_LOGIC_OPTIONS,
+                key=f"custom_bucket_match_logic_{bucket_index}",
+                format_func=lambda value: (
+                    "All of the following are true" if value == "ALL" else "Any of the following are true"
+                ),
+            )
+            condition_count = st.number_input(
+                "Number of Conditions",
+                min_value=1,
+                max_value=6,
+                value=int(st.session_state.get(f"custom_bucket_condition_count_{bucket_index}", 1) or 1),
+                step=1,
+                key=f"custom_bucket_condition_count_{bucket_index}",
             )
 
-        selections: dict[str, list[str]] = {}
-        if not bucket_catch_all:
-            for variable in source_variables:
-                choices = question_lookup.get(variable, {}).get("answer_choices_list", [])
-                selected_choices = st.multiselect(
-                    f"{question_labels.get(variable, variable)}",
-                    options=choices,
-                    key=f"custom_bucket_{bucket_index}_{variable}",
-                )
-                selections[variable] = selected_choices
+            conditions: list[dict[str, Any]] = []
+            if not bucket_catch_all:
+                for condition_index in range(int(condition_count)):
+                    st.markdown(f"Condition {condition_index + 1}")
+                    condition_variable = st.selectbox(
+                        "Source Question",
+                        options=question_options,
+                        format_func=lambda value: question_labels.get(value, value),
+                        key=f"custom_condition_variable_{bucket_index}_{condition_index}",
+                    )
+                    condition_operator = st.selectbox(
+                        "Operator",
+                        options=CONDITION_OPERATORS,
+                        key=f"custom_condition_operator_{bucket_index}_{condition_index}",
+                    )
+                    condition_choices = st.multiselect(
+                        "Selected Choices",
+                        options=question_lookup.get(condition_variable, {}).get("answer_choices_list", []),
+                        key=f"custom_condition_choices_{bucket_index}_{condition_index}",
+                    )
+                    condition_groups: list[str] = []
+                    if comparison_groups:
+                        condition_groups = st.multiselect(
+                            "Comparison Groups",
+                            options=comparison_groups,
+                            key=f"custom_condition_groups_{bucket_index}_{condition_index}",
+                            help="Optional. Leave blank to apply this condition to all comparison groups.",
+                        )
+                    conditions.append(
+                        {
+                            "variable": condition_variable,
+                            "operator": condition_operator,
+                            "choices": condition_choices,
+                            "comparison_groups": condition_groups,
+                        }
+                    )
 
-        bucket_definitions.append(
-            {
-                "label": bucket_label,
-                "catch_all": bucket_catch_all,
-                "comparison_groups": selected_groups,
-                "selections": selections,
-            }
-        )
+            bucket_definitions.append(
+                {
+                    "label": bucket_label,
+                    "catch_all": bucket_catch_all,
+                    "match_logic": bucket_match_logic,
+                    "condition_count": int(condition_count),
+                    "conditions": conditions,
+                }
+            )
 
     save_label = "Update Custom Variable" if editing_name else "Save Custom Variable"
     if st.button(save_label, use_container_width=False):
-        issues = validate_bucketed_variable_definition(
-            name,
-            st.session_state.custom_variables,
-            source_variables,
-            match_logic,
-            bucket_definitions,
-            current_name=editing_name,
-        )
+        if build_type == "Simple Variable":
+            issues = validate_simple_variable_definition(
+                name,
+                st.session_state.custom_variables,
+                st.session_state.get("custom_var_simple_source", ""),
+                bucket_definitions,
+                current_name=editing_name,
+            )
+        else:
+            issues = validate_complex_variable_definition(
+                name,
+                st.session_state.custom_variables,
+                bucket_definitions,
+                current_name=editing_name,
+            )
         if issues:
             for issue in issues:
                 st.error(issue)
         else:
-            record = build_bucketed_variable_record(
-                name=name,
-                source_variables=source_variables,
-                match_logic=match_logic,
-                buckets=bucket_definitions,
-            )
+            if build_type == "Simple Variable":
+                record = build_simple_variable_record(
+                    name=name,
+                    source_variable=st.session_state.get("custom_var_simple_source", ""),
+                    buckets=bucket_definitions,
+                )
+            else:
+                record = build_complex_variable_record(
+                    name=name,
+                    buckets=bucket_definitions,
+                )
             st.session_state.custom_variables = upsert_custom_variable(
                 st.session_state.custom_variables,
                 record,
@@ -1016,7 +1123,7 @@ def render_step_5() -> None:
             pd.DataFrame(summaries).rename(
                 columns={
                     "name": "Variable Name",
-                    "match_logic": "Match Logic",
+                    "builder_type": "Build Type",
                     "source_questions": "Source Questions",
                     "bucket_count": "Buckets",
                     "status": "Status",
@@ -1052,7 +1159,7 @@ def render_step_5() -> None:
                             _reset_custom_variable_builder_state()
                         st.success(f"Deleted custom variable `{custom_variable.get('name', '')}`.")
                         st.rerun()
-                st.write(f"Match Logic: `{custom_variable.get('match_logic', '')}`")
+                st.write(f"Build Type: `{custom_variable.get('builder_type', '')}`")
                 st.write(
                     "Source Questions: "
                     + ", ".join(custom_variable.get("source_variables", []))
@@ -1061,12 +1168,26 @@ def render_step_5() -> None:
                     st.markdown(f"**Bucket {index}: {bucket.get('label', '')}**")
                     if bucket.get("catch_all"):
                         st.caption("Catch-all bucket for all remaining respondents.")
-                    groups = bucket.get("comparison_groups", [])
-                    if groups:
-                        st.caption("Comparison Groups: " + ", ".join(groups))
-                    for variable, values in bucket.get("selections", {}).items():
-                        if values:
-                            st.write(f"{variable}: " + " | ".join(values))
+                    if custom_variable.get("builder_type") == "Simple Variable":
+                        groups = bucket.get("comparison_groups", [])
+                        if groups:
+                            st.caption("Comparison Groups: " + ", ".join(groups))
+                        if bucket.get("choices"):
+                            st.write("Choices: " + " | ".join(bucket.get("choices", [])))
+                    else:
+                        st.caption(
+                            "Logic: "
+                            + ("All of the following are true" if bucket.get("match_logic") == "ALL" else "Any of the following are true")
+                        )
+                        for condition in bucket.get("conditions", []):
+                            condition_text = (
+                                f"{condition.get('variable', '')} | {condition.get('operator', '')} | "
+                                + " | ".join(condition.get("choices", []))
+                            )
+                            groups = condition.get("comparison_groups", [])
+                            if groups:
+                                condition_text += " | Groups: " + ", ".join(groups)
+                            st.write(condition_text)
     else:
         st.caption("No custom variables configured yet.")
 
