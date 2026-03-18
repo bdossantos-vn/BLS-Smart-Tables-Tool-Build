@@ -100,16 +100,37 @@ def _summarize_choice_change(old_choices: str, new_choices: str, max_len: int = 
 
 def _reset_custom_variable_builder_state() -> None:
     """Clear custom-variable builder inputs after a successful save."""
-    keys_to_delete = [
-        key
-        for key in list(st.session_state.keys())
-        if key.startswith("custom_var_") or key.startswith("custom_bucket_") or key.startswith("custom_condition_")
-    ]
-    for key in keys_to_delete:
-        del st.session_state[key]
+    for key in [
+        "custom_var_name",
+        "custom_var_simple_source",
+        "custom_var_simple_fallback_mode",
+        "custom_var_simple_fallback_label",
+    ]:
+        st.session_state[key] = ""
+
+    for key in [
+        "custom_var_build_type",
+        "custom_var_edit_name",
+    ]:
+        st.session_state[key] = BUILD_TYPES[0] if key == "custom_var_build_type" else None
+
     st.session_state.custom_var_edit_name = None
     st.session_state.custom_var_build_type = BUILD_TYPES[0]
     st.session_state.custom_var_bucket_count = 2
+    st.session_state.custom_var_simple_source = ""
+    st.session_state.custom_var_simple_fallback_mode = "Ignore / Missing"
+    st.session_state.custom_var_simple_fallback_label = ""
+
+    for bucket_index in range(8):
+        st.session_state[f"custom_bucket_label_{bucket_index}"] = ""
+        st.session_state[f"custom_bucket_catch_all_{bucket_index}"] = False
+        st.session_state[f"custom_bucket_match_logic_{bucket_index}"] = MATCH_LOGIC_OPTIONS[0]
+        st.session_state[f"custom_bucket_condition_count_{bucket_index}"] = 1
+        st.session_state[f"custom_bucket_simple_choices_{bucket_index}"] = []
+        for condition_index in range(6):
+            st.session_state[f"custom_condition_variable_{bucket_index}_{condition_index}"] = ""
+            st.session_state[f"custom_condition_operator_{bucket_index}_{condition_index}"] = CONDITION_OPERATORS[0]
+            st.session_state[f"custom_condition_choices_{bucket_index}_{condition_index}"] = []
 
 
 def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
