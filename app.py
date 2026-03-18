@@ -946,10 +946,11 @@ def render_step_5() -> None:
     bucket_definitions: list[dict[str, Any]] = []
 
     if build_type == "Simple Variable":
+        simple_source_options = ["", *question_options]
         source_variable = st.selectbox(
             "Source Question",
-            options=question_options,
-            format_func=lambda value: question_labels.get(value, value),
+            options=simple_source_options,
+            format_func=lambda value: question_labels.get(value, value) if value else "Select source question",
             key="custom_var_simple_source",
             help="Use one existing question and create your own grouped buckets from it.",
         )
@@ -1204,12 +1205,10 @@ def render_step_5() -> None:
                         if index == len(custom_variable.get("buckets", [])):
                             fallback_mode = custom_variable.get("fallback_mode", "Ignore / Missing")
                             if fallback_mode == "Create additional option":
-                                st.caption(
-                                    "Unmatched: "
-                                    + (custom_variable.get("fallback_label") or "Additional Option")
-                                )
+                                fallback_text = custom_variable.get("fallback_label") or "Additional Option"
                             else:
-                                st.caption("Unmatched: Ignore / Missing")
+                                fallback_text = "Ignore / Missing"
+                            st.caption(f"Unmatched N: {unmatched_count} | Handling: {fallback_text}")
                             if unmatched_count > 0:
                                 st.warning(
                                     f"{unmatched_count} respondent(s) are not currently captured by the named buckets."
