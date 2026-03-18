@@ -1478,6 +1478,11 @@ def render_step_7() -> None:
     for index in range(banner_count):
         row = existing_banners[index]
         st.markdown(f"**Banner {index + 1}**")
+        name = st.text_input(
+            "Banner Name",
+            value=row.get("name", ""),
+            key=f"banner_name_{index}",
+        )
         col1, col2, col3 = st.columns(3)
         options_with_blank = ["", *variable_options]
 
@@ -1523,6 +1528,7 @@ def render_step_7() -> None:
 
         rendered_banners.append(
             {
+                "name": name.strip(),
                 "level_1": level_1,
                 "level_2": level_2,
                 "level_3": level_3 if level_2 else "",

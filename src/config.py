@@ -28,6 +28,7 @@ def build_default_banner_config() -> dict:
 def build_default_banner_row() -> dict[str, str]:
     """Return a blank nested-banner row."""
     return {
+        "name": "",
         "level_1": "",
         "level_2": "",
         "level_3": "",
@@ -131,11 +132,14 @@ def validate_analysis_config(
     else:
         seen_banner_paths: set[tuple[str, ...]] = set()
         for index, row in enumerate(banner_config.get("banners", []), start=1):
+            banner_name = normalize_text(row.get("name"))
             level_values = [
                 normalize_text(row.get("level_1")),
                 normalize_text(row.get("level_2")),
                 normalize_text(row.get("level_3")),
             ]
+            if not banner_name:
+                issues.append(f"Banner {index} needs a name.")
             if not level_values[0]:
                 issues.append(f"Banner {index} needs a Level 1 variable.")
                 continue
