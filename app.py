@@ -122,7 +122,6 @@ def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
         for index, bucket in enumerate(record.get("buckets", [])):
             st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
             st.session_state[f"custom_bucket_catch_all_{index}"] = bool(bucket.get("catch_all", False))
-            st.session_state[f"custom_bucket_groups_{index}"] = list(bucket.get("comparison_groups", []))
             st.session_state[f"custom_bucket_simple_choices_{index}"] = list(bucket.get("choices", []))
     else:
         for index, bucket in enumerate(record.get("buckets", [])):
@@ -140,9 +139,6 @@ def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
                 )
                 st.session_state[f"custom_condition_choices_{index}_{condition_index}"] = list(
                     condition.get("choices", [])
-                )
-                st.session_state[f"custom_condition_groups_{index}_{condition_index}"] = list(
-                    condition.get("comparison_groups", [])
                 )
 
 
@@ -943,9 +939,6 @@ def render_step_5() -> None:
         key="custom_var_bucket_count",
     )
 
-    comparison_groups: list[str] = []
-    if st.session_state.get("comparison_col") and st.session_state.get("comparison_group_order"):
-        comparison_groups = list(st.session_state.comparison_group_order.keys())
     bucket_definitions: list[dict[str, Any]] = []
 
     if build_type == "Simple Variable":
@@ -970,14 +963,6 @@ def render_step_5() -> None:
                 "All others",
                 key=f"custom_bucket_catch_all_{bucket_index}",
             )
-            selected_groups: list[str] = []
-            if comparison_groups:
-                selected_groups = st.multiselect(
-                    "Comparison Groups",
-                    options=comparison_groups,
-                    key=f"custom_bucket_groups_{bucket_index}",
-                    help="Optional. Leave blank to apply this option to all comparison groups.",
-                )
             selected_choices: list[str] = []
             if not bucket_catch_all:
                 selected_choices = st.multiselect(
@@ -990,14 +975,13 @@ def render_step_5() -> None:
                 {
                     "label": bucket_label,
                     "catch_all": bucket_catch_all,
-                    "comparison_groups": selected_groups,
                     "choices": selected_choices,
                 }
             )
     else:
         st.caption(
             "Complex Variable works more like Qualtrics filter logic. Each choice option gets its own "
-            "condition logic, and each condition can target different source questions or comparison groups."
+            "condition logic across one or more source questions."
         )
         for bucket_index in range(int(bucket_count)):
             st.markdown(f"### Choice Option {bucket_index + 1}")
@@ -1046,20 +1030,11 @@ def render_step_5() -> None:
                         options=question_lookup.get(condition_variable, {}).get("answer_choices_list", []),
                         key=f"custom_condition_choices_{bucket_index}_{condition_index}",
                     )
-                    condition_groups: list[str] = []
-                    if comparison_groups:
-                        condition_groups = st.multiselect(
-                            "Comparison Groups",
-                            options=comparison_groups,
-                            key=f"custom_condition_groups_{bucket_index}_{condition_index}",
-                            help="Optional. Leave blank to apply this condition to all comparison groups.",
-                        )
                     conditions.append(
                         {
                             "variable": condition_variable,
                             "operator": condition_operator,
                             "choices": condition_choices,
-                            "comparison_groups": condition_groups,
                         }
                     )
 
@@ -1169,9 +1144,6 @@ def render_step_5() -> None:
                     if bucket.get("catch_all"):
                         st.caption("Catch-all bucket for all remaining respondents.")
                     if custom_variable.get("builder_type") == "Simple Variable":
-                        groups = bucket.get("comparison_groups", [])
-                        if groups:
-                            st.caption("Comparison Groups: " + ", ".join(groups))
                         if bucket.get("choices"):
                             st.write("Choices: " + " | ".join(bucket.get("choices", [])))
                     else:
@@ -1184,9 +1156,6 @@ def render_step_5() -> None:
                                 f"{condition.get('variable', '')} | {condition.get('operator', '')} | "
                                 + " | ".join(condition.get("choices", []))
                             )
-                            groups = condition.get("comparison_groups", [])
-                            if groups:
-                                condition_text += " | Groups: " + ", ".join(groups)
                             st.write(condition_text)
     else:
         st.caption("No custom variables configured yet.")
