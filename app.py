@@ -1448,6 +1448,7 @@ def render_step_7() -> None:
     variable_catalog = build_analysis_variable_catalog(
         st.session_state.question_metadata,
         st.session_state.custom_variables,
+        st.session_state.get("comparison_col"),
     )
     variable_options = [item["id"] for item in variable_catalog]
     variable_labels = {item["id"]: item["label"] for item in variable_catalog}

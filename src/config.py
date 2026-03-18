@@ -47,10 +47,23 @@ def build_default_stat_config() -> dict:
 def build_analysis_variable_catalog(
     question_metadata: list[dict[str, Any]],
     custom_variables: list[dict[str, Any]],
+    comparison_col: str | None = None,
 ) -> list[dict[str, str]]:
     """Build a catalog of variables available for banners and filters."""
     catalog: list[dict[str, str]] = []
     seen: set[str] = set()
+
+    comparison_variable = normalize_text(comparison_col)
+    if comparison_variable:
+        catalog.append(
+            {
+                "id": comparison_variable,
+                "label": comparison_variable,
+                "kind": "Comparison Variable",
+                "question_type": "Single-Select",
+            }
+        )
+        seen.add(comparison_variable)
 
     for row in question_metadata:
         variable = normalize_text(row.get("variable"))
