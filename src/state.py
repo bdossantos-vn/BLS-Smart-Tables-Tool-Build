@@ -43,6 +43,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "scale_mappings": {},
     "scale_change_log": [],
     "scale_mapping_seed_version": 0,
+    "scale_save_message": "",
+    "net_save_message": "",
     "custom_variables": [],
     "custom_var_edit_name": None,
     "custom_var_reset_requested": False,

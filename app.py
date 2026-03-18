@@ -880,6 +880,10 @@ def render_step_4() -> None:
         st.info("No questions are currently marked as `Scale / Likert`.")
         return
 
+    if st.session_state.get("scale_save_message"):
+        st.success(st.session_state.scale_save_message)
+        st.session_state.scale_save_message = ""
+
     st.write(
         "Review scale questions in one table. Each row is a scale question and each column is a "
         "scale point in order from 1 to n."
@@ -948,7 +952,7 @@ def render_step_4() -> None:
             timestamp = format_timestamp()
             for change in build_scale_change_log(previous_mappings, st.session_state.scale_mappings):
                 st.session_state.scale_change_log.append(f"[{timestamp}] {change}")
-            st.success("Scale mappings saved.")
+            st.session_state.scale_save_message = "Scale mappings saved."
             st.rerun()
 
     st.subheader("Change Log")
@@ -974,6 +978,10 @@ def render_step_5_nets() -> None:
     if not scale_questions:
         st.info("No `Scale / Likert` questions are currently available for net creation.")
         return
+
+    if st.session_state.get("net_save_message"):
+        st.success(st.session_state.net_save_message)
+        st.session_state.net_save_message = ""
 
     st.session_state.scale_mappings = ensure_scale_mappings(
         scale_questions,
@@ -1019,10 +1027,22 @@ def render_step_5_nets() -> None:
     )
     st.session_state.net_editor_frame = edited.copy()
 
-    if st.button("Save Nets", type="primary", use_container_width=False):
-        st.session_state.net_definitions = save_net_editor_frame(edited)
-        st.success("Net definitions saved.")
-        st.rerun()
+    save_col, reset_col = st.columns(2)
+    with save_col:
+        if st.button("Save Nets", type="primary", use_container_width=True):
+            st.session_state.net_definitions = save_net_editor_frame(edited)
+            st.session_state.net_save_message = "Net definitions saved."
+            st.rerun()
+    with reset_col:
+        if st.button("Reset Nets", use_container_width=True):
+            reset_frame = edited.copy()
+            for net_label in NET_LABELS:
+                if net_label in reset_frame.columns:
+                    reset_frame[net_label] = False
+            st.session_state.net_editor_frame = reset_frame
+            st.session_state.net_definitions = save_net_editor_frame(reset_frame)
+            st.session_state.net_save_message = "Net definitions reset."
+            st.rerun()
 
 
 def render_step_6() -> None:
