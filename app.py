@@ -108,6 +108,8 @@ def _reset_custom_variable_builder_state() -> None:
     for key in keys_to_delete:
         del st.session_state[key]
     st.session_state.custom_var_edit_name = None
+    st.session_state.custom_var_build_type = BUILD_TYPES[0]
+    st.session_state.custom_var_bucket_count = 2
 
 
 def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
@@ -120,9 +122,10 @@ def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
     if record.get("builder_type") == "Simple Variable":
         source_variables = list(record.get("source_variables", []))
         st.session_state.custom_var_simple_source = source_variables[0] if source_variables else ""
+        st.session_state.custom_var_simple_fallback_mode = record.get("fallback_mode", "Ignore / Missing")
+        st.session_state.custom_var_simple_fallback_label = record.get("fallback_label", "")
         for index, bucket in enumerate(record.get("buckets", [])):
             st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
-            st.session_state[f"custom_bucket_catch_all_{index}"] = bool(bucket.get("catch_all", False))
             st.session_state[f"custom_bucket_simple_choices_{index}"] = list(bucket.get("choices", []))
     else:
         for index, bucket in enumerate(record.get("buckets", [])):
@@ -951,7 +954,7 @@ def render_step_5() -> None:
             help="Use one existing question and create your own grouped buckets from it.",
         )
         st.caption(
-            "This is the simpler one-question builder. Use `All others` if you want a catch-all final option."
+            "This is the simpler one-question builder."
         )
         source_choices = question_lookup.get(source_variable, {}).get("answer_choices_list", [])
         simple_bucket_preview: list[dict[str, Any]] = []
@@ -961,25 +964,32 @@ def render_step_5() -> None:
                 "Option Label",
                 key=f"custom_bucket_label_{bucket_index}",
             )
-            bucket_catch_all = st.checkbox(
-                "All others",
-                key=f"custom_bucket_catch_all_{bucket_index}",
-            )
             selected_choices: list[str] = []
-            if not bucket_catch_all:
-                selected_choices = st.multiselect(
-                    question_labels.get(source_variable, source_variable),
-                    options=source_choices,
-                    key=f"custom_bucket_simple_choices_{bucket_index}",
-                )
+            selected_choices = st.multiselect(
+                question_labels.get(source_variable, source_variable),
+                options=source_choices,
+                key=f"custom_bucket_simple_choices_{bucket_index}",
+            )
 
             bucket_record = {
                 "label": bucket_label,
-                "catch_all": bucket_catch_all,
                 "choices": selected_choices,
             }
             bucket_definitions.append(bucket_record)
             simple_bucket_preview.append(bucket_record)
+
+        st.subheader("Unmatched Responses")
+        fallback_mode = st.selectbox(
+            "For respondents not matched above",
+            options=["Ignore / Missing", "Create additional option"],
+            key="custom_var_simple_fallback_mode",
+        )
+        fallback_label = ""
+        if fallback_mode == "Create additional option":
+            fallback_label = st.text_input(
+                "Additional Option Label",
+                key="custom_var_simple_fallback_label",
+            )
 
         if isinstance(st.session_state.cleaned_df, pd.DataFrame) and not st.session_state.cleaned_df.empty:
             bucket_counts, unmatched_count = compute_simple_variable_counts(
@@ -996,7 +1006,15 @@ def render_step_5() -> None:
                         "N": bucket_counts[index],
                     }
                 )
-            preview_rows.append({"Option": "Unmatched", "N": unmatched_count})
+            if fallback_mode == "Create additional option":
+                preview_rows.append(
+                    {
+                        "Option": fallback_label or "Additional Option",
+                        "N": unmatched_count,
+                    }
+                )
+            else:
+                preview_rows.append({"Option": "Unmatched", "N": unmatched_count})
             st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
 
             bucket_definitions = simple_bucket_preview
@@ -1078,6 +1096,8 @@ def render_step_5() -> None:
                 st.session_state.custom_variables,
                 st.session_state.get("custom_var_simple_source", ""),
                 bucket_definitions,
+                st.session_state.get("custom_var_simple_fallback_mode", "Ignore / Missing"),
+                st.session_state.get("custom_var_simple_fallback_label", ""),
                 current_name=editing_name,
             )
         else:
@@ -1096,6 +1116,8 @@ def render_step_5() -> None:
                     name=name,
                     source_variable=st.session_state.get("custom_var_simple_source", ""),
                     buckets=bucket_definitions,
+                    fallback_mode=st.session_state.get("custom_var_simple_fallback_mode", "Ignore / Missing"),
+                    fallback_label=st.session_state.get("custom_var_simple_fallback_label", ""),
                 )
             else:
                 record = build_complex_variable_record(
@@ -1166,8 +1188,32 @@ def render_step_5() -> None:
                     if bucket.get("catch_all"):
                         st.caption("Catch-all bucket for all remaining respondents.")
                     if custom_variable.get("builder_type") == "Simple Variable":
+                        source_variable = (custom_variable.get("source_variables") or [""])[0]
+                        bucket_counts: list[int] = []
+                        unmatched_count = 0
+                        if isinstance(st.session_state.cleaned_df, pd.DataFrame) and not st.session_state.cleaned_df.empty:
+                            bucket_counts, unmatched_count = compute_simple_variable_counts(
+                                st.session_state.cleaned_df,
+                                source_variable,
+                                custom_variable.get("buckets", []),
+                            )
                         if bucket.get("choices"):
                             st.write("Choices: " + " | ".join(bucket.get("choices", [])))
+                        if bucket_counts and index <= len(bucket_counts):
+                            st.caption(f"N Count: {bucket_counts[index - 1]}")
+                        if index == len(custom_variable.get("buckets", [])):
+                            fallback_mode = custom_variable.get("fallback_mode", "Ignore / Missing")
+                            if fallback_mode == "Create additional option":
+                                st.caption(
+                                    "Unmatched: "
+                                    + (custom_variable.get("fallback_label") or "Additional Option")
+                                )
+                            else:
+                                st.caption("Unmatched: Ignore / Missing")
+                            if unmatched_count > 0:
+                                st.warning(
+                                    f"{unmatched_count} respondent(s) are not currently captured by the named buckets."
+                                )
                     else:
                         st.caption(
                             "Logic: "

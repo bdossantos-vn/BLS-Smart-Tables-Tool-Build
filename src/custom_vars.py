@@ -74,6 +74,8 @@ def validate_simple_variable_definition(
     existing: list[dict[str, Any]],
     source_variable: str,
     buckets: list[dict[str, Any]],
+    fallback_mode: str,
+    fallback_label: str,
     current_name: str | None = None,
 ) -> list[str]:
     """Validate a simple-variable definition."""
@@ -87,22 +89,21 @@ def validate_simple_variable_definition(
         issues.append("Create at least one bucket.")
 
     labels: list[str] = []
-    catch_all_count = 0
     for index, bucket in enumerate(buckets, start=1):
         label = normalize_text(bucket.get("label"))
         if not label:
             issues.append(f"Bucket {index} needs a label.")
         else:
             labels.append(label)
-        if bucket.get("catch_all"):
-            catch_all_count += 1
-        elif not bucket.get("choices"):
+        if not bucket.get("choices"):
             issues.append(f"{label or f'Bucket {index}'} needs at least one selected choice.")
 
     if len(labels) != len(set(labels)):
         issues.append("Bucket labels must be unique.")
-    if catch_all_count > 1:
-        issues.append("Only one bucket can be marked as `All others`.")
+    if fallback_mode not in {"Ignore / Missing", "Create additional option"}:
+        issues.append("Select how unmatched respondents should be handled.")
+    if fallback_mode == "Create additional option" and not normalize_text(fallback_label):
+        issues.append("Provide a label for the additional unmatched option.")
     return issues
 
 
@@ -169,6 +170,8 @@ def build_simple_variable_record(
     name: str,
     source_variable: str,
     buckets: list[dict[str, Any]],
+    fallback_mode: str,
+    fallback_label: str,
 ) -> dict[str, Any]:
     """Build a stored record for a simple custom variable."""
     return {
@@ -177,6 +180,8 @@ def build_simple_variable_record(
         "source_variables": [normalize_text(source_variable)],
         "bucket_count": len(buckets),
         "buckets": buckets,
+        "fallback_mode": fallback_mode,
+        "fallback_label": normalize_text(fallback_label),
         "status": "configured",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
