@@ -18,6 +18,7 @@ from src.custom_vars import (
     build_complex_variable_record,
     build_question_lookup,
     build_simple_variable_record,
+    compute_complex_variable_counts,
     compute_simple_variable_counts,
     list_custom_variable_summaries,
     CONDITION_OPERATORS,
@@ -105,6 +106,8 @@ def _reset_custom_variable_builder_state() -> None:
         "custom_var_simple_source",
         "custom_var_simple_fallback_mode",
         "custom_var_simple_fallback_label",
+        "custom_var_complex_fallback_mode",
+        "custom_var_complex_fallback_label",
     ]:
         st.session_state[key] = ""
 
@@ -120,16 +123,17 @@ def _reset_custom_variable_builder_state() -> None:
     st.session_state.custom_var_simple_source = ""
     st.session_state.custom_var_simple_fallback_mode = "Ignore / Missing"
     st.session_state.custom_var_simple_fallback_label = ""
+    st.session_state.custom_var_complex_fallback_mode = "Ignore / Missing"
+    st.session_state.custom_var_complex_fallback_label = ""
 
     for bucket_index in range(8):
         st.session_state[f"custom_bucket_label_{bucket_index}"] = ""
-        st.session_state[f"custom_bucket_catch_all_{bucket_index}"] = False
         st.session_state[f"custom_bucket_match_logic_{bucket_index}"] = MATCH_LOGIC_OPTIONS[0]
         st.session_state[f"custom_bucket_condition_count_{bucket_index}"] = 1
         st.session_state[f"custom_bucket_simple_choices_{bucket_index}"] = []
         for condition_index in range(6):
             st.session_state[f"custom_condition_variable_{bucket_index}_{condition_index}"] = ""
-            st.session_state[f"custom_condition_operator_{bucket_index}_{condition_index}"] = CONDITION_OPERATORS[0]
+            st.session_state[f"custom_condition_operator_{bucket_index}_{condition_index}"] = ""
             st.session_state[f"custom_condition_choices_{bucket_index}_{condition_index}"] = []
 
 
@@ -149,9 +153,10 @@ def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
             st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
             st.session_state[f"custom_bucket_simple_choices_{index}"] = list(bucket.get("choices", []))
     else:
+        st.session_state.custom_var_complex_fallback_mode = record.get("fallback_mode", "Ignore / Missing")
+        st.session_state.custom_var_complex_fallback_label = record.get("fallback_label", "")
         for index, bucket in enumerate(record.get("buckets", [])):
             st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
-            st.session_state[f"custom_bucket_catch_all_{index}"] = bool(bucket.get("catch_all", False))
             st.session_state[f"custom_bucket_match_logic_{index}"] = bucket.get("match_logic", MATCH_LOGIC_OPTIONS[0])
             st.session_state[f"custom_bucket_condition_count_{index}"] = int(
                 bucket.get("condition_count", len(bucket.get("conditions", [])) or 1)
@@ -160,7 +165,7 @@ def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
                 st.session_state[f"custom_condition_variable_{index}_{condition_index}"] = condition.get("variable", "")
                 st.session_state[f"custom_condition_operator_{index}_{condition_index}"] = condition.get(
                     "operator",
-                    CONDITION_OPERATORS[0],
+                    "",
                 )
                 st.session_state[f"custom_condition_choices_{index}_{condition_index}"] = list(
                     condition.get("choices", [])
@@ -1054,15 +1059,12 @@ def render_step_5() -> None:
             "Complex Variable works more like Qualtrics filter logic. Each choice option gets its own "
             "condition logic across one or more source questions."
         )
+        complex_bucket_preview: list[dict[str, Any]] = []
         for bucket_index in range(int(bucket_count)):
             st.markdown(f"### Choice Option {bucket_index + 1}")
             bucket_label = st.text_input(
                 "Option Label",
                 key=f"custom_bucket_label_{bucket_index}",
-            )
-            bucket_catch_all = st.checkbox(
-                "All others",
-                key=f"custom_bucket_catch_all_{bucket_index}",
             )
             bucket_match_logic = st.selectbox(
                 "Show only responses where",
@@ -1081,42 +1083,79 @@ def render_step_5() -> None:
             )
 
             conditions: list[dict[str, Any]] = []
-            if not bucket_catch_all:
-                for condition_index in range(int(condition_count)):
-                    st.markdown(f"Condition {condition_index + 1}")
-                    condition_variable = st.selectbox(
-                        "Source Question",
-                        options=question_options,
-                        format_func=lambda value: question_labels.get(value, value),
-                        key=f"custom_condition_variable_{bucket_index}_{condition_index}",
-                    )
-                    condition_operator = st.selectbox(
-                        "Operator",
-                        options=CONDITION_OPERATORS,
-                        key=f"custom_condition_operator_{bucket_index}_{condition_index}",
-                    )
-                    condition_choices = st.multiselect(
-                        "Selected Choices",
-                        options=question_lookup.get(condition_variable, {}).get("answer_choices_list", []),
-                        key=f"custom_condition_choices_{bucket_index}_{condition_index}",
-                    )
-                    conditions.append(
-                        {
-                            "variable": condition_variable,
-                            "operator": condition_operator,
-                            "choices": condition_choices,
-                        }
-                    )
+            for condition_index in range(int(condition_count)):
+                st.markdown(f"Condition {condition_index + 1}")
+                condition_variable = st.selectbox(
+                    "Source Question",
+                    options=["", *question_options],
+                    format_func=lambda value: question_labels.get(value, value) if value else "Select source question",
+                    key=f"custom_condition_variable_{bucket_index}_{condition_index}",
+                )
+                condition_operator = st.selectbox(
+                    "Operator",
+                    options=["", *CONDITION_OPERATORS],
+                    format_func=lambda value: value if value else "Select operator",
+                    key=f"custom_condition_operator_{bucket_index}_{condition_index}",
+                )
+                condition_choices = st.multiselect(
+                    "Selected Choices",
+                    options=question_lookup.get(condition_variable, {}).get("answer_choices_list", []),
+                    key=f"custom_condition_choices_{bucket_index}_{condition_index}",
+                )
+                conditions.append(
+                    {
+                        "variable": condition_variable,
+                        "operator": condition_operator,
+                        "choices": condition_choices,
+                    }
+                )
 
-            bucket_definitions.append(
-                {
-                    "label": bucket_label,
-                    "catch_all": bucket_catch_all,
-                    "match_logic": bucket_match_logic,
-                    "condition_count": int(condition_count),
-                    "conditions": conditions,
-                }
+            bucket_record = {
+                "label": bucket_label,
+                "match_logic": bucket_match_logic,
+                "condition_count": int(condition_count),
+                "conditions": conditions,
+            }
+            bucket_definitions.append(bucket_record)
+            complex_bucket_preview.append(bucket_record)
+
+        st.subheader("Unmatched Responses")
+        complex_fallback_mode = st.selectbox(
+            "For respondents not matched above",
+            options=["Ignore / Missing", "Create additional option"],
+            key="custom_var_complex_fallback_mode",
+        )
+        complex_fallback_label = ""
+        if complex_fallback_mode == "Create additional option":
+            complex_fallback_label = st.text_input(
+                "Additional Option Label",
+                key="custom_var_complex_fallback_label",
             )
+
+        if isinstance(st.session_state.cleaned_df, pd.DataFrame) and not st.session_state.cleaned_df.empty:
+            bucket_counts, unmatched_count = compute_complex_variable_counts(
+                st.session_state.cleaned_df,
+                complex_bucket_preview,
+            )
+            preview_rows = []
+            for index, bucket in enumerate(complex_bucket_preview):
+                preview_rows.append(
+                    {
+                        "Option": bucket.get("label") or f"Choice Option {index + 1}",
+                        "N": bucket_counts[index],
+                    }
+                )
+            if complex_fallback_mode == "Create additional option":
+                preview_rows.append(
+                    {
+                        "Option": complex_fallback_label or "Additional Option",
+                        "N": unmatched_count,
+                    }
+                )
+            else:
+                preview_rows.append({"Option": "Unmatched", "N": unmatched_count})
+            st.subheader("Preview Counts")
+            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
 
     save_label = "Update Custom Variable" if editing_name else "Save Custom Variable"
     if st.button(save_label, use_container_width=False):
@@ -1135,6 +1174,8 @@ def render_step_5() -> None:
                 name,
                 st.session_state.custom_variables,
                 bucket_definitions,
+                st.session_state.get("custom_var_complex_fallback_mode", "Ignore / Missing"),
+                st.session_state.get("custom_var_complex_fallback_label", ""),
                 current_name=editing_name,
             )
         if issues:
@@ -1153,6 +1194,8 @@ def render_step_5() -> None:
                 record = build_complex_variable_record(
                     name=name,
                     buckets=bucket_definitions,
+                    fallback_mode=st.session_state.get("custom_var_complex_fallback_mode", "Ignore / Missing"),
+                    fallback_label=st.session_state.get("custom_var_complex_fallback_label", ""),
                 )
             st.session_state.custom_variables = upsert_custom_variable(
                 st.session_state.custom_variables,
@@ -1215,8 +1258,6 @@ def render_step_5() -> None:
                 )
                 for index, bucket in enumerate(custom_variable.get("buckets", []), start=1):
                     st.markdown(f"**Bucket {index}: {bucket.get('label', '')}**")
-                    if bucket.get("catch_all"):
-                        st.caption("Catch-all bucket for all remaining respondents.")
                     if custom_variable.get("builder_type") == "Simple Variable":
                         source_variable = (custom_variable.get("source_variables") or [""])[0]
                         bucket_counts: list[int] = []
@@ -1243,6 +1284,13 @@ def render_step_5() -> None:
                                     f"{unmatched_count} respondent(s) are not currently captured by the named buckets."
                                 )
                     else:
+                        bucket_counts = []
+                        unmatched_count = 0
+                        if isinstance(st.session_state.cleaned_df, pd.DataFrame) and not st.session_state.cleaned_df.empty:
+                            bucket_counts, unmatched_count = compute_complex_variable_counts(
+                                st.session_state.cleaned_df,
+                                custom_variable.get("buckets", []),
+                            )
                         st.caption(
                             "Logic: "
                             + ("All of the following are true" if bucket.get("match_logic") == "ALL" else "Any of the following are true")
@@ -1253,6 +1301,19 @@ def render_step_5() -> None:
                                 + " | ".join(condition.get("choices", []))
                             )
                             st.write(condition_text)
+                        if bucket_counts and index <= len(bucket_counts):
+                            st.caption(f"N Count: {bucket_counts[index - 1]}")
+                        if index == len(custom_variable.get("buckets", [])):
+                            fallback_mode = custom_variable.get("fallback_mode", "Ignore / Missing")
+                            if fallback_mode == "Create additional option":
+                                fallback_text = custom_variable.get("fallback_label") or "Additional Option"
+                            else:
+                                fallback_text = "Ignore / Missing"
+                            st.caption(f"Unmatched N: {unmatched_count} | Handling: {fallback_text}")
+                            if unmatched_count > 0:
+                                st.warning(
+                                    f"{unmatched_count} respondent(s) are not currently captured by the named buckets."
+                                )
     else:
         st.caption("No custom variables configured yet.")
 

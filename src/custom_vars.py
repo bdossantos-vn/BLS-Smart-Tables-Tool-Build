@@ -111,6 +111,8 @@ def validate_complex_variable_definition(
     name: str,
     existing: list[dict[str, Any]],
     buckets: list[dict[str, Any]],
+    fallback_mode: str,
+    fallback_label: str,
     current_name: str | None = None,
 ) -> list[str]:
     """Validate a complex-variable definition."""
@@ -122,17 +124,12 @@ def validate_complex_variable_definition(
         issues.append("Create at least one output bucket.")
 
     labels: list[str] = []
-    catch_all_count = 0
     for index, bucket in enumerate(buckets, start=1):
         label = normalize_text(bucket.get("label"))
         if not label:
             issues.append(f"Bucket {index} needs a label.")
         else:
             labels.append(label)
-
-        if bucket.get("catch_all"):
-            catch_all_count += 1
-            continue
 
         if normalize_text(bucket.get("match_logic")) not in MATCH_LOGIC_OPTIONS:
             issues.append(f"{label or f'Bucket {index}'} needs `ALL` or `ANY` logic.")
@@ -161,8 +158,10 @@ def validate_complex_variable_definition(
 
     if len(labels) != len(set(labels)):
         issues.append("Bucket labels must be unique.")
-    if catch_all_count > 1:
-        issues.append("Only one bucket can be marked as `All others`.")
+    if fallback_mode not in {"Ignore / Missing", "Create additional option"}:
+        issues.append("Select how unmatched respondents should be handled.")
+    if fallback_mode == "Create additional option" and not normalize_text(fallback_label):
+        issues.append("Provide a label for the additional unmatched option.")
     return issues
 
 
@@ -190,6 +189,8 @@ def build_simple_variable_record(
 def build_complex_variable_record(
     name: str,
     buckets: list[dict[str, Any]],
+    fallback_mode: str,
+    fallback_label: str,
 ) -> dict[str, Any]:
     """Build a stored record for a complex custom variable."""
     source_variables: list[str] = []
@@ -204,6 +205,8 @@ def build_complex_variable_record(
         "source_variables": source_variables,
         "bucket_count": len(buckets),
         "buckets": buckets,
+        "fallback_mode": fallback_mode,
+        "fallback_label": normalize_text(fallback_label),
         "status": "configured",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -280,6 +283,80 @@ def compute_simple_variable_counts(
         matched_mask = df[source_variable].map(
             lambda value: _value_matches_selected_choices(value, selected_choices)
         )
+        bucket_mask = remaining_mask & matched_mask.fillna(False)
+        bucket_counts.append(int(bucket_mask.sum()))
+        remaining_mask = remaining_mask & ~bucket_mask
+
+    return bucket_counts, int(remaining_mask.sum())
+
+
+def _value_matches_all_selected_choices(value: object, selected_choices: list[str]) -> bool:
+    """Return whether a respondent value contains all selected choices."""
+    normalized_value = normalize_text(value)
+    normalized_choices = [normalize_text(choice) for choice in selected_choices if normalize_text(choice)]
+    if not normalized_value or not normalized_choices:
+        return False
+    parts = {
+        normalize_text(part)
+        for part in re.split(r"[;,]", normalized_value)
+        if normalize_text(part)
+    }
+    if not parts:
+        return False
+    return set(normalized_choices).issubset(parts)
+
+
+def _condition_matches(series: pd.Series, operator: str, choices: list[str]) -> pd.Series:
+    """Evaluate one condition against a dataframe series."""
+    if operator == "Includes any":
+        return series.map(lambda value: _value_matches_selected_choices(value, choices)).fillna(False)
+    if operator == "Includes all":
+        return series.map(lambda value: _value_matches_all_selected_choices(value, choices)).fillna(False)
+    if operator == "Is exactly":
+        normalized_choices = {normalize_text(choice) for choice in choices if normalize_text(choice)}
+        return series.map(lambda value: normalize_text(value) in normalized_choices).fillna(False)
+    return pd.Series(False, index=series.index)
+
+
+def compute_complex_variable_counts(
+    df: pd.DataFrame,
+    buckets: list[dict[str, Any]],
+) -> tuple[list[int], int]:
+    """Compute top-down bucket counts and unmatched count for a complex variable."""
+    if df.empty:
+        return [0 for _ in buckets], 0
+
+    remaining_mask = pd.Series(True, index=df.index)
+    bucket_counts: list[int] = []
+
+    for bucket in buckets:
+        conditions = bucket.get("conditions", [])
+        match_logic = normalize_text(bucket.get("match_logic")) or "ALL"
+        if not conditions:
+            bucket_counts.append(0)
+            continue
+
+        condition_masks: list[pd.Series] = []
+        for condition in conditions:
+            variable = normalize_text(condition.get("variable"))
+            operator = normalize_text(condition.get("operator"))
+            choices = list(condition.get("choices", []))
+            if not variable or variable not in df.columns:
+                condition_masks.append(pd.Series(False, index=df.index))
+                continue
+            condition_masks.append(_condition_matches(df[variable], operator, choices))
+
+        if not condition_masks:
+            matched_mask = pd.Series(False, index=df.index)
+        elif match_logic == "ANY":
+            matched_mask = condition_masks[0].copy()
+            for mask in condition_masks[1:]:
+                matched_mask = matched_mask | mask
+        else:
+            matched_mask = condition_masks[0].copy()
+            for mask in condition_masks[1:]:
+                matched_mask = matched_mask & mask
+
         bucket_mask = remaining_mask & matched_mask.fillna(False)
         bucket_counts.append(int(bucket_mask.sum()))
         remaining_mask = remaining_mask & ~bucket_mask
