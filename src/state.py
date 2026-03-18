@@ -44,6 +44,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "scale_change_log": [],
     "scale_mapping_seed_version": 0,
     "custom_variables": [],
+    "custom_var_edit_name": None,
     "net_definitions": [],
     "global_filters": {},
     "weighting_config": {},

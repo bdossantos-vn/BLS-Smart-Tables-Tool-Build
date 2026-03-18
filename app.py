@@ -14,16 +14,12 @@ from src.config import (
     validate_analysis_config,
 )
 from src.custom_vars import (
-    BUILDER_TYPES,
     build_bucketed_variable_record,
-    build_boolean_flag_record,
     build_question_lookup,
-    build_simple_copy_record,
     list_custom_variable_summaries,
+    MATCH_LOGIC_OPTIONS,
     upsert_custom_variable,
     validate_bucketed_variable_definition,
-    validate_boolean_flag_definition,
-    validate_simple_copy_definition,
 )
 from src.mapping import (
     build_scale_change_log,
@@ -95,6 +91,35 @@ def _summarize_choice_change(old_choices: str, new_choices: str, max_len: int = 
     if len(summary) <= max_len:
         return summary
     return f"{len(parse_answer_choices(old_choices))} choice(s) -> {len(parse_answer_choices(new_choices))} choice(s)"
+
+
+def _reset_custom_variable_builder_state() -> None:
+    """Clear custom-variable builder inputs after a successful save."""
+    keys_to_delete = [
+        key
+        for key in list(st.session_state.keys())
+        if key.startswith("custom_var_") or key.startswith("custom_bucket_")
+    ]
+    for key in keys_to_delete:
+        del st.session_state[key]
+    st.session_state.custom_var_edit_name = None
+
+
+def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
+    """Load a saved custom variable back into the builder form for editing."""
+    _reset_custom_variable_builder_state()
+    st.session_state.custom_var_edit_name = record.get("name")
+    st.session_state.custom_var_name = record.get("name", "")
+    st.session_state.custom_var_source_questions = list(record.get("source_variables", []))
+    st.session_state.custom_var_match_logic = record.get("match_logic", MATCH_LOGIC_OPTIONS[0])
+    st.session_state.custom_var_bucket_count = int(record.get("bucket_count", 2) or 2)
+
+    for index, bucket in enumerate(record.get("buckets", [])):
+        st.session_state[f"custom_bucket_label_{index}"] = bucket.get("label", "")
+        st.session_state[f"custom_bucket_catch_all_{index}"] = bool(bucket.get("catch_all", False))
+        st.session_state[f"custom_bucket_groups_{index}"] = list(bucket.get("comparison_groups", []))
+        for variable, values in bucket.get("selections", {}).items():
+            st.session_state[f"custom_bucket_{index}_{variable}"] = list(values)
 
 
 def render_sidebar() -> str:
@@ -859,8 +884,7 @@ def render_step_5() -> None:
     """Render the custom variable builder."""
     st.header("4. Custom Variable Builder")
     st.write(
-        "Build custom variables by bucketing one question or combining multiple source questions "
-        "into grouped outputs."
+        "Build custom variables using bucket logic across one or more source questions."
     )
     question_lookup = build_question_lookup(st.session_state.question_metadata)
     question_options = list(question_lookup.keys())
@@ -872,119 +896,70 @@ def render_step_5() -> None:
         st.info("No eligible source questions are available yet for custom variable building.")
         return
 
-    builder_type = st.selectbox("Build Type", options=BUILDER_TYPES, key="custom_var_builder_type")
+    editing_name = st.session_state.get("custom_var_edit_name")
+    if editing_name:
+        edit_left, edit_right = st.columns([4, 1])
+        with edit_left:
+            st.info(f"Editing custom variable: `{editing_name}`")
+        with edit_right:
+            if st.button("Cancel Edit", use_container_width=True):
+                _reset_custom_variable_builder_state()
+                st.rerun()
+
     name = st.text_input("Custom variable name", key="custom_var_name")
+    source_variables = st.multiselect(
+        "Source Questions",
+        options=question_options,
+        format_func=lambda value: question_labels.get(value, value),
+        key="custom_var_source_questions",
+        help="Select one or more source questions to use in this custom variable.",
+    )
+    match_logic = st.selectbox(
+        "Match Logic",
+        options=MATCH_LOGIC_OPTIONS,
+        key="custom_var_match_logic",
+        help="Use `ALL` when all populated source-question selections in a bucket must match. "
+        "Use `ANY` when any populated source-question selection can match.",
+    )
+    bucket_count = st.number_input(
+        "Number of Buckets",
+        min_value=2,
+        max_value=8,
+        value=int(st.session_state.get("custom_var_bucket_count", 2) or 2),
+        step=1,
+        key="custom_var_bucket_count",
+    )
 
-    if builder_type == "Simple Copy":
-        source_variable = st.selectbox(
-            "Source Question",
-            options=question_options,
-            format_func=lambda value: question_labels.get(value, value),
-            key="custom_var_simple_source",
-        )
-        if st.button("Save Custom Variable", use_container_width=False):
-            issues = validate_simple_copy_definition(
-                name,
-                st.session_state.custom_variables,
-                source_variable,
-            )
-            if issues:
-                for issue in issues:
-                    st.error(issue)
-            else:
-                record = build_simple_copy_record(name, source_variable)
-                st.session_state.custom_variables = upsert_custom_variable(
-                    st.session_state.custom_variables,
-                    record,
-                )
-                st.success(f"Saved custom variable `{name}`.")
-                st.rerun()
-    elif builder_type == "Boolean Flag":
-        source_variables = st.multiselect(
-            "Source Questions",
-            options=question_options,
-            format_func=lambda value: question_labels.get(value, value),
-            key="custom_var_boolean_source_questions",
-            help="Select one or more source questions to use in this yes/no style variable.",
-        )
-        true_label, false_label = st.columns(2)
-        with true_label:
-            custom_true_label = st.text_input(
-                "True Label",
-                value="True",
-                key="custom_var_true_label",
-            )
-        with false_label:
-            custom_false_label = st.text_input(
-                "False Label",
-                value="False",
-                key="custom_var_false_label",
-            )
+    comparison_groups: list[str] = []
+    if st.session_state.get("comparison_col") and st.session_state.get("comparison_group_order"):
+        comparison_groups = list(st.session_state.comparison_group_order.keys())
+    st.caption(
+        "Buckets are evaluated from top to bottom. Use an `All others` bucket when you want a catch-all group."
+    )
 
-        boolean_selections: dict[str, list[str]] = {}
-        st.caption("Choose the answer choices that should evaluate to the true label.")
-        for variable in source_variables:
-            choices = question_lookup.get(variable, {}).get("answer_choices_list", [])
-            boolean_selections[variable] = st.multiselect(
-                f"{question_labels.get(variable, variable)}",
-                options=choices,
-                key=f"custom_boolean_{variable}",
+    bucket_definitions: list[dict[str, Any]] = []
+    for bucket_index in range(int(bucket_count)):
+        st.markdown(f"### Bucket {bucket_index + 1}")
+        bucket_label = st.text_input(
+            "Bucket Label",
+            key=f"custom_bucket_label_{bucket_index}",
+        )
+        bucket_catch_all = st.checkbox(
+            "All others",
+            key=f"custom_bucket_catch_all_{bucket_index}",
+            help="Use this bucket as a catch-all for respondents not matched earlier.",
+        )
+        selected_groups: list[str] = []
+        if comparison_groups:
+            selected_groups = st.multiselect(
+                "Comparison Groups",
+                options=comparison_groups,
+                key=f"custom_bucket_groups_{bucket_index}",
+                help="Optional. Leave blank to apply this bucket to all comparison groups.",
             )
 
-        if st.button("Save Custom Variable", use_container_width=False):
-            issues = validate_boolean_flag_definition(
-                name,
-                st.session_state.custom_variables,
-                source_variables,
-                custom_true_label,
-                custom_false_label,
-                boolean_selections,
-            )
-            if issues:
-                for issue in issues:
-                    st.error(issue)
-            else:
-                record = build_boolean_flag_record(
-                    name=name,
-                    source_variables=source_variables,
-                    true_label=custom_true_label,
-                    false_label=custom_false_label,
-                    selections=boolean_selections,
-                )
-                st.session_state.custom_variables = upsert_custom_variable(
-                    st.session_state.custom_variables,
-                    record,
-                )
-                st.success(f"Saved custom variable `{name}`.")
-                st.rerun()
-    else:
-        source_variables = st.multiselect(
-            "Source Questions",
-            options=question_options,
-            format_func=lambda value: question_labels.get(value, value),
-            key="custom_var_source_questions",
-            help="Select one or more source questions to use in this custom variable.",
-        )
-        bucket_count = st.number_input(
-            "Number of Buckets",
-            min_value=2,
-            max_value=8,
-            value=int(st.session_state.get("custom_var_bucket_count", 2) or 2),
-            step=1,
-            key="custom_var_bucket_count",
-        )
-        st.caption(
-            "Selections within a bucket are treated as an OR across the chosen source questions."
-        )
-
-        bucket_definitions: list[dict[str, Any]] = []
-        for bucket_index in range(int(bucket_count)):
-            st.markdown(f"### Bucket {bucket_index + 1}")
-            bucket_label = st.text_input(
-                "Bucket Label",
-                key=f"custom_bucket_label_{bucket_index}",
-            )
-            selections: dict[str, list[str]] = {}
+        selections: dict[str, list[str]] = {}
+        if not bucket_catch_all:
             for variable in source_variables:
                 choices = question_lookup.get(variable, {}).get("answer_choices_list", [])
                 selected_choices = st.multiselect(
@@ -993,39 +968,105 @@ def render_step_5() -> None:
                     key=f"custom_bucket_{bucket_index}_{variable}",
                 )
                 selections[variable] = selected_choices
-            bucket_definitions.append(
-                {
-                    "label": bucket_label,
-                    "selections": selections,
-                }
-            )
 
-        if st.button("Save Custom Variable", use_container_width=False):
-            issues = validate_bucketed_variable_definition(
-                name,
-                st.session_state.custom_variables,
-                source_variables,
-                bucket_definitions,
+        bucket_definitions.append(
+            {
+                "label": bucket_label,
+                "catch_all": bucket_catch_all,
+                "comparison_groups": selected_groups,
+                "selections": selections,
+            }
+        )
+
+    save_label = "Update Custom Variable" if editing_name else "Save Custom Variable"
+    if st.button(save_label, use_container_width=False):
+        issues = validate_bucketed_variable_definition(
+            name,
+            st.session_state.custom_variables,
+            source_variables,
+            match_logic,
+            bucket_definitions,
+            current_name=editing_name,
+        )
+        if issues:
+            for issue in issues:
+                st.error(issue)
+        else:
+            record = build_bucketed_variable_record(
+                name=name,
+                source_variables=source_variables,
+                match_logic=match_logic,
+                buckets=bucket_definitions,
             )
-            if issues:
-                for issue in issues:
-                    st.error(issue)
+            st.session_state.custom_variables = upsert_custom_variable(
+                st.session_state.custom_variables,
+                record,
+            )
+            _reset_custom_variable_builder_state()
+            if editing_name:
+                st.success(f"Updated custom variable `{name}`.")
             else:
-                record = build_bucketed_variable_record(
-                    name=name,
-                    source_variables=source_variables,
-                    buckets=bucket_definitions,
-                )
-                st.session_state.custom_variables = upsert_custom_variable(
-                    st.session_state.custom_variables,
-                    record,
-                )
                 st.success(f"Saved custom variable `{name}`.")
-                st.rerun()
+            st.rerun()
 
     summaries = list_custom_variable_summaries(st.session_state.custom_variables)
     if summaries:
-        st.dataframe(pd.DataFrame(summaries), use_container_width=True)
+        st.subheader("Saved Custom Variables")
+        st.dataframe(
+            pd.DataFrame(summaries).rename(
+                columns={
+                    "name": "Variable Name",
+                    "match_logic": "Match Logic",
+                    "source_questions": "Source Questions",
+                    "bucket_count": "Buckets",
+                    "status": "Status",
+                    "created_at": "Created At",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        for custom_variable in reversed(st.session_state.custom_variables):
+            with st.expander(custom_variable.get("name", "Custom Variable")):
+                action_left, action_right = st.columns(2)
+                with action_left:
+                    if st.button(
+                        "Edit",
+                        key=f"edit_custom_var_{custom_variable.get('name', '')}",
+                        use_container_width=True,
+                    ):
+                        _load_custom_variable_into_builder(custom_variable)
+                        st.rerun()
+                with action_right:
+                    if st.button(
+                        "Delete",
+                        key=f"delete_custom_var_{custom_variable.get('name', '')}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.custom_variables = [
+                            item
+                            for item in st.session_state.custom_variables
+                            if normalize_text(item.get("name")) != normalize_text(custom_variable.get("name"))
+                        ]
+                        if normalize_text(editing_name) == normalize_text(custom_variable.get("name")):
+                            _reset_custom_variable_builder_state()
+                        st.success(f"Deleted custom variable `{custom_variable.get('name', '')}`.")
+                        st.rerun()
+                st.write(f"Match Logic: `{custom_variable.get('match_logic', '')}`")
+                st.write(
+                    "Source Questions: "
+                    + ", ".join(custom_variable.get("source_variables", []))
+                )
+                for index, bucket in enumerate(custom_variable.get("buckets", []), start=1):
+                    st.markdown(f"**Bucket {index}: {bucket.get('label', '')}**")
+                    if bucket.get("catch_all"):
+                        st.caption("Catch-all bucket for all remaining respondents.")
+                    groups = bucket.get("comparison_groups", [])
+                    if groups:
+                        st.caption("Comparison Groups: " + ", ".join(groups))
+                    for variable, values in bucket.get("selections", {}).items():
+                        if values:
+                            st.write(f"{variable}: " + " | ".join(values))
     else:
         st.caption("No custom variables configured yet.")
 
