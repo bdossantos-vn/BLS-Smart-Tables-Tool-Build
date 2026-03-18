@@ -10,9 +10,7 @@ from src.utils import normalize_text
 def build_default_weighting_config() -> dict:
     """Return the default weighting configuration."""
     return {
-        "enabled": False,
-        "weight_variable": "",
-        "weight_mode": "Use as provided",
+        "weights": [],
     }
 
 
@@ -112,6 +110,17 @@ def build_weight_variable_options(question_metadata: list[dict[str, Any]]) -> li
     return options
 
 
+def build_default_weight_row() -> dict[str, Any]:
+    """Return a blank weighting row."""
+    return {
+        "name": "",
+        "target": "Total",
+        "source": "",
+        "variables": [],
+        "applies_to": [],
+    }
+
+
 def build_filter_operator_options(question_type: str) -> list[str]:
     """Return supported operators for a filterable variable."""
     if question_type == "Numeric Data":
@@ -137,8 +146,28 @@ def validate_analysis_config(
 ) -> list[str]:
     """Validate the analysis configuration payload."""
     issues: list[str] = []
-    if weighting_config.get("enabled") and not weighting_config.get("weight_variable"):
-        issues.append("Weighting is enabled but no weight variable is set.")
+    weights = weighting_config.get("weights", [])
+    if weights and not isinstance(weights, list):
+        issues.append("Weights must be stored as a list.")
+    elif isinstance(weights, list):
+        seen_weight_names: set[str] = set()
+        for index, row in enumerate(weights, start=1):
+            name = normalize_text(row.get("name"))
+            target = normalize_text(row.get("target"))
+            variables = row.get("variables", [])
+            applies_to = row.get("applies_to", [])
+            if not name:
+                issues.append(f"Weight {index} needs a name.")
+            elif name in seen_weight_names:
+                issues.append(f"Weight {index} duplicates another weight name.")
+            else:
+                seen_weight_names.add(name)
+            if not target:
+                issues.append(f"Weight {index} needs a target definition.")
+            if not variables:
+                issues.append(f"Weight {index} needs at least one weighting variable.")
+            if not applies_to:
+                issues.append(f"Weight {index} needs at least one apply target.")
     if not isinstance(banner_config.get("banner_variables", []), list):
         issues.append("Banner variables must be stored as a list.")
     if not isinstance(banner_config.get("banners", []), list):

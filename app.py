@@ -13,6 +13,7 @@ from src.config import (
     build_default_banner_row,
     build_default_filter_row,
     build_default_stat_config,
+    build_default_weight_row,
     build_default_weighting_config,
     build_filter_operator_options,
     build_weight_variable_options,
@@ -1691,38 +1692,114 @@ def render_step_8() -> None:
 def render_step_9() -> None:
     """Render the weighting configuration page."""
     st.header("8. Weighting Configuration")
-    st.write("Choose whether project weighting should be applied.")
+    st.write(
+        "Create named weights and choose where each one applies. Weights assigned to `All Tables` act as the base "
+        "layer. If a weight is also assigned to a banner or comparison output, that output uses both the `All Tables` "
+        "weight(s) and its own additional weight assignment."
+    )
 
     if not st.session_state.weighting_config:
         st.session_state.weighting_config = build_default_weighting_config()
+    if "weights" not in st.session_state.weighting_config:
+        st.session_state.weighting_config = build_default_weighting_config()
 
-    weight_options = ["", *build_weight_variable_options(st.session_state.question_metadata)]
-    weighting_enabled = st.checkbox(
-        "Enable weighting",
-        value=bool(st.session_state.weighting_config.get("enabled", False)),
+    variable_catalog = build_analysis_variable_catalog(
+        st.session_state.question_metadata,
+        st.session_state.custom_variables,
+        st.session_state.get("comparison_col"),
     )
-    weight_variable = st.selectbox(
-        "Weight Variable",
-        options=weight_options,
-        index=weight_options.index(st.session_state.weighting_config.get("weight_variable", ""))
-        if st.session_state.weighting_config.get("weight_variable", "") in weight_options
-        else 0,
-        format_func=lambda value: value if value else "Select weight variable",
-    )
-    weight_mode = st.selectbox(
-        "Weight Mode",
-        options=["Use as provided", "Normalize to total sample"],
-        index=["Use as provided", "Normalize to total sample"].index(
-            st.session_state.weighting_config.get("weight_mode", "Use as provided")
+    variable_options = [item["id"] for item in variable_catalog]
+    variable_labels = {item["id"]: item["label"] for item in variable_catalog}
+    weight_variable_options = build_weight_variable_options(st.session_state.question_metadata)
+
+    apply_targets = ["All Tables"]
+    comparison_label = st.session_state.get("comparison_col")
+    if comparison_label:
+        apply_targets.extend([comparison_label, "Total", *list(st.session_state.comparison_group_order.keys())])
+    for banner in st.session_state.banner_config.get("banners", []):
+        banner_name = normalize_text(banner.get("name"))
+        if banner_name and banner_name not in apply_targets:
+            apply_targets.append(banner_name)
+
+    weight_targets = ["Total"]
+    if comparison_label:
+        weight_targets.append(f"Match {comparison_label} groups")
+        for group_name in st.session_state.comparison_group_order.keys():
+            if group_name != "Total":
+                weight_targets.append(group_name)
+
+    weight_count = int(
+        st.number_input(
+            "Number of Weights",
+            min_value=0,
+            max_value=6,
+            value=max(0, len(st.session_state.weighting_config.get("weights", []))),
+            step=1,
+            key="weight_row_count",
         )
-        if st.session_state.weighting_config.get("weight_mode", "Use as provided")
-        in ["Use as provided", "Normalize to total sample"]
-        else 0,
     )
+    existing_weights = list(st.session_state.weighting_config.get("weights", []))
+    while len(existing_weights) < weight_count:
+        existing_weights.append(build_default_weight_row())
+    existing_weights = existing_weights[:weight_count]
+
+    rendered_weights: list[dict[str, Any]] = []
+    for index in range(weight_count):
+        row = existing_weights[index]
+        st.markdown(f"**Weight {index + 1}**")
+        name = st.text_input(
+            "Weight Name",
+            value=row.get("name", ""),
+            key=f"weight_name_{index}",
+        )
+        col1, col2 = st.columns(2)
+        target = col1.selectbox(
+            "Target",
+            options=weight_targets,
+            index=(weight_targets.index(row.get("target", "Total")) if row.get("target", "Total") in weight_targets else 0),
+            key=f"weight_target_{index}",
+            help="Choose what this weight should match against.",
+        )
+        source_options = ["", *[value for value in variable_options if value != st.session_state.get("comparison_col")]]
+        source = col2.selectbox(
+            "Source Variable",
+            options=source_options,
+            index=(source_options.index(row.get("source", "")) if row.get("source", "") in source_options else 0),
+            format_func=lambda value: variable_labels.get(value, value) if value else "Optional source variable",
+            key=f"weight_source_{index}",
+            help="Optional source variable or metric you want to weight on.",
+        )
+        variables = st.multiselect(
+            "Weighting Variables",
+            options=weight_variable_options,
+            default=[value for value in row.get("variables", []) if value in weight_variable_options],
+            key=f"weight_variables_{index}",
+            help="Select one or more variables to use in the weighting scheme.",
+        )
+        default_targets = [target_value for target_value in row.get("applies_to", []) if target_value in apply_targets]
+        if "All Tables" in default_targets and len(default_targets) > 1:
+            default_targets = ["All Tables"]
+        applies_to = st.multiselect(
+            "Applies To",
+            options=apply_targets,
+            default=default_targets,
+            key=f"weight_applies_to_{index}",
+            help="`All Tables` is the base weight layer. Banner-level or comparison-level weights stack on top of it.",
+        )
+        if "All Tables" in applies_to and len(applies_to) > 1:
+            applies_to = ["All Tables"]
+        rendered_weights.append(
+            {
+                "name": name.strip(),
+                "target": target,
+                "source": source,
+                "variables": variables,
+                "applies_to": applies_to,
+            }
+        )
+
     st.session_state.weighting_config = {
-        "enabled": weighting_enabled,
-        "weight_variable": weight_variable,
-        "weight_mode": weight_mode,
+        "weights": rendered_weights,
     }
 
     validation = validate_analysis_config(
@@ -1731,7 +1808,7 @@ def render_step_9() -> None:
         st.session_state.global_filters or {"rows": [build_default_filter_row()]},
         {},
     )
-    weight_issues = [message for message in validation if "Weighting is enabled" in message]
+    weight_issues = [message for message in validation if message.startswith("Weight ")]
     if weight_issues:
         for message in weight_issues:
             st.warning(message)
