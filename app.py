@@ -1573,7 +1573,7 @@ def render_step_8() -> None:
     variable_labels = {item["id"]: item["label"] for item in variable_catalog}
     variable_types = {item["id"]: item["question_type"] for item in variable_catalog}
 
-    apply_targets = ["Total"]
+    apply_targets = ["All Tables"]
     comparison_label = st.session_state.get("comparison_col")
     if comparison_label:
         apply_targets.append(comparison_label)
@@ -1620,13 +1620,19 @@ def render_step_8() -> None:
             key=f"global_filter_values_{index}",
             help="Enter one or more values separated by `|`.",
         )
+        default_targets = [target for target in row.get("applies_to", []) if target in apply_targets]
+        if "Total" in row.get("applies_to", []) and "All Tables" not in default_targets:
+            default_targets = ["All Tables"]
+
         applies_to = st.multiselect(
             "Applies To",
             options=apply_targets,
-            default=[target for target in row.get("applies_to", []) if target in apply_targets],
+            default=default_targets,
             key=f"global_filter_applies_to_{index}",
             help="Choose which outputs should use this filter.",
         )
+        if "All Tables" in applies_to and len(applies_to) > 1:
+            applies_to = ["All Tables"]
         rendered_global_rows.append(
             {
                 "variable": variable,
