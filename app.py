@@ -927,6 +927,10 @@ def render_step_4() -> None:
 
 def render_step_5() -> None:
     """Render the custom variable builder."""
+    if st.session_state.get("custom_var_reset_requested"):
+        _reset_custom_variable_builder_state()
+        st.session_state.custom_var_reset_requested = False
+
     st.header("4. Custom Variable Builder")
     st.write(
         "Build either a simple variable from one source question or a complex variable using "
@@ -1150,7 +1154,7 @@ def render_step_5() -> None:
                 st.session_state.custom_variables,
                 record,
             )
-            _reset_custom_variable_builder_state()
+            st.session_state.custom_var_reset_requested = True
             if editing_name:
                 st.success(f"Updated custom variable `{name}`.")
             else:
