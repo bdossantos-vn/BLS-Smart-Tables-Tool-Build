@@ -36,6 +36,12 @@ from src.mapping import (
     save_scale_mapping_editor,
     validate_scale_mapping_editor,
 )
+from src.nets import (
+    NET_LABELS,
+    build_net_editor_frame,
+    save_net_editor_frame,
+    toggle_net_column,
+)
 from src.metadata import (
     build_metadata_change_log_entry,
     build_question_metadata,
@@ -77,10 +83,11 @@ NAV_STEPS = [
     "1. Data Intake",
     "2. Survey Question Audit",
     "3. Scale Mapping & Polarity",
-    "4. Custom Variable Builder",
-    "5. Analysis Configuration",
-    "6. Statistical Setup",
-    "7. Table Generator & Excel Export",
+    "4. Net Definitions",
+    "5. Custom Variable Builder",
+    "6. Analysis Configuration",
+    "7. Statistical Setup",
+    "8. Table Generator & Excel Export",
 ]
 
 
@@ -230,9 +237,10 @@ def can_advance_from_step(step: str) -> bool:
         required_variables = {row["variable"] for row in scale_questions}
         return required_variables.issubset(mapped_variables)
     if step in {
-        "4. Custom Variable Builder",
-        "5. Analysis Configuration",
-        "6. Statistical Setup",
+        "4. Net Definitions",
+        "5. Custom Variable Builder",
+        "6. Analysis Configuration",
+        "7. Statistical Setup",
     }:
         return True
     return False
@@ -951,7 +959,73 @@ def render_step_4() -> None:
         st.caption("No scale mapping changes yet.")
 
 
-def render_step_5() -> None:
+def render_step_5_nets() -> None:
+    """Render the net-definition setup page."""
+    st.header("4. Net Definitions")
+    st.write("Choose which intra-question nets to create for each scale question.")
+
+    cleaned_df = st.session_state.cleaned_df
+    question_metadata = st.session_state.question_metadata
+    if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty:
+        st.info("Process your data first before defining nets.")
+        return
+
+    scale_questions = identify_scale_questions(question_metadata)
+    if not scale_questions:
+        st.info("No `Scale / Likert` questions are currently available for net creation.")
+        return
+
+    st.session_state.scale_mappings = ensure_scale_mappings(
+        scale_questions,
+        cleaned_df,
+        st.session_state.scale_mappings,
+    )
+    base_frame = build_net_editor_frame(
+        scale_questions,
+        st.session_state.scale_mappings,
+        st.session_state.net_definitions,
+    )
+    current_frame = st.session_state.get("net_editor_frame")
+    if (
+        not isinstance(current_frame, pd.DataFrame)
+        or list(current_frame.get("variable", [])) != list(base_frame.get("variable", []))
+    ):
+        st.session_state.net_editor_frame = base_frame.copy()
+
+    button_columns = st.columns(len(NET_LABELS))
+    for index, net_label in enumerate(NET_LABELS):
+        with button_columns[index]:
+            if st.button(net_label, use_container_width=True, key=f"bulk_net_{net_label}"):
+                st.session_state.net_editor_frame = toggle_net_column(
+                    st.session_state.net_editor_frame,
+                    net_label,
+                )
+                st.rerun()
+
+    edited = st.data_editor(
+        st.session_state.net_editor_frame,
+        key="net_definition_grid",
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "variable": st.column_config.TextColumn("Variable Name", disabled=True, width=220),
+            "question_label": st.column_config.TextColumn("Question Text", disabled=True, width=700),
+            "T2B": st.column_config.CheckboxColumn("T2B"),
+            "T3B": st.column_config.CheckboxColumn("T3B"),
+            "B2B": st.column_config.CheckboxColumn("B2B"),
+            "B3B": st.column_config.CheckboxColumn("B3B"),
+        },
+    )
+    st.session_state.net_editor_frame = edited.copy()
+
+    if st.button("Save Nets", type="primary", use_container_width=False):
+        st.session_state.net_definitions = save_net_editor_frame(edited)
+        st.success("Net definitions saved.")
+        st.rerun()
+
+
+def render_step_6() -> None:
     """Render the custom variable builder."""
     if st.session_state.get("custom_var_reset_requested"):
         _reset_custom_variable_builder_state()
@@ -960,12 +1034,16 @@ def render_step_5() -> None:
         _load_custom_variable_into_builder(st.session_state.custom_var_edit_payload)
         st.session_state.custom_var_edit_payload = None
 
-    st.header("4. Custom Variable Builder")
+    st.header("5. Custom Variable Builder")
     st.write(
         "Build either a simple variable from one source question or a complex variable using "
         "multi question condition logic."
     )
-    question_lookup = build_question_lookup(st.session_state.question_metadata)
+    question_lookup = build_question_lookup(
+        st.session_state.question_metadata,
+        st.session_state.net_definitions,
+        st.session_state.scale_mappings,
+    )
     question_options = list(question_lookup.keys())
     question_labels = {
         variable: f"{variable} - {question_lookup[variable]['question_label']}"
@@ -1050,6 +1128,7 @@ def render_step_5() -> None:
                 st.session_state.cleaned_df,
                 source_variable,
                 simple_bucket_preview,
+                question_lookup,
             )
             st.subheader("Preview Counts")
             preview_rows = []
@@ -1150,6 +1229,7 @@ def render_step_5() -> None:
             bucket_counts, unmatched_count = compute_complex_variable_counts(
                 st.session_state.cleaned_df,
                 complex_bucket_preview,
+                question_lookup,
             )
             preview_rows = []
             for index, bucket in enumerate(complex_bucket_preview):
@@ -1281,6 +1361,7 @@ def render_step_5() -> None:
                                 st.session_state.cleaned_df,
                                 source_variable,
                                 custom_variable.get("buckets", []),
+                                question_lookup,
                             )
                         if bucket.get("choices"):
                             st.write("Choices: " + " | ".join(bucket.get("choices", [])))
@@ -1300,6 +1381,7 @@ def render_step_5() -> None:
                             bucket_counts, unmatched_count = compute_complex_variable_counts(
                                 st.session_state.cleaned_df,
                                 custom_variable.get("buckets", []),
+                                question_lookup,
                             )
                         st.caption(
                             "Logic: "
@@ -1324,9 +1406,9 @@ def render_step_5() -> None:
         st.caption("No custom variables configured yet.")
 
 
-def render_step_6() -> None:
+def render_step_7() -> None:
     """Render the analysis configuration scaffold."""
-    st.header("5. Analysis Configuration")
+    st.header("6. Analysis Configuration")
     st.write(
         "V1 stores banner, weighting, and filter settings so the workflow remains coherent across reruns."
     )
@@ -1377,9 +1459,9 @@ def render_step_6() -> None:
         st.success("Analysis configuration scaffold is valid.")
 
 
-def render_step_7() -> None:
+def render_step_8() -> None:
     """Render the statistical setup scaffold."""
-    st.header("6. Statistical Setup")
+    st.header("7. Statistical Setup")
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 
@@ -1417,9 +1499,9 @@ def render_step_7() -> None:
     run_placeholder_significance()
 
 
-def render_step_8() -> None:
+def render_step_9() -> None:
     """Render the table generator and export scaffold."""
-    st.header("7. Table Generator & Excel Export")
+    st.header("8. Table Generator & Excel Export")
     readiness = describe_generation_readiness(DEFAULT_STATE, st.session_state)
     for line in readiness:
         st.write(f"- {line}")
@@ -1458,14 +1540,16 @@ def main() -> None:
         render_step_3()
     elif step == "3. Scale Mapping & Polarity":
         render_step_4()
-    elif step == "4. Custom Variable Builder":
-        render_step_5()
-    elif step == "5. Analysis Configuration":
+    elif step == "4. Net Definitions":
+        render_step_5_nets()
+    elif step == "5. Custom Variable Builder":
         render_step_6()
-    elif step == "6. Statistical Setup":
+    elif step == "6. Analysis Configuration":
         render_step_7()
-    elif step == "7. Table Generator & Excel Export":
+    elif step == "7. Statistical Setup":
         render_step_8()
+    elif step == "8. Table Generator & Excel Export":
+        render_step_9()
 
     render_page_navigation(step)
 

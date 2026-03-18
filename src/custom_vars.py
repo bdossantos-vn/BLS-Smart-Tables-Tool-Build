@@ -8,6 +8,7 @@ import re
 
 import pandas as pd
 
+from src.nets import build_enabled_net_choice_map
 from src.utils import normalize_text
 
 
@@ -24,29 +25,51 @@ CONDITION_OPERATORS = [
 ]
 
 
-def build_question_catalog(question_metadata: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_question_catalog(
+    question_metadata: list[dict[str, Any]],
+    net_definitions: dict[str, dict[str, bool]] | None = None,
+    scale_mappings: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Build a source-question catalog for the custom variable builder."""
     catalog: list[dict[str, Any]] = []
     for row in question_metadata:
         question_type = row.get("detected_type", "")
         if question_type in {"Ignore", "Open-End Text"}:
             continue
+        variable = normalize_text(row.get("variable"))
+        answer_choices_list = list(row.get("answer_choices_list", []))
+        choice_expansion_map: dict[str, list[str]] = {}
+        if question_type == "Scale / Likert":
+            choice_expansion_map = build_enabled_net_choice_map(variable, net_definitions, scale_mappings)
+            answer_choices_list = [
+                *choice_expansion_map.keys(),
+                *[
+                    choice
+                    for choice in answer_choices_list
+                    if normalize_text(choice) not in choice_expansion_map
+                ],
+            ]
         catalog.append(
             {
-                "variable": normalize_text(row.get("variable")),
+                "variable": variable,
                 "question_label": normalize_text(row.get("question_label")),
                 "question_type": normalize_text(question_type),
-                "answer_choices_list": list(row.get("answer_choices_list", [])),
+                "answer_choices_list": answer_choices_list,
+                "choice_expansion_map": choice_expansion_map,
             }
         )
     return catalog
 
 
-def build_question_lookup(question_metadata: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def build_question_lookup(
+    question_metadata: list[dict[str, Any]],
+    net_definitions: dict[str, dict[str, bool]] | None = None,
+    scale_mappings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Build a fast variable-to-question lookup."""
     return {
         item["variable"]: item
-        for item in build_question_catalog(question_metadata)
+        for item in build_question_catalog(question_metadata, net_definitions, scale_mappings)
     }
 
 
@@ -260,10 +283,32 @@ def _value_matches_selected_choices(value: object, selected_choices: list[str]) 
     return bool(parts & normalized_choices)
 
 
+def _expand_selected_choices(
+    variable: str,
+    selected_choices: list[str],
+    question_lookup: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Expand selected choices so enabled nets map to their underlying raw values."""
+    question_lookup = question_lookup or {}
+    expansion_map = question_lookup.get(variable, {}).get("choice_expansion_map", {})
+    expanded: list[str] = []
+    for choice in selected_choices:
+        normalized_choice = normalize_text(choice)
+        if not normalized_choice:
+            continue
+        expanded_values = expansion_map.get(normalized_choice, [normalized_choice])
+        for value in expanded_values:
+            normalized_value = normalize_text(value)
+            if normalized_value and normalized_value not in expanded:
+                expanded.append(normalized_value)
+    return expanded
+
+
 def compute_simple_variable_counts(
     df: pd.DataFrame,
     source_variable: str,
     buckets: list[dict[str, Any]],
+    question_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[int], int]:
     """Compute top-down bucket counts and unmatched count for a simple variable."""
     if source_variable not in df.columns:
@@ -279,7 +324,11 @@ def compute_simple_variable_counts(
             remaining_mask = pd.Series(False, index=df.index)
             continue
 
-        selected_choices = bucket.get("choices", [])
+        selected_choices = _expand_selected_choices(
+            source_variable,
+            list(bucket.get("choices", [])),
+            question_lookup,
+        )
         matched_mask = df[source_variable].map(
             lambda value: _value_matches_selected_choices(value, selected_choices)
         )
@@ -321,6 +370,7 @@ def _condition_matches(series: pd.Series, operator: str, choices: list[str]) -> 
 def compute_complex_variable_counts(
     df: pd.DataFrame,
     buckets: list[dict[str, Any]],
+    question_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[int], int]:
     """Compute top-down bucket counts and unmatched count for a complex variable."""
     if df.empty:
@@ -340,7 +390,11 @@ def compute_complex_variable_counts(
         for condition in conditions:
             variable = normalize_text(condition.get("variable"))
             operator = normalize_text(condition.get("operator"))
-            choices = list(condition.get("choices", []))
+            choices = _expand_selected_choices(
+                variable,
+                list(condition.get("choices", [])),
+                question_lookup,
+            )
             if not variable or variable not in df.columns:
                 condition_masks.append(pd.Series(False, index=df.index))
                 continue

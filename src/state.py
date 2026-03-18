@@ -47,7 +47,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "custom_var_edit_name": None,
     "custom_var_reset_requested": False,
     "custom_var_edit_payload": None,
-    "net_definitions": [],
+    "net_definitions": {},
     "global_filters": {},
     "weighting_config": {},
     "banner_config": {},
