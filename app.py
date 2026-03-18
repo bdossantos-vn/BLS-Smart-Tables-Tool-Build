@@ -1475,9 +1475,9 @@ def render_step_7() -> None:
     banner_count = int(
         st.number_input(
             "Number of Banners",
-            min_value=1,
+            min_value=0,
             max_value=12,
-            value=max(1, len(existing_banners) or 1),
+            value=max(0, len(existing_banners)),
             step=1,
             key="banner_row_count",
         )
