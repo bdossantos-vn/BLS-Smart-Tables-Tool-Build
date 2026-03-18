@@ -186,6 +186,22 @@ def _load_custom_variable_into_builder(record: dict[str, Any]) -> None:
                 )
 
 
+def _build_filter_value_options(
+    variable: str,
+    question_lookup: dict[str, dict[str, Any]],
+    custom_variables: list[dict[str, Any]],
+) -> list[str]:
+    """Return selectable filter values for a variable."""
+    if not variable:
+        return []
+    if variable in question_lookup:
+        return list(question_lookup[variable].get("answer_choices_list", []))
+    for record in custom_variables:
+        if normalize_text(record.get("name")) == normalize_text(variable):
+            return [normalize_text(bucket.get("label")) for bucket in record.get("buckets", []) if normalize_text(bucket.get("label"))]
+    return []
+
+
 def render_sidebar() -> str:
     """Render global sidebar controls and return the selected workflow step."""
     with st.sidebar:
@@ -1562,12 +1578,17 @@ def render_step_8() -> None:
     st.write("Create project filters and choose where each filter applies.")
 
     if not st.session_state.global_filters:
-        st.session_state.global_filters = {"rows": [build_default_filter_row()]}
+        st.session_state.global_filters = {"rows": []}
 
     variable_catalog = build_analysis_variable_catalog(
         st.session_state.question_metadata,
         st.session_state.custom_variables,
         st.session_state.get("comparison_col"),
+    )
+    question_lookup = build_question_lookup(
+        st.session_state.question_metadata,
+        st.session_state.net_definitions,
+        st.session_state.scale_mappings,
     )
     variable_options = [item["id"] for item in variable_catalog]
     variable_labels = {item["id"]: item["label"] for item in variable_catalog}
@@ -1584,9 +1605,9 @@ def render_step_8() -> None:
 
     global_filter_rows = int(st.number_input(
         "Number of Filters",
-        min_value=1,
+        min_value=0,
         max_value=6,
-        value=max(1, len(st.session_state.global_filters.get("rows", []))),
+        value=max(0, len(st.session_state.global_filters.get("rows", []))),
         step=1,
         key="global_filter_row_count",
     ))
@@ -1614,11 +1635,17 @@ def render_step_8() -> None:
             format_func=lambda value: value if value else "Select operator",
             key=f"global_filter_operator_{index}",
         )
-        values = col3.text_input(
+        value_options = _build_filter_value_options(
+            variable,
+            question_lookup,
+            st.session_state.custom_variables,
+        )
+        values = col3.multiselect(
             "Values",
-            value=row.get("values", ""),
+            options=value_options,
+            default=[value for value in row.get("values", []) if value in value_options],
             key=f"global_filter_values_{index}",
-            help="Enter one or more values separated by `|`.",
+            help="Select one or more values for this filter.",
         )
         default_targets = [target for target in row.get("applies_to", []) if target in apply_targets]
         if "Total" in row.get("applies_to", []) and "All Tables" not in default_targets:
@@ -1637,7 +1664,7 @@ def render_step_8() -> None:
             {
                 "variable": variable,
                 "operator": operator,
-                "values": values.strip(),
+                "values": values,
                 "applies_to": applies_to,
             }
         )

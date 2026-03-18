@@ -124,7 +124,7 @@ def build_default_filter_row() -> dict[str, str]:
     return {
         "variable": "",
         "operator": "",
-        "values": "",
+        "values": [],
         "applies_to": [],
     }
 
@@ -172,8 +172,8 @@ def validate_analysis_config(
         for index, row in enumerate(global_filters.get("rows", []), start=1):
             variable = normalize_text(row.get("variable"))
             operator = normalize_text(row.get("operator"))
-            values = normalize_text(row.get("values"))
-            if any([variable, operator, values]) and not all([variable, operator, values]):
+            values = row.get("values", [])
+            if any([variable, operator, values]) and not (variable and operator and values):
                 issues.append(f"Global filter row {index} is incomplete.")
     if not isinstance(local_overrides or {}, dict):
         issues.append("Local overrides must be stored as a dictionary.")
