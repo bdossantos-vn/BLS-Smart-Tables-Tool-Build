@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from app.components.branding import render_page_brand_header
 from app.components.navigation import render_page_navigation, render_sidebar
+from app.components.theme import apply_theme
 from app.pages import (
     page_10_stat_setup,
     page_11_topline_config,
@@ -54,8 +56,10 @@ PAGE_REGISTRY = {
 def main() -> None:
     """Run the Streamlit app through the new modular page registry."""
     init_app_state()
+    apply_theme()
     current_step_id = render_sidebar()
     page_renderer = PAGE_REGISTRY.get(current_step_id, page_1_project_setup.render)
+    render_page_brand_header()
     page_renderer()
     sync_project_config_from_session()
     render_page_navigation(current_step_id)

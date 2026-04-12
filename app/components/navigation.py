@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from app.components.branding import render_sidebar_brand
 from app.models.project_config import build_default_project_config
 from app.state.manager import sync_project_config_from_session
 from src.mapping import identify_scale_questions
@@ -79,7 +80,7 @@ def render_sidebar() -> str:
         The internal page id for the currently selected page.
     """
     with st.sidebar:
-        st.title("BLS Smart Tables Tool")
+        render_sidebar_brand()
         current_label = st.session_state.get("app_current_step", STEPS[0]["label"])
         if current_label not in _step_labels():
             current_label = STEPS[0]["label"]
