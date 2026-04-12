@@ -36,9 +36,10 @@ def build_default_banner_row() -> dict[str, str]:
 def build_default_stat_config() -> dict:
     """Return the default statistical configuration scaffold."""
     return {
+        "confidence_interval": 95,
         "alpha": 0.05,
         "enabled": True,
-        "compare_to_control": True,
+        "comparison_scope": "lowest_banner_level",
     }
 
 

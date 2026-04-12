@@ -64,6 +64,7 @@ from src.metadata import (
 )
 from src.state import DEFAULT_STATE, init_session_state, reset_project_state
 from src.stats import (
+    CONFIDENCE_INTERVAL_OPTIONS,
     DEFAULT_ALPHA,
     build_statistical_setup_summary,
     run_placeholder_significance,
@@ -1970,27 +1971,29 @@ def render_step_10() -> None:
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 
-    alpha = st.number_input(
-        "Alpha",
-        min_value=0.001,
-        max_value=0.2,
-        value=float(st.session_state.stat_config.get("alpha", DEFAULT_ALPHA)),
-        step=0.001,
-        format="%.3f",
+    confidence_interval = st.selectbox(
+        "Confidence Interval (C.I)",
+        options=CONFIDENCE_INTERVAL_OPTIONS,
+        index=(
+            CONFIDENCE_INTERVAL_OPTIONS.index(
+                int(st.session_state.stat_config.get("confidence_interval", 95))
+            )
+            if int(st.session_state.stat_config.get("confidence_interval", 95)) in CONFIDENCE_INTERVAL_OPTIONS
+            else CONFIDENCE_INTERVAL_OPTIONS.index(95)
+        ),
+        format_func=lambda value: f"{value}%",
     )
     test_enabled = st.checkbox(
         "Enable independent two-sample z-test scaffold",
         value=bool(st.session_state.stat_config.get("enabled", True)),
     )
-    compare_to_control = st.checkbox(
-        "Prioritize comparisons against detected control cell",
-        value=bool(st.session_state.stat_config.get("compare_to_control", True)),
-    )
+    st.caption("Comparisons will be run across all lowest-level groups within each banner.")
 
     st.session_state.stat_config = {
-        "alpha": float(alpha),
+        "confidence_interval": int(confidence_interval),
+        "alpha": DEFAULT_ALPHA,
         "enabled": test_enabled,
-        "compare_to_control": compare_to_control,
+        "comparison_scope": "lowest_banner_level",
     }
 
     issues = validate_statistical_setup(st.session_state.stat_config)

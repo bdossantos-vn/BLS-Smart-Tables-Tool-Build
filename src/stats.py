@@ -3,23 +3,32 @@
 from __future__ import annotations
 
 DEFAULT_ALPHA = 0.05
+CONFIDENCE_INTERVAL_OPTIONS = [80, 90, 95, 99]
+CONFIDENCE_TO_ALPHA = {
+    80: 0.20,
+    90: 0.10,
+    95: 0.05,
+    99: 0.01,
+}
 
 
 def validate_statistical_setup(stat_config: dict) -> list[str]:
     """Validate the statistical configuration scaffold."""
     issues: list[str] = []
-    alpha = stat_config.get("alpha", DEFAULT_ALPHA)
-    if not isinstance(alpha, (int, float)) or alpha <= 0 or alpha >= 1:
-        issues.append("Alpha must be a numeric value between 0 and 1.")
+    confidence_interval = stat_config.get("confidence_interval", 95)
+    if confidence_interval not in CONFIDENCE_INTERVAL_OPTIONS:
+        issues.append("Confidence interval must be one of 80%, 90%, 95%, or 99%.")
     return issues
 
 
 def build_statistical_setup_summary(stat_config: dict) -> dict:
     """Return a serializable summary of the stored statistical configuration."""
+    confidence_interval = int(stat_config.get("confidence_interval", 95))
     return {
-        "alpha": stat_config.get("alpha", DEFAULT_ALPHA),
+        "confidence_interval": confidence_interval,
+        "alpha": CONFIDENCE_TO_ALPHA.get(confidence_interval, DEFAULT_ALPHA),
         "enabled": bool(stat_config.get("enabled", True)),
-        "compare_to_control": bool(stat_config.get("compare_to_control", True)),
+        "comparison_scope": "Compare across all lowest banner-level groups",
         "planned_test": "independent two-sample z-test for proportions",
     }
 
