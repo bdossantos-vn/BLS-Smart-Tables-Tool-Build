@@ -15,6 +15,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "cleaned_df": None,
     "question_labels": {},
     "ingestion_log": [],
+    "intake_change_log": [],
     "cell_col": None,
     "comparison_col": None,
     "comparison_options": [],

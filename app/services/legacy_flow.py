@@ -98,6 +98,11 @@ def _append_log(message: str) -> None:
     st.session_state.ingestion_log.append(f"[{format_timestamp()}] {message}")
 
 
+def _append_intake_change(message: str) -> None:
+    """Append a timestamped change-log entry for Page 2 intake actions."""
+    st.session_state.intake_change_log.append(f"[{format_timestamp()}] {message}")
+
+
 def _summarize_choice_change(old_choices: str, new_choices: str, max_len: int = 140) -> str:
     """Build a compact before/after summary for answer-choice edits."""
     old_display = old_choices or "(blank)"
@@ -575,10 +580,21 @@ def _build_included_editor(all_columns: list[str], selected_columns: list[str]) 
 def _apply_intake_result(result) -> None:
     """Persist a completed intake result into session state."""
     available_columns = [column for column in result.cleaned_df.columns]
+    previous_survey_df = st.session_state.get("survey_df")
+    previous_available_columns = (
+        list(previous_survey_df.columns)
+        if isinstance(previous_survey_df, pd.DataFrame) and not previous_survey_df.empty
+        else []
+    )
     previous_included = st.session_state.get("included_columns", [])
     if previous_included:
         included_columns = [column for column in previous_included if column in available_columns]
-        included_columns.extend([column for column in available_columns if column not in included_columns])
+        newly_available_columns = [
+            column
+            for column in available_columns
+            if column not in previous_available_columns and column not in included_columns
+        ]
+        included_columns.extend(newly_available_columns)
     else:
         included_columns = available_columns.copy()
 
@@ -666,6 +682,7 @@ def render_step_1() -> None:
                 else:
                     st.session_state.blacklist_catalog = result.removed_columns.copy()
                     st.session_state.restored_columns = []
+                    st.session_state.intake_change_log = []
                     _apply_intake_result(result)
                     default_comparison = _resolve_default_comparison(
                         st.session_state.comparison_options,
@@ -699,6 +716,8 @@ def render_step_1() -> None:
             except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
                 st.error(str(exc))
             else:
+                label = selected_comparison or "Total only"
+                _append_intake_change(f"Comparison variable updated to {label}.")
                 if selected_comparison is None:
                     st.success("Comparison variable updated. The project is now set to total-only analysis.")
                 else:
@@ -771,6 +790,7 @@ def render_step_1() -> None:
 
             with include_left:
                 if st.button("Update Columns", key="update_included_columns", use_container_width=True):
+                    previous_included_columns = list(st.session_state.get("included_columns", available_columns))
                     included_columns = [
                         row["Column"]
                         for row in include_rows
@@ -789,6 +809,16 @@ def render_step_1() -> None:
                     except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
                         st.error(str(exc))
                     else:
+                        added_columns = [column for column in included_columns if column not in previous_included_columns]
+                        removed_columns = [column for column in previous_included_columns if column not in included_columns]
+                        summary_bits = []
+                        if added_columns:
+                            summary_bits.append("added: " + ", ".join(added_columns))
+                        if removed_columns:
+                            summary_bits.append("removed: " + ", ".join(removed_columns))
+                        if not summary_bits:
+                            summary_bits.append("no included-column changes")
+                        _append_intake_change("Included columns updated (" + "; ".join(summary_bits) + ").")
                         st.success("Included columns updated.")
                         st.rerun()
 
@@ -804,6 +834,7 @@ def render_step_1() -> None:
                     except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
                         st.error(str(exc))
                     else:
+                        _append_intake_change("Included columns reset to all available columns.")
                         st.success("Included columns reset to all available columns.")
                         st.rerun()
 
@@ -834,6 +865,7 @@ def render_step_1() -> None:
 
                 with btn_left:
                     if st.button("Update Columns", use_container_width=True):
+                        previous_restored_columns = list(st.session_state.get("restored_columns", []))
                         restored_columns = [
                             row["Column"]
                             for row in blacklist_rows
@@ -860,6 +892,16 @@ def render_step_1() -> None:
                             st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
                         )
                         st.session_state.blacklist_editor = edited_blacklist.copy()
+                        added_back = [column for column in restored_columns if column not in previous_restored_columns]
+                        re_excluded = [column for column in previous_restored_columns if column not in restored_columns]
+                        summary_bits = []
+                        if added_back:
+                            summary_bits.append("added back: " + ", ".join(added_back))
+                        if re_excluded:
+                            summary_bits.append("excluded again: " + ", ".join(re_excluded))
+                        if not summary_bits:
+                            summary_bits.append("no excluded-column changes")
+                        _append_intake_change("Excluded columns updated (" + "; ".join(summary_bits) + ").")
                         if restored_columns:
                             st.success(
                                 "Updated intake. Added back column(s): "
@@ -895,10 +937,18 @@ def render_step_1() -> None:
                             st.session_state.blacklist_catalog,
                             [],
                         )
+                        _append_intake_change("Excluded columns reset to the default blacklist.")
                         st.success("Column choices reset to the default blacklist.")
                         st.rerun()
             else:
                 st.caption("No blacklisted columns are configured for this intake.")
+
+        st.subheader("Change Log")
+        if st.session_state.get("intake_change_log"):
+            for entry in reversed(st.session_state.intake_change_log[-20:]):
+                st.code(entry)
+        else:
+            st.caption("No intake changes recorded yet.")
 
 
 def render_step_3() -> None:
