@@ -20,12 +20,15 @@ STEPS: list[dict[str, str]] = [
     {"id": "net_definitions", "label": "5. Net Definitions"},
     {"id": "custom_variables", "label": "6. Custom Variables"},
     {"id": "banner_config", "label": "7. Banner Configuration"},
-    {"id": "filter_config", "label": "8. Filter Configuration"},
-    {"id": "weighting", "label": "9. Weighting"},
     {"id": "stat_setup", "label": "10. Statistical Setup"},
     {"id": "topline_config", "label": "11. Topline Configuration"},
     {"id": "export", "label": "12. Export"},
 ]
+
+HIDDEN_STEP_LABELS = {
+    "8. Filter Configuration",
+    "9. Weighting",
+}
 
 
 def _step_labels() -> list[str]:
@@ -82,6 +85,9 @@ def render_sidebar() -> str:
     with st.sidebar:
         render_sidebar_brand()
         current_label = st.session_state.get("app_current_step", STEPS[0]["label"])
+        if current_label in HIDDEN_STEP_LABELS:
+            current_label = get_step_label_from_id("stat_setup")
+            st.session_state.app_current_step = current_label
         if current_label not in _step_labels():
             current_label = STEPS[0]["label"]
         selected_label = st.radio("Workflow", _step_labels(), index=_step_labels().index(current_label))
