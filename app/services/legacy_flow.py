@@ -1660,12 +1660,6 @@ def render_step_7() -> None:
 def render_step_8() -> None:
     """Render the filter configuration page."""
     st.header("7. Filter Configuration")
-    st.write(
-        "Create named filters with one or more branches and choose where each one applies. Each filter branch can "
-        "have its own logic, which lets you set different rules for groups like `control` and `test` inside the "
-        "same filter. Filters assigned to `All Tables` act as the base layer. If a filter is also assigned to a "
-        "banner, that banner uses both the `All Tables` filter(s) and its own banner-specific filter(s)."
-    )
 
     if not st.session_state.global_filters:
         st.session_state.global_filters = {"rows": []}
@@ -1851,11 +1845,6 @@ def render_step_8() -> None:
 def render_step_9() -> None:
     """Render the weighting configuration page."""
     st.header("8. Weighting Configuration")
-    st.write(
-        "Create named weights and choose where each one applies. Weights assigned to `All Tables` act as the base "
-        "layer. If a weight is also assigned to a banner or comparison output, that output uses both the `All Tables` "
-        "weight(s) and its own additional weight assignment."
-    )
 
     if not st.session_state.weighting_config:
         st.session_state.weighting_config = build_default_weighting_config()
