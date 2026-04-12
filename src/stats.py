@@ -15,18 +15,28 @@ CONFIDENCE_TO_ALPHA = {
 def validate_statistical_setup(stat_config: dict) -> list[str]:
     """Validate the statistical configuration scaffold."""
     issues: list[str] = []
-    confidence_interval = stat_config.get("confidence_interval", 95)
-    if confidence_interval not in CONFIDENCE_INTERVAL_OPTIONS:
+    confidence_intervals = stat_config.get("confidence_intervals", [95])
+    if not isinstance(confidence_intervals, list) or not confidence_intervals:
+        issues.append("Select at least one confidence interval.")
+        return issues
+    if len(confidence_intervals) > 2:
+        issues.append("Select no more than two confidence intervals.")
+    invalid_values = [value for value in confidence_intervals if value not in CONFIDENCE_INTERVAL_OPTIONS]
+    if invalid_values:
         issues.append("Confidence interval must be one of 80%, 90%, 95%, or 99%.")
     return issues
 
 
 def build_statistical_setup_summary(stat_config: dict) -> dict:
     """Return a serializable summary of the stored statistical configuration."""
-    confidence_interval = int(stat_config.get("confidence_interval", 95))
+    confidence_intervals = [
+        int(value)
+        for value in stat_config.get("confidence_intervals", [95])
+        if value in CONFIDENCE_INTERVAL_OPTIONS
+    ] or [95]
     return {
-        "confidence_interval": confidence_interval,
-        "alpha": CONFIDENCE_TO_ALPHA.get(confidence_interval, DEFAULT_ALPHA),
+        "confidence_intervals": confidence_intervals,
+        "alpha_values": [CONFIDENCE_TO_ALPHA.get(value, DEFAULT_ALPHA) for value in confidence_intervals],
         "enabled": bool(stat_config.get("enabled", True)),
         "comparison_scope": "Compare across all lowest banner-level groups",
         "planned_test": "independent two-sample z-test for proportions",

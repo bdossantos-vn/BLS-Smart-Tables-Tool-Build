@@ -1971,18 +1971,20 @@ def render_step_10() -> None:
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 
-    confidence_interval = st.selectbox(
+    selected_confidence_intervals = st.multiselect(
         "Confidence Interval (C.I)",
         options=CONFIDENCE_INTERVAL_OPTIONS,
-        index=(
-            CONFIDENCE_INTERVAL_OPTIONS.index(
-                int(st.session_state.stat_config.get("confidence_interval", 95))
-            )
-            if int(st.session_state.stat_config.get("confidence_interval", 95)) in CONFIDENCE_INTERVAL_OPTIONS
-            else CONFIDENCE_INTERVAL_OPTIONS.index(95)
-        ),
+        default=[
+            value
+            for value in st.session_state.stat_config.get("confidence_intervals", [95])
+            if value in CONFIDENCE_INTERVAL_OPTIONS
+        ] or [95],
         format_func=lambda value: f"{value}%",
+        help="Select up to two confidence intervals.",
     )
+    if len(selected_confidence_intervals) > 2:
+        st.warning("Select no more than two confidence intervals.")
+        selected_confidence_intervals = selected_confidence_intervals[:2]
     test_enabled = st.checkbox(
         "Enable independent two-sample z-test scaffold",
         value=bool(st.session_state.stat_config.get("enabled", True)),
@@ -1990,7 +1992,7 @@ def render_step_10() -> None:
     st.caption("Comparisons will be run across all lowest-level groups within each banner.")
 
     st.session_state.stat_config = {
-        "confidence_interval": int(confidence_interval),
+        "confidence_intervals": sorted(int(value) for value in selected_confidence_intervals),
         "alpha": DEFAULT_ALPHA,
         "enabled": test_enabled,
         "comparison_scope": "lowest_banner_level",
