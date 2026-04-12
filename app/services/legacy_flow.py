@@ -1967,29 +1967,41 @@ def render_step_9() -> None:
 
 def render_step_10() -> None:
     """Render the statistical setup scaffold."""
-    st.header("9. Statistical Setup")
+    st.header("8. Statistical Setup")
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 
-    selected_confidence_intervals = st.multiselect(
+    stored_confidence_intervals = [
+        value
+        for value in st.session_state.stat_config.get("confidence_intervals", [95])
+        if value in CONFIDENCE_INTERVAL_OPTIONS
+    ] or [95]
+    ci_col_1, ci_col_2 = st.columns(2)
+    confidence_interval_primary = ci_col_1.selectbox(
         "Confidence Interval (C.I)",
         options=CONFIDENCE_INTERVAL_OPTIONS,
-        default=[
-            value
-            for value in st.session_state.stat_config.get("confidence_intervals", [95])
-            if value in CONFIDENCE_INTERVAL_OPTIONS
-        ] or [95],
+        index=CONFIDENCE_INTERVAL_OPTIONS.index(stored_confidence_intervals[0]),
         format_func=lambda value: f"{value}%",
-        help="Select up to two confidence intervals.",
     )
-    if len(selected_confidence_intervals) > 2:
-        st.warning("Select no more than two confidence intervals.")
-        selected_confidence_intervals = selected_confidence_intervals[:2]
+    secondary_default = stored_confidence_intervals[1] if len(stored_confidence_intervals) > 1 else ""
+    confidence_interval_secondary = ci_col_2.selectbox(
+        "Second C.I (Optional)",
+        options=["", *CONFIDENCE_INTERVAL_OPTIONS],
+        index=(["", *CONFIDENCE_INTERVAL_OPTIONS].index(secondary_default) if secondary_default in ["", *CONFIDENCE_INTERVAL_OPTIONS] else 0),
+        format_func=lambda value: f"{value}%" if value else "None",
+    )
     test_enabled = st.checkbox(
         "Enable independent two-sample z-test scaffold",
         value=bool(st.session_state.stat_config.get("enabled", True)),
     )
     st.caption("Comparisons will be run across all lowest-level groups within each banner.")
+
+    selected_confidence_intervals = [int(confidence_interval_primary)]
+    if confidence_interval_secondary:
+        if int(confidence_interval_secondary) != int(confidence_interval_primary):
+            selected_confidence_intervals.append(int(confidence_interval_secondary))
+        else:
+            st.warning("Primary and secondary confidence intervals must be different.")
 
     st.session_state.stat_config = {
         "confidence_intervals": sorted(int(value) for value in selected_confidence_intervals),

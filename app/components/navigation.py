@@ -20,14 +20,17 @@ STEPS: list[dict[str, str]] = [
     {"id": "net_definitions", "label": "5. Net Definitions"},
     {"id": "custom_variables", "label": "6. Custom Variables"},
     {"id": "banner_config", "label": "7. Banner Configuration"},
-    {"id": "stat_setup", "label": "10. Statistical Setup"},
-    {"id": "topline_config", "label": "11. Topline Configuration"},
-    {"id": "export", "label": "12. Export"},
+    {"id": "stat_setup", "label": "8. Statistical Setup"},
+    {"id": "topline_config", "label": "9. Topline Configuration"},
+    {"id": "export", "label": "10. Export"},
 ]
 
-HIDDEN_STEP_LABELS = {
-    "8. Filter Configuration",
-    "9. Weighting",
+LEGACY_LABEL_REDIRECTS = {
+    "8. Filter Configuration": "8. Statistical Setup",
+    "9. Weighting": "8. Statistical Setup",
+    "10. Statistical Setup": "8. Statistical Setup",
+    "11. Topline Configuration": "9. Topline Configuration",
+    "12. Export": "10. Export",
 }
 
 
@@ -85,8 +88,8 @@ def render_sidebar() -> str:
     with st.sidebar:
         render_sidebar_brand()
         current_label = st.session_state.get("app_current_step", STEPS[0]["label"])
-        if current_label in HIDDEN_STEP_LABELS:
-            current_label = get_step_label_from_id("stat_setup")
+        if current_label in LEGACY_LABEL_REDIRECTS:
+            current_label = LEGACY_LABEL_REDIRECTS[current_label]
             st.session_state.app_current_step = current_label
         if current_label not in _step_labels():
             current_label = STEPS[0]["label"]

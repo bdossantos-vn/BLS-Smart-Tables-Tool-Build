@@ -13,7 +13,7 @@ def render() -> None:
     This first refactor pass stores topline choices in central state and
     prepares the later export layer to consume them.
     """
-    st.header("11. Topline Configuration")
+    st.header("9. Topline Configuration")
     st.write("Choose which variables should appear on the topline sheet and which supporting options to include.")
 
     variable_catalog = build_analysis_variable_catalog(
@@ -48,4 +48,3 @@ def render() -> None:
         "include_significance_notes": include_significance_notes,
     }
     st.success("Topline configuration saved.")
-
