@@ -7,7 +7,7 @@ import streamlit as st
 
 from app.models.project_config import build_default_project_config
 from app.state.manager import sync_project_config_from_session
-from src.metadata import identify_scale_questions
+from src.mapping import identify_scale_questions
 from src.state import reset_project_state
 
 
