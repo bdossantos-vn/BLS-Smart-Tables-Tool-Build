@@ -1,25 +1,21 @@
 # BLS Smart Tables Tool
 
-`BLS Smart Tables Tool` is a production-oriented Streamlit app for ingesting Qualtrics survey exports, cleaning respondent data, auditing survey variables, mapping scale questions, and exporting Excel workbooks.
+`BLS Smart Tables Tool` is a Streamlit application for automating Brand Lift Study table production from raw survey data through export-ready tables and toplines.
 
-This V1 release fully implements:
-
-- Data ingestion for `.xlsx` Qualtrics exports
-- Metadata row scrubbing
-- Blacklisted technical column removal
-- Required `cell` column validation and blank-cell respondent removal
-- Locked base and cell-letter management
-- Survey question audit with heuristic type detection
-- Scale mapping and polarity flipping
-- Streamlit session-state persistence across reruns
-- Multi-sheet placeholder Excel export for downstream workflow testing
-
-The later workflow stages are scaffolded in code so the app remains deployable and extensible without breaking the guided flow.
+The codebase has been realigned around a modular, page-based architecture so the product can scale more safely as the research workflow expands.
 
 ## Project Structure
 
 ```text
 .
+├── app
+│   ├── components
+│   ├── models
+│   ├── pages
+│   ├── services
+│   ├── state
+│   └── utils
+├── docs
 ├── app.py
 ├── requirements.txt
 ├── README.md
@@ -38,6 +34,23 @@ The later workflow stages are scaffolded in code so the app remains deployable a
     └── utils.py
 ```
 
+## Current Refactor Direction
+
+The refactor introduces:
+
+- A modular `app/` package with page-level routing
+- A central `project_config` object in session state
+- A configuration-only template flow on `Project Setup`
+- Dedicated documentation files:
+  - `docs/changelog.md`
+  - `docs/system_instructions.md`
+
+The existing working page logic is currently preserved in:
+
+- `app/services/legacy_flow.py`
+
+This lets the app keep functioning while we continue moving behavior into cleaner services and models over time.
+
 ## Local Run
 
 1. Create and activate a virtual environment.
@@ -55,6 +68,14 @@ streamlit run app.py
 
 4. Open the local Streamlit URL shown in the terminal.
 
+## Template Support
+
+The app now supports a configuration-only template workflow:
+
+- Download current project settings as JSON from `Project Setup`
+- Upload that template later to pre-populate future configuration steps
+- Templates intentionally exclude respondent-level data
+
 ## Deployment
 
 The app is ready for [Streamlit Community Cloud](https://streamlit.io/cloud):
@@ -64,11 +85,8 @@ The app is ready for [Streamlit Community Cloud](https://streamlit.io/cloud):
 3. Set the entrypoint to `app.py`.
 4. Streamlit Cloud will install packages from `requirements.txt` automatically.
 
-## Qualtrics Assumptions
+## Notes
 
-- The first row contains variable names.
-- The second row contains question labels.
-- Additional pre-data rows are treated as metadata when they look like ImportId rows, repeated headers, or Qualtrics metadata.
-- A `cell` column is required and is treated as the permanent experimental split.
-
-These assumptions are documented in code comments and were chosen to maximize practical reliability for common Qualtrics exports.
+- Existing analyst-tested steps remain preserved while the architecture is being upgraded.
+- New product rules and refactor guidance are documented in `docs/system_instructions.md`.
+- Feature and refactor history is tracked in `docs/changelog.md`.
