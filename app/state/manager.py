@@ -23,6 +23,9 @@ EXTRA_DEFAULTS: dict[str, Any] = {
         "include_lift": False,
         "include_significance_notes": True,
     },
+    "topline_editor": None,
+    "topline_change_log": [],
+    "topline_editor_source_columns": [],
     "project_setup_mode": "Start from scratch",
     "template_upload_message": "",
     "app_current_step": "1. Project Setup",
@@ -124,4 +127,3 @@ def export_project_template() -> str:
     """
     sync_project_config_from_session()
     return json.dumps(st.session_state.project_config, indent=2)
-
