@@ -67,6 +67,7 @@ from src.stats import (
     CONFIDENCE_INTERVAL_OPTIONS,
     DEFAULT_ALPHA,
     build_statistical_setup_summary,
+    normalize_confidence_intervals,
     run_placeholder_significance,
     validate_statistical_setup,
 )
@@ -2021,11 +2022,9 @@ def render_step_10() -> None:
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 
-    stored_confidence_intervals = [
-        value
-        for value in st.session_state.stat_config.get("confidence_intervals", [95])
-        if value in CONFIDENCE_INTERVAL_OPTIONS
-    ] or [95]
+    stored_confidence_intervals = normalize_confidence_intervals(
+        st.session_state.stat_config.get("confidence_intervals", [95])
+    )
     ci_col_1, ci_col_2 = st.columns(2)
     confidence_interval_primary = ci_col_1.selectbox(
         "Confidence Interval (C.I)",
@@ -2074,7 +2073,9 @@ def render_step_10() -> None:
         selected_confidence_intervals.append(int(confidence_interval_secondary))
 
     st.session_state.stat_config = {
-        "confidence_intervals": sorted(int(value) for value in selected_confidence_intervals),
+        "confidence_intervals": normalize_confidence_intervals(
+            [int(value) for value in selected_confidence_intervals]
+        ),
         "alpha": DEFAULT_ALPHA,
         "enabled": test_enabled,
         "comparison_scope": comparison_scope,

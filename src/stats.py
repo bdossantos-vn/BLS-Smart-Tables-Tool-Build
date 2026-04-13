@@ -12,10 +12,36 @@ CONFIDENCE_TO_ALPHA = {
 }
 
 
+def normalize_confidence_intervals(confidence_intervals: list[int] | None) -> list[int]:
+    """Normalize confidence intervals into a valid primary/secondary order.
+
+    The first selected confidence interval is treated as the primary, and the
+    optional second confidence interval must be lower than or equal to it.
+    Older saved states can sometimes persist an inverted order, so this helper
+    quietly normalizes them into descending order for stable UI behavior.
+    """
+    if not isinstance(confidence_intervals, list):
+        return [95]
+    cleaned = [
+        int(value)
+        for value in confidence_intervals
+        if value in CONFIDENCE_INTERVAL_OPTIONS
+    ]
+    if not cleaned:
+        return [95]
+    unique_cleaned: list[int] = []
+    for value in cleaned:
+        if value not in unique_cleaned:
+            unique_cleaned.append(value)
+    return sorted(unique_cleaned, reverse=True)[:2]
+
+
 def validate_statistical_setup(stat_config: dict) -> list[str]:
     """Validate the statistical configuration scaffold."""
     issues: list[str] = []
-    confidence_intervals = stat_config.get("confidence_intervals", [95])
+    confidence_intervals = normalize_confidence_intervals(
+        stat_config.get("confidence_intervals", [95])
+    )
     if not isinstance(confidence_intervals, list) or not confidence_intervals:
         issues.append("Select at least one confidence interval.")
         return issues
@@ -33,11 +59,9 @@ def validate_statistical_setup(stat_config: dict) -> list[str]:
 
 def build_statistical_setup_summary(stat_config: dict) -> dict:
     """Return a serializable summary of the stored statistical configuration."""
-    confidence_intervals = [
-        int(value)
-        for value in stat_config.get("confidence_intervals", [95])
-        if value in CONFIDENCE_INTERVAL_OPTIONS
-    ] or [95]
+    confidence_intervals = normalize_confidence_intervals(
+        stat_config.get("confidence_intervals", [95])
+    )
     comparison_scope = stat_config.get("comparison_scope", "lowest_banner_level")
     comparison_scope_label = (
         "Compare control vs test within each banner"
