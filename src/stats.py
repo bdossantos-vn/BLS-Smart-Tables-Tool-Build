@@ -34,11 +34,17 @@ def build_statistical_setup_summary(stat_config: dict) -> dict:
         for value in stat_config.get("confidence_intervals", [95])
         if value in CONFIDENCE_INTERVAL_OPTIONS
     ] or [95]
+    comparison_scope = stat_config.get("comparison_scope", "lowest_banner_level")
+    comparison_scope_label = (
+        "Compare control vs test within each banner"
+        if comparison_scope == "control_vs_test"
+        else "Compare across all lowest banner-level groups"
+    )
     return {
         "confidence_intervals": confidence_intervals,
         "alpha_values": [CONFIDENCE_TO_ALPHA.get(value, DEFAULT_ALPHA) for value in confidence_intervals],
         "enabled": bool(stat_config.get("enabled", True)),
-        "comparison_scope": "Compare across all lowest banner-level groups",
+        "comparison_scope": comparison_scope_label,
         "planned_test": "independent two-sample z-test for proportions",
     }
 

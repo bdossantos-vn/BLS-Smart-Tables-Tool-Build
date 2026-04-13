@@ -2044,7 +2044,23 @@ def render_step_10() -> None:
         "Enable independent two-sample z-test scaffold",
         value=bool(st.session_state.stat_config.get("enabled", True)),
     )
-    st.caption("Comparisons will be run across all lowest-level groups within each banner.")
+
+    comparison_scope_options = [("lowest_banner_level", "All banner splits within each banner")]
+    comparison_col = st.session_state.get("comparison_col")
+    if comparison_col:
+        comparison_scope_options.insert(0, ("control_vs_test", "Control vs test within each banner"))
+
+    current_scope = st.session_state.stat_config.get("comparison_scope", "lowest_banner_level")
+    valid_scope_ids = [option_id for option_id, _ in comparison_scope_options]
+    if current_scope not in valid_scope_ids:
+        current_scope = valid_scope_ids[0]
+
+    comparison_scope = st.selectbox(
+        "Statistical Comparisons",
+        options=valid_scope_ids,
+        index=valid_scope_ids.index(current_scope),
+        format_func=lambda value: dict(comparison_scope_options).get(value, value),
+    )
 
     selected_confidence_intervals = [int(confidence_interval_primary)]
     if confidence_interval_secondary:
@@ -2057,7 +2073,7 @@ def render_step_10() -> None:
         "confidence_intervals": sorted(int(value) for value in selected_confidence_intervals),
         "alpha": DEFAULT_ALPHA,
         "enabled": test_enabled,
-        "comparison_scope": "lowest_banner_level",
+        "comparison_scope": comparison_scope,
     }
 
     issues = validate_statistical_setup(st.session_state.stat_config)
@@ -2066,8 +2082,6 @@ def render_step_10() -> None:
             st.warning(issue)
     else:
         st.success("Statistical setup scaffold is valid.")
-
-    st.json(build_statistical_setup_summary(st.session_state.stat_config))
     run_placeholder_significance()
 
 
