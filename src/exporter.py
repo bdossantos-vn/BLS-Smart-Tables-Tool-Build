@@ -48,17 +48,15 @@ def _set_sheet_columns(worksheet, group_count: int) -> None:
 def _set_topline_columns(worksheet) -> None:
     """Set practical column widths for the topline worksheet."""
     widths = {
-        "A": 34,
-        "B": 26,
-        "C": 20,
-        "D": 20,
+        "A": 4,
+        "B": 40,
+        "C": 12,
+        "D": 12,
         "E": 12,
-        "F": 12,
-        "G": 12,
-        "H": 12,
-        "I": 10,
-        "J": 18,
-        "K": 48,
+        "F": 6,
+        "G": 56,
+        "H": 8,
+        "I": 8,
     }
     for column_letter, width in widths.items():
         worksheet.column_dimensions[column_letter].width = width
@@ -78,73 +76,81 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     _set_topline_columns(worksheet)
 
     current_row = 1
-    worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=11)
+    worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=9)
     title_cell = worksheet.cell(row=current_row, column=1, value="Viral Nation | Topline")
     _apply_header_style(title_cell, VN_BLACK)
-    current_row += 1
+    current_row = 2
+    worksheet.cell(row=current_row, column=2, value="Observations:")
+    _apply_body_style(worksheet.cell(row=current_row, column=2), bold=True)
+    current_row = 9
 
-    worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=11)
-    subtitle_cell = worksheet.cell(row=current_row, column=1, value="Observations")
-    _apply_body_style(subtitle_cell, bold=True, fill_color=VN_LIGHT_GRAY)
-    current_row += 2
-
-    worksheet.merge_cells(start_row=current_row, start_column=3, end_row=current_row, end_column=7)
     results_cell = worksheet.cell(row=current_row, column=3, value="RESULTS")
     _apply_header_style(results_cell, VN_RED)
-    current_row += 2
+    current_row = 11
 
-    headers = [
-        "Question",
-        "Response",
-        "Banner",
-        "Segment",
-        "Control N",
-        "Control %",
-        "Test N",
-        "Test %",
-        "Lift",
-        "Sig Test",
-        "Notes",
-    ]
-    for column_index, header in enumerate(headers, start=1):
-        header_cell = worksheet.cell(row=current_row, column=column_index, value=header)
-        _apply_header_style(header_cell, VN_YELLOW, font_color=VN_BLACK)
-    current_row += 1
+    header_values = {
+        (11, 2): "Cell",
+        (11, 3): "C",
+        (11, 4): "T",
+        (11, 5): "Lift",
+        (12, 2): "Base Size",
+        (12, 7): "NOTES",
+    }
+    for (row_index, column_index), value in header_values.items():
+        cell = worksheet.cell(row=row_index, column=column_index, value=value)
+        if row_index == 11:
+            _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
+        else:
+            _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY if column_index != 7 else None)
 
     rows = list(getattr(topline_sheet, "rows", []))
     if not rows:
-        worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=11)
+        worksheet.merge_cells(start_row=14, start_column=2, end_row=14, end_column=7)
         empty_cell = worksheet.cell(
-            row=current_row,
-            column=1,
+            row=14,
+            column=2,
             value="No topline rows were generated for the current project setup.",
         )
         _apply_body_style(empty_cell, fill_color=VN_LIGHT_GRAY)
         worksheet.freeze_panes = "A4"
         return
 
+    base_row = rows[0]
+    worksheet.cell(row=12, column=3, value=base_row.get("Control Base"))
+    _apply_body_style(worksheet.cell(row=12, column=3))
+    worksheet.cell(row=12, column=4, value=base_row.get("Test Base"))
+    _apply_body_style(worksheet.cell(row=12, column=4))
+    worksheet.cell(row=12, column=5, value=None)
+    _apply_body_style(worksheet.cell(row=12, column=5), fill_color=VN_LIGHT_GRAY)
+
+    current_row = 13
     for row in rows:
-        values = [
-            row.get("Question", ""),
-            row.get("Response", ""),
-            row.get("Banner", ""),
-            row.get("Segment", ""),
-            row.get("Control N"),
-            row.get("Control %"),
-            row.get("Test N"),
-            row.get("Test %"),
-            row.get("Lift"),
-            row.get("Sig Test", ""),
-            row.get("Notes", ""),
-        ]
-        for column_index, value in enumerate(values, start=1):
-            cell = worksheet.cell(row=current_row, column=column_index, value=value)
-            _apply_body_style(cell, wrap=column_index in {1, 2, 11})
-            if column_index in {6, 8, 9} and value is not None:
-                cell.number_format = "0%"
+        row_label = row.get("Question", "")
+        response = row.get("Response", "")
+        if response:
+            row_label = f"{row_label} | {response}"
+        label_cell = worksheet.cell(row=current_row, column=2, value=row_label)
+        _apply_body_style(label_cell, wrap=True)
+
+        control_pct_cell = worksheet.cell(row=current_row, column=3, value=row.get("Control %"))
+        _apply_body_style(control_pct_cell)
+        control_pct_cell.number_format = "0%"
+
+        test_pct_cell = worksheet.cell(row=current_row, column=4, value=row.get("Test %"))
+        _apply_body_style(test_pct_cell)
+        test_pct_cell.number_format = "0%"
+
+        lift_value = row.get("Lift")
+        lift_cell = worksheet.cell(row=current_row, column=5, value=lift_value)
+        _apply_body_style(lift_cell, fill_color=VN_LIGHT_GRAY)
+        if lift_value is not None:
+            lift_cell.number_format = "0%"
+
+        notes_cell = worksheet.cell(row=current_row, column=7, value=row.get("Notes", ""))
+        _apply_body_style(notes_cell, wrap=True)
         current_row += 1
 
-    worksheet.freeze_panes = "A4"
+    worksheet.freeze_panes = "B11"
 
 
 def _write_banner_sheet(workbook, sheet) -> None:
@@ -161,98 +167,91 @@ def _write_banner_sheet(workbook, sheet) -> None:
     _set_sheet_columns(worksheet, len(sheet.groups))
 
     current_row = 1
-    max_end_column = max(4, 1 + (len(sheet.groups) * 3))
+    visible_groups = list(sheet.groups)
+    value_columns = len(visible_groups)
+    spacer_columns = max(0, value_columns - 1)
+    max_end_column = 3 + value_columns + spacer_columns
 
     worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
     title_cell = worksheet.cell(row=current_row, column=1, value=sheet.banner_name)
     _apply_header_style(title_cell, VN_BLACK)
     current_row += 1
 
-    worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
-    subtitle_text = "Banner Levels: " + (" > ".join(sheet.levels) if sheet.levels else "All Tables")
-    subtitle_cell = worksheet.cell(row=current_row, column=1, value=subtitle_text)
-    _apply_body_style(subtitle_cell, bold=True, fill_color=VN_LIGHT_GRAY)
+    worksheet.cell(row=current_row, column=1, value="filtered by")
+    _apply_body_style(worksheet.cell(row=current_row, column=1))
+    current_row += 1
+    worksheet.cell(row=current_row, column=1, value="FILTER: ALL")
+    _apply_body_style(worksheet.cell(row=current_row, column=1))
     current_row += 2
 
+    banner_descriptor = " > ".join(sheet.levels) if sheet.levels else "All Tables"
+    if visible_groups:
+        worksheet.merge_cells(start_row=current_row, start_column=4, end_row=current_row, end_column=max_end_column)
+        descriptor_cell = worksheet.cell(row=current_row, column=4, value=banner_descriptor)
+        _apply_header_style(descriptor_cell, VN_ORANGE)
+    current_row += 1
+
+    group_row = current_row
+    sig_row = current_row + 1
+    data_start_column = 4
+    data_columns: list[int] = []
+    for index, group in enumerate(visible_groups):
+        column_index = data_start_column + (index * 2)
+        data_columns.append(column_index)
+        group_cell = worksheet.cell(row=group_row, column=column_index, value=group["label"])
+        _apply_body_style(group_cell, bold=(group["label"] == "Total"), fill_color=VN_LIGHT_GRAY if group["label"] == "Total" else None)
+        if group["label"] != "Total":
+            sig_letter = chr(64 + index) if index < 27 else ""
+            sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
+            _apply_body_style(sig_cell)
+            sig_cell.alignment = Alignment(horizontal="center", vertical="center")
+    current_row += 4
+
     for table in sheet.tables:
-        worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
-        question_cell = worksheet.cell(row=current_row, column=1, value=f"{table.variable}: {table.question_label}")
+        total_base_section = next((section for section in table.sections if section["label"] == "Total Base"), None)
+        answering_section = next((section for section in table.sections if section["label"] == "Total Answering"), None)
+        if not total_base_section or not answering_section:
+            continue
+
+        question_cell = worksheet.cell(row=current_row, column=1, value=table.question_label)
         _apply_header_style(question_cell, VN_RED)
-        current_row += 1
+        count_label_cell = worksheet.cell(row=current_row, column=2, value="Total Count (All)")
+        _apply_body_style(count_label_cell, bold=True, fill_color=VN_LIGHT_GRAY)
+        for column_index, denominator in zip(data_columns, total_base_section["base_denominators"]):
+            cell = worksheet.cell(row=current_row, column=column_index, value=denominator)
+            _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
+        current_row += 2
 
-        for section in table.sections:
-            worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
-            section_cell = worksheet.cell(row=current_row, column=1, value=section["label"])
-            _apply_header_style(section_cell, VN_ORANGE)
+        for count_row, pct_row in zip(total_base_section["rows"], answering_section["rows"]):
+            label_fill = VN_LIGHT_GRAY if count_row.get("kind") == "net" else None
+            label_text = f"{count_row['label']} (Net)" if count_row.get("kind") == "net" else count_row["label"]
+            response_cell = worksheet.cell(row=current_row, column=2, value=label_text)
+            _apply_body_style(response_cell, bold=bool(count_row.get("kind") == "net"), wrap=True)
+            for column_index, count in zip(data_columns, count_row["counts"]):
+                count_cell = worksheet.cell(row=current_row, column=column_index, value=count)
+                _apply_body_style(count_cell, fill_color=label_fill)
             current_row += 1
 
-            header_label_cell = worksheet.cell(row=current_row, column=1, value="Response")
-            _apply_header_style(header_label_cell, VN_YELLOW, font_color=VN_BLACK)
-            for group_index, group in enumerate(sheet.groups):
-                start_column = 2 + (group_index * 3)
-                worksheet.merge_cells(
-                    start_row=current_row,
-                    start_column=start_column,
-                    end_row=current_row,
-                    end_column=start_column + 2,
-                )
-                group_cell = worksheet.cell(row=current_row, column=start_column, value=group["label"])
-                _apply_header_style(group_cell, VN_YELLOW, font_color=VN_BLACK)
+            pct_label_cell = worksheet.cell(row=current_row, column=2, value="")
+            _apply_body_style(pct_label_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+            for column_index, percentage in zip(data_columns, pct_row["percentages"]):
+                percent_cell = worksheet.cell(row=current_row, column=column_index, value=percentage)
+                _apply_body_style(percent_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+                if percentage is not None:
+                    percent_cell.number_format = "0%"
             current_row += 1
 
-            metric_label_cell = worksheet.cell(row=current_row, column=1, value="")
-            _apply_body_style(metric_label_cell, fill_color=VN_LIGHT_GRAY)
-            for group_index in range(len(sheet.groups)):
-                start_column = 2 + (group_index * 3)
-                for offset, label in enumerate(["N", "%", "Sig"]):
-                    cell = worksheet.cell(row=current_row, column=start_column + offset, value=label)
-                    _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
+            sig_label_cell = worksheet.cell(row=current_row, column=2, value="")
+            _apply_body_style(sig_label_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+            for column_index, sig_text in zip(data_columns, pct_row["sig_letters"]):
+                sig_cell = worksheet.cell(row=current_row, column=column_index, value=sig_text)
+                _apply_body_style(sig_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+                sig_cell.alignment = Alignment(horizontal="center", vertical="center")
             current_row += 1
 
-            base_label_cell = worksheet.cell(row=current_row, column=1, value="Total Count (All)")
-            _apply_body_style(base_label_cell, bold=True, fill_color=VN_LIGHT_GRAY)
-            for group_index, denominator in enumerate(section["base_denominators"]):
-                start_column = 2 + (group_index * 3)
-                cell = worksheet.cell(row=current_row, column=start_column, value=denominator)
-                _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
-                _apply_body_style(worksheet.cell(row=current_row, column=start_column + 1), fill_color=VN_LIGHT_GRAY)
-                _apply_body_style(worksheet.cell(row=current_row, column=start_column + 2), fill_color=VN_LIGHT_GRAY)
-            current_row += 2
+        current_row += 2
 
-            for row in section["rows"]:
-                label_fill = VN_LIGHT_GRAY if row.get("kind") == "net" else None
-                response_label = f"{row['label']} (Net)" if row.get("kind") == "net" else row["label"]
-                response_cell = worksheet.cell(row=current_row, column=1, value=response_label)
-                _apply_body_style(response_cell, bold=bool(row.get("kind") == "net"), fill_color=label_fill, wrap=True)
-                for group_index, count in enumerate(row["counts"]):
-                    start_column = 2 + (group_index * 3)
-                    count_cell = worksheet.cell(row=current_row, column=start_column, value=count)
-                    _apply_body_style(count_cell, fill_color=label_fill)
-                current_row += 1
-
-                percent_label_cell = worksheet.cell(row=current_row, column=1, value="")
-                _apply_body_style(percent_label_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
-                for group_index, percentage in enumerate(row["percentages"]):
-                    start_column = 2 + (group_index * 3)
-                    percent_cell = worksheet.cell(row=current_row, column=start_column + 1, value=percentage)
-                    _apply_body_style(percent_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
-                    if percentage is not None:
-                        percent_cell.number_format = "0%"
-                current_row += 1
-
-                sig_label_cell = worksheet.cell(row=current_row, column=1, value="")
-                _apply_body_style(sig_label_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
-                for group_index, sig_text in enumerate(row["sig_letters"]):
-                    start_column = 2 + (group_index * 3)
-                    sig_cell = worksheet.cell(row=current_row, column=start_column + 2, value=sig_text)
-                    _apply_body_style(sig_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
-                    sig_cell.alignment = Alignment(horizontal="center", vertical="center")
-                current_row += 1
-
-            current_row += 2
-
-    worksheet.freeze_panes = "B5"
+    worksheet.freeze_panes = "D7"
 
 
 def export_workbook_to_excel_bytes(
