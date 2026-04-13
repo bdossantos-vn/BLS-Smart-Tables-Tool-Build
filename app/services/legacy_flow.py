@@ -2050,6 +2050,11 @@ def render_step_10() -> None:
         "Enable independent two-sample z-test scaffold",
         value=bool(st.session_state.stat_config.get("enabled", True)),
     )
+    include_lift = st.checkbox(
+        "Include lift",
+        value=bool(st.session_state.stat_config.get("include_lift", False)),
+        help="This lift setting works with the topline sheet. When both Statistical Setup and Topline Configuration include lift, topline notes will call out significant control vs test differences with point lift.",
+    )
 
     comparison_scope_options = [("lowest_banner_level", "All banner splits within each banner")]
     comparison_col = st.session_state.get("comparison_col")
@@ -2078,6 +2083,7 @@ def render_step_10() -> None:
         ),
         "alpha": DEFAULT_ALPHA,
         "enabled": test_enabled,
+        "include_lift": include_lift,
         "comparison_scope": comparison_scope,
     }
 
