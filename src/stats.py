@@ -24,6 +24,10 @@ def validate_statistical_setup(stat_config: dict) -> list[str]:
     invalid_values = [value for value in confidence_intervals if value not in CONFIDENCE_INTERVAL_OPTIONS]
     if invalid_values:
         issues.append("Confidence interval must be one of 80%, 90%, 95%, or 99%.")
+    if len(confidence_intervals) == 2:
+        primary_ci, secondary_ci = confidence_intervals[0], confidence_intervals[1]
+        if secondary_ci > primary_ci:
+            issues.append("The second confidence interval cannot be higher than the first.")
     return issues
 
 

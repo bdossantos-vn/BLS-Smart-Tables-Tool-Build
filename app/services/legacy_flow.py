@@ -2064,7 +2064,9 @@ def render_step_10() -> None:
 
     selected_confidence_intervals = [int(confidence_interval_primary)]
     if confidence_interval_secondary:
-        if int(confidence_interval_secondary) != int(confidence_interval_primary):
+        if int(confidence_interval_secondary) > int(confidence_interval_primary):
+            st.warning("Second C.I (Optional) cannot be higher than the primary Confidence Interval.")
+        elif int(confidence_interval_secondary) != int(confidence_interval_primary):
             selected_confidence_intervals.append(int(confidence_interval_secondary))
         else:
             st.warning("Primary and secondary confidence intervals must be different.")
