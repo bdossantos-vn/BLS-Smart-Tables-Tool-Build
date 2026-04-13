@@ -2033,11 +2033,18 @@ def render_step_10() -> None:
         index=CONFIDENCE_INTERVAL_OPTIONS.index(stored_confidence_intervals[0]),
         format_func=lambda value: f"{value}%",
     )
+    secondary_options = [""] + [
+        value
+        for value in CONFIDENCE_INTERVAL_OPTIONS
+        if int(value) < int(confidence_interval_primary)
+    ]
     secondary_default = stored_confidence_intervals[1] if len(stored_confidence_intervals) > 1 else ""
+    if secondary_default not in secondary_options:
+        secondary_default = ""
     confidence_interval_secondary = ci_col_2.selectbox(
         "Second C.I (Optional)",
-        options=["", *CONFIDENCE_INTERVAL_OPTIONS],
-        index=(["", *CONFIDENCE_INTERVAL_OPTIONS].index(secondary_default) if secondary_default in ["", *CONFIDENCE_INTERVAL_OPTIONS] else 0),
+        options=secondary_options,
+        index=(secondary_options.index(secondary_default) if secondary_default in secondary_options else 0),
         format_func=lambda value: f"{value}%" if value else "None",
     )
     test_enabled = st.checkbox(
@@ -2064,12 +2071,7 @@ def render_step_10() -> None:
 
     selected_confidence_intervals = [int(confidence_interval_primary)]
     if confidence_interval_secondary:
-        if int(confidence_interval_secondary) > int(confidence_interval_primary):
-            st.warning("Second C.I (Optional) cannot be higher than the primary Confidence Interval.")
-        elif int(confidence_interval_secondary) != int(confidence_interval_primary):
-            selected_confidence_intervals.append(int(confidence_interval_secondary))
-        else:
-            st.warning("Primary and secondary confidence intervals must be different.")
+        selected_confidence_intervals.append(int(confidence_interval_secondary))
 
     st.session_state.stat_config = {
         "confidence_intervals": sorted(int(value) for value in selected_confidence_intervals),
