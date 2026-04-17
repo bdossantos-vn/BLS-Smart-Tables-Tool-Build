@@ -7,6 +7,7 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from src.utils import normalize_text
 
 
 VN_BLACK = "000000"
