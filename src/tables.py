@@ -773,6 +773,7 @@ def _build_topline_rows(
     comparison_col: str | None,
     include_lift: bool,
     include_significance_notes: bool,
+    response_selection_map: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Flatten banner comparisons into one topline sheet.
 
@@ -794,6 +795,7 @@ def _build_topline_rows(
     if not total_comparison_sheet:
         return rows
 
+    response_selection_map = response_selection_map or {}
     note_lookup = _build_banner_note_lookup(banner_sheets, comparison_col)
     if len(total_comparison_sheet.groups) < 2:
         return rows
@@ -810,6 +812,11 @@ def _build_topline_rows(
             continue
         base_denominators = list(answering_section.get("base_denominators", []))
         for row in answering_section.get("rows", []):
+            allowed_responses = response_selection_map.get(table.variable, [])
+            if allowed_responses and normalize_text(row["label"]) not in {
+                normalize_text(value) for value in allowed_responses
+            }:
+                continue
             left_n = row["counts"][left_index]
             right_n = row["counts"][right_index]
             left_pct = row["percentages"][left_index] or 0.0
@@ -983,6 +990,15 @@ def generate_workbook_package(
         for value in topline_config.get("variables", [])
         if normalize_text(value)
     }
+    response_selection_map = {
+        normalize_text(variable): [
+            normalize_text(choice)
+            for choice in choices
+            if normalize_text(choice)
+        ]
+        for variable, choices in topline_config.get("response_selections", {}).items()
+        if normalize_text(variable)
+    }
     topline_question_sheets = [
         WorkbookSheet(
             name=sheet.name,
@@ -1006,6 +1022,7 @@ def generate_workbook_package(
         include_lift=effective_topline_lift,
         include_significance_notes=bool(topline_config.get("include_significance_notes", True))
         and effective_topline_lift,
+        response_selection_map=response_selection_map,
     )
 
     return {
@@ -1013,6 +1030,7 @@ def generate_workbook_package(
         "topline_sheet": ToplineSheet(rows=topline_rows),
         "confidence_intervals": confidence_intervals,
         "comparison_scope": comparison_scope,
+        "include_n_count": bool(stat_config.get("include_n_count", False)),
         "question_count": len(enabled_questions),
         "sheet_count": len(sheet_specs),
     }

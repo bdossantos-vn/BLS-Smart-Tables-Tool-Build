@@ -2050,6 +2050,10 @@ def render_step_10() -> None:
         "Enable independent two-sample z-test scaffold",
         value=bool(st.session_state.stat_config.get("enabled", True)),
     )
+    include_n_count = st.checkbox(
+        "Include N Count in Banner Tables",
+        value=bool(st.session_state.stat_config.get("include_n_count", False)),
+    )
     include_lift = st.checkbox(
         "Include lift",
         value=bool(st.session_state.stat_config.get("include_lift", False)),
@@ -2083,6 +2087,7 @@ def render_step_10() -> None:
         ),
         "alpha": DEFAULT_ALPHA,
         "enabled": test_enabled,
+        "include_n_count": include_n_count,
         "include_lift": include_lift,
         "comparison_scope": comparison_scope,
     }

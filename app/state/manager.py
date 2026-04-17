@@ -20,6 +20,7 @@ EXTRA_DEFAULTS: dict[str, Any] = {
     "project_config": build_default_project_config(),
     "topline_config": {
         "variables": [],
+        "response_selections": {},
         "include_lift": False,
         "include_significance_notes": True,
     },

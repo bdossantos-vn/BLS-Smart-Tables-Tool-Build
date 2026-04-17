@@ -73,6 +73,7 @@ def build_statistical_setup_summary(stat_config: dict) -> dict:
         "alpha_values": [CONFIDENCE_TO_ALPHA.get(value, DEFAULT_ALPHA) for value in confidence_intervals],
         "enabled": bool(stat_config.get("enabled", True)),
         "include_lift": bool(stat_config.get("include_lift", False)),
+        "include_n_count": bool(stat_config.get("include_n_count", False)),
         "comparison_scope": comparison_scope_label,
         "planned_test": "independent two-sample z-test for proportions",
     }

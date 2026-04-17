@@ -54,6 +54,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "topline_editor": None,
     "topline_change_log": [],
     "topline_editor_source_columns": [],
+    "topline_response_selections": {},
     "global_filters": {},
     "weighting_config": {},
     "banner_config": {},
