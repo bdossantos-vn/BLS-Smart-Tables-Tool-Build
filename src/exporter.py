@@ -37,11 +37,9 @@ def _apply_body_style(cell, bold: bool = False, fill_color: str | None = None, w
 def _set_sheet_columns(worksheet, group_count: int) -> None:
     """Set practical column widths for a question-table worksheet."""
     worksheet.column_dimensions["A"].width = 42
-    start_column = 2
-    for group_index in range(group_count):
-        worksheet.column_dimensions[get_column_letter(start_column + (group_index * 3))].width = 11
-        worksheet.column_dimensions[get_column_letter(start_column + (group_index * 3) + 1)].width = 10
-        worksheet.column_dimensions[get_column_letter(start_column + (group_index * 3) + 2)].width = 10
+    worksheet.column_dimensions["B"].width = 20
+    for column_index in range(3, 3 + max(group_count, 1)):
+        worksheet.column_dimensions[get_column_letter(column_index)].width = 14
 
 
 def _set_topline_columns(worksheet) -> None:
@@ -177,9 +175,7 @@ def _write_banner_sheet(workbook, sheet) -> None:
 
     current_row = 1
     visible_groups = list(sheet.groups)
-    value_columns = len(visible_groups)
-    spacer_columns = max(0, value_columns - 1)
-    max_end_column = 3 + value_columns + spacer_columns
+    max_end_column = 2 + len(visible_groups)
 
     worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
     title_cell = worksheet.cell(row=current_row, column=1, value=sheet.banner_name)
@@ -195,26 +191,86 @@ def _write_banner_sheet(workbook, sheet) -> None:
 
     banner_descriptor = " > ".join(sheet.levels) if sheet.levels else "All Tables"
     if visible_groups:
-        worksheet.merge_cells(start_row=current_row, start_column=4, end_row=current_row, end_column=max_end_column)
-        descriptor_cell = worksheet.cell(row=current_row, column=4, value=banner_descriptor)
+        worksheet.merge_cells(start_row=current_row, start_column=3, end_row=current_row, end_column=max_end_column)
+        descriptor_cell = worksheet.cell(row=current_row, column=3, value=banner_descriptor)
         _apply_header_style(descriptor_cell, VN_ORANGE)
     current_row += 1
 
-    group_row = current_row
-    sig_row = current_row + 1
-    data_start_column = 4
+    data_start_column = 3
     data_columns: list[int] = []
+    for index, _group in enumerate(visible_groups):
+        data_columns.append(data_start_column + index)
+
+    level_rows = max(1, len(sheet.levels))
+    total_group_indexes = [index for index, group in enumerate(visible_groups) if group["label"] == "Total"]
+    non_total_indexes = [index for index, group in enumerate(visible_groups) if group["label"] != "Total"]
+
+    if total_group_indexes:
+        total_column = data_columns[total_group_indexes[0]]
+        worksheet.merge_cells(
+            start_row=current_row,
+            start_column=total_column,
+            end_row=current_row + level_rows - 1,
+            end_column=total_column,
+        )
+        total_cell = worksheet.cell(row=current_row, column=total_column, value="Total")
+        _apply_body_style(total_cell, bold=True, fill_color=VN_LIGHT_GRAY)
+        total_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    if sheet.levels and non_total_indexes:
+        for level_index, level_name in enumerate(sheet.levels):
+            header_row = current_row + level_index
+            start_group = None
+            previous_value = None
+            for position, group_index in enumerate(non_total_indexes):
+                group = visible_groups[group_index]
+                current_value = normalize_text(group.get("values", {}).get(level_name))
+                if start_group is None:
+                    start_group = group_index
+                    previous_value = current_value
+                    continue
+                if current_value != previous_value:
+                    start_column = data_columns[start_group]
+                    end_column = data_columns[non_total_indexes[position - 1]]
+                    worksheet.merge_cells(
+                        start_row=header_row,
+                        start_column=start_column,
+                        end_row=header_row,
+                        end_column=end_column,
+                    )
+                    merged_cell = worksheet.cell(row=header_row, column=start_column, value=previous_value)
+                    _apply_body_style(merged_cell, bold=True)
+                    merged_cell.alignment = Alignment(horizontal="center", vertical="center")
+                    start_group = group_index
+                    previous_value = current_value
+            if start_group is not None:
+                start_column = data_columns[start_group]
+                end_column = data_columns[non_total_indexes[-1]]
+                worksheet.merge_cells(
+                    start_row=header_row,
+                    start_column=start_column,
+                    end_row=header_row,
+                    end_column=end_column,
+                )
+                merged_cell = worksheet.cell(row=header_row, column=start_column, value=previous_value)
+                _apply_body_style(merged_cell, bold=True)
+                merged_cell.alignment = Alignment(horizontal="center", vertical="center")
+    else:
+        header_row = current_row
+        for column_index, group in zip(data_columns, visible_groups):
+            group_cell = worksheet.cell(row=header_row, column=column_index, value=group["label"])
+            _apply_body_style(group_cell, bold=(group["label"] == "Total"), fill_color=VN_LIGHT_GRAY if group["label"] == "Total" else None)
+            group_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    sig_row = current_row + level_rows
     for index, group in enumerate(visible_groups):
-        column_index = data_start_column + (index * 2)
-        data_columns.append(column_index)
-        group_cell = worksheet.cell(row=group_row, column=column_index, value=group["label"])
-        _apply_body_style(group_cell, bold=(group["label"] == "Total"), fill_color=VN_LIGHT_GRAY if group["label"] == "Total" else None)
+        column_index = data_columns[index]
         if group["label"] != "Total":
             sig_letter = chr(64 + index) if index < 27 else ""
             sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
             _apply_body_style(sig_cell)
             sig_cell.alignment = Alignment(horizontal="center", vertical="center")
-    current_row += 4
+    current_row = sig_row + 3
 
     for table in sheet.tables:
         total_base_section = next((section for section in table.sections if section["label"] == "Total Base"), None)

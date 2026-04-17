@@ -383,6 +383,45 @@ def _build_banner_groups(
     return groups
 
 
+def _build_total_comparison_groups(
+    df: pd.DataFrame,
+    comparison_col: str | None,
+    comparison_group_order: dict[str, int],
+) -> list[dict[str, Any]]:
+    """Build plain total-level comparison groups with no banner nesting.
+
+    Inputs:
+        df: Current analysis dataframe.
+        comparison_col: The selected comparison variable, usually `cell`.
+        comparison_group_order: Preferred order for comparison groups.
+
+    Outputs:
+        A list of plain groups like `control` and `test`, each spanning the
+        total sample only.
+    """
+    comparison_variable = normalize_text(comparison_col)
+    if not comparison_variable or comparison_variable not in df.columns:
+        return []
+
+    values = df[comparison_variable].map(normalize_text)
+    unique_values = [value for value in values.dropna().unique().tolist() if value]
+    if comparison_group_order:
+        unique_values = sorted(
+            unique_values,
+            key=lambda value: comparison_group_order.get(value, 9999),
+        )
+    groups: list[dict[str, Any]] = []
+    for value in unique_values:
+        groups.append(
+            {
+                "label": value,
+                "mask": (values == value).fillna(False),
+                "values": {comparison_variable: value},
+            }
+        )
+    return groups
+
+
 def _compute_choice_count(series: pd.Series, choice: str) -> pd.Series:
     """Return a boolean mask for respondents who selected one choice."""
     normalized_choice = normalize_text(choice)
@@ -739,11 +778,12 @@ def _build_topline_rows(
         return rows
 
     note_lookup = _build_banner_note_lookup(banner_sheets, comparison_col)
-    control_test_pairs = _find_control_test_pair_indexes(total_comparison_sheet.groups, comparison_col)
-    if not control_test_pairs:
+    normalized_labels = [normalize_text(group.get("label")).lower() for group in total_comparison_sheet.groups]
+    if "control" not in normalized_labels or "test" not in normalized_labels:
         return rows
-
-    control_index, test_index, subgroup_label = control_test_pairs[0]
+    control_index = normalized_labels.index("control")
+    test_index = normalized_labels.index("test")
+    subgroup_label = "Total"
     for table in total_comparison_sheet.tables:
         answering_section = next(
             (section for section in table.sections if section.get("label") == "Total Answering"),
@@ -772,7 +812,7 @@ def _build_topline_rows(
                     "Question": table.question_label,
                     "Variable": table.variable,
                     "Response": row["label"],
-                    "Banner": total_comparison_sheet.banner_name,
+                    "Banner": "Total",
                     "Segment": subgroup_label,
                     "Control Base": base_denominators[control_index],
                     "Control N": control_n,
@@ -863,12 +903,8 @@ def generate_workbook_package(
         total_comparison_sheet = only_sheet
     else:
         if comparison_col and normalize_text(comparison_col) in analysis_df.columns:
-            total_groups = _build_banner_groups(
+            total_groups = _build_total_comparison_groups(
                 analysis_df,
-                {"name": normalize_text(comparison_col), "levels": [normalize_text(comparison_col)]},
-                False,
-                question_lookup,
-                custom_variables,
                 comparison_col,
                 comparison_group_order,
             )
@@ -887,7 +923,7 @@ def generate_workbook_package(
             total_comparison_sheet = WorkbookSheet(
                 name="Topline Comparison",
                 banner_name="Topline Comparison",
-                levels=[normalize_text(comparison_col)],
+                levels=[],
                 groups=total_groups,
                 tables=total_tables,
             )
