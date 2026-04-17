@@ -14,7 +14,6 @@ VN_WHITE = "FFFFFF"
 VN_RED = "FF005C"
 VN_ORANGE = "FF6927"
 VN_YELLOW = "FFC227"
-VN_LIGHT_GREEN = "E8F6EA"
 VN_LIGHT_GRAY = "F4F5F8"
 
 
@@ -132,13 +131,23 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         label_cell = worksheet.cell(row=current_row, column=2, value=row_label)
         _apply_body_style(label_cell, wrap=True)
 
-        control_pct_cell = worksheet.cell(row=current_row, column=3, value=row.get("Control %"))
+        control_pct = row.get("Control %")
+        control_sig = str(row.get("Control Sig", "") or "")
+        control_display = ""
+        if control_pct is not None:
+            control_display = f"{control_pct:.0%}{control_sig}"
+        control_pct_cell = worksheet.cell(row=current_row, column=3, value=control_display)
         _apply_body_style(control_pct_cell)
-        control_pct_cell.number_format = "0%"
+        control_pct_cell.alignment = Alignment(horizontal="center", vertical="top")
 
-        test_pct_cell = worksheet.cell(row=current_row, column=4, value=row.get("Test %"))
+        test_pct = row.get("Test %")
+        test_sig = str(row.get("Test Sig", "") or "")
+        test_display = ""
+        if test_pct is not None:
+            test_display = f"{test_pct:.0%}{test_sig}"
+        test_pct_cell = worksheet.cell(row=current_row, column=4, value=test_display)
         _apply_body_style(test_pct_cell)
-        test_pct_cell.number_format = "0%"
+        test_pct_cell.alignment = Alignment(horizontal="center", vertical="top")
 
         lift_value = row.get("Lift")
         lift_cell = worksheet.cell(row=current_row, column=5, value=lift_value)
@@ -224,7 +233,7 @@ def _write_banner_sheet(workbook, sheet) -> None:
 
         for count_row, pct_row in zip(total_base_section["rows"], answering_section["rows"]):
             label_fill = VN_LIGHT_GRAY if count_row.get("kind") == "net" else None
-            label_text = f"{count_row['label']} (Net)" if count_row.get("kind") == "net" else count_row["label"]
+            label_text = count_row["label"]
             response_cell = worksheet.cell(row=current_row, column=2, value=label_text)
             _apply_body_style(response_cell, bold=bool(count_row.get("kind") == "net"), wrap=True)
             for column_index, count in zip(data_columns, count_row["counts"]):
@@ -233,19 +242,19 @@ def _write_banner_sheet(workbook, sheet) -> None:
             current_row += 1
 
             pct_label_cell = worksheet.cell(row=current_row, column=2, value="")
-            _apply_body_style(pct_label_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+            _apply_body_style(pct_label_cell, fill_color=label_fill)
             for column_index, percentage in zip(data_columns, pct_row["percentages"]):
                 percent_cell = worksheet.cell(row=current_row, column=column_index, value=percentage)
-                _apply_body_style(percent_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+                _apply_body_style(percent_cell, fill_color=label_fill)
                 if percentage is not None:
                     percent_cell.number_format = "0%"
             current_row += 1
 
             sig_label_cell = worksheet.cell(row=current_row, column=2, value="")
-            _apply_body_style(sig_label_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+            _apply_body_style(sig_label_cell, fill_color=label_fill)
             for column_index, sig_text in zip(data_columns, pct_row["sig_letters"]):
                 sig_cell = worksheet.cell(row=current_row, column=column_index, value=sig_text)
-                _apply_body_style(sig_cell, fill_color=VN_LIGHT_GREEN if label_fill is None else label_fill)
+                _apply_body_style(sig_cell, fill_color=label_fill)
                 sig_cell.alignment = Alignment(horizontal="center", vertical="center")
             current_row += 1
 

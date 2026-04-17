@@ -597,6 +597,31 @@ def _find_control_test_pair_indexes(
     return pairs
 
 
+def _build_significance_direction(
+    sig_letters: list[str],
+    control_index: int,
+    test_index: int,
+) -> str:
+    """Return which side is significantly higher for one control/test pair.
+
+    Inputs:
+        sig_letters: Significance-letter outputs for one response row.
+        control_index: Column index for the control group.
+        test_index: Column index for the test group.
+
+    Outputs:
+        Returns `test`, `control`, or an empty string when there is no
+        significant difference between the pair.
+    """
+    test_sig = normalize_text(sig_letters[test_index]) if test_index < len(sig_letters) else ""
+    control_sig = normalize_text(sig_letters[control_index]) if control_index < len(sig_letters) else ""
+    if control_sig:
+        return "control"
+    if test_sig:
+        return "test"
+    return ""
+
+
 def _build_topline_note(
     subgroup_label: str,
     control_pct: float,
@@ -634,27 +659,24 @@ def _build_topline_note(
     )
 
 
-def _build_topline_rows(
+def _build_banner_note_lookup(
     sheets: list[WorkbookSheet],
     comparison_col: str | None,
-    include_lift: bool,
-    include_significance_notes: bool,
-) -> list[dict[str, Any]]:
-    """Flatten banner comparisons into one topline sheet.
+) -> dict[tuple[str, str], list[str]]:
+    """Collect banner-level significance notes for each question response.
 
     Inputs:
-        sheets: The already-built banner sheets.
-        comparison_col: The selected comparison variable, usually `cell`.
-        include_lift: Whether the topline sheet should show lift values.
-        include_significance_notes: Whether the topline sheet should include
-            analyst-style notes for significant differences.
+        sheets: Banner sheets already prepared for workbook export.
+        comparison_col: The chosen comparison variable, usually `cell`.
 
     Outputs:
-        A list of flat topline rows. Each row describes one question response
-        within one banner subgroup for control vs test.
+        A mapping keyed by `(variable, response_label)` that stores all
+        subgroup-level topline notes found across banner sheets.
     """
-    rows: list[dict[str, Any]] = []
+    note_lookup: dict[tuple[str, str], list[str]] = {}
     for sheet in sheets:
+        if not sheet.levels:
+            continue
         control_test_pairs = _find_control_test_pair_indexes(sheet.groups, comparison_col)
         if not control_test_pairs:
             continue
@@ -665,50 +687,106 @@ def _build_topline_rows(
             )
             if not answering_section:
                 continue
-            base_denominators = list(answering_section.get("base_denominators", []))
             for row in answering_section.get("rows", []):
                 for control_index, test_index, subgroup_label in control_test_pairs:
-                    control_n = row["counts"][control_index]
-                    test_n = row["counts"][test_index]
                     control_pct = row["percentages"][control_index] or 0.0
                     test_pct = row["percentages"][test_index] or 0.0
-
-                    significant_direction = ""
-                    test_sig = normalize_text(row["sig_letters"][test_index])
-                    control_sig = normalize_text(row["sig_letters"][control_index])
-                    if control_sig:
-                        significant_direction = "control"
-                    elif test_sig:
-                        significant_direction = "test"
-
-                    sig_display = ""
-                    if significant_direction == "test":
-                        sig_display = "Test > Control"
-                    elif significant_direction == "control":
-                        sig_display = "Control > Test"
-
-                    rows.append(
-                        {
-                            "Question": table.question_label,
-                            "Variable": table.variable,
-                            "Response": row["label"],
-                            "Banner": sheet.banner_name,
-                            "Segment": subgroup_label,
-                            "Control Base": base_denominators[control_index],
-                            "Control N": control_n,
-                            "Control %": control_pct,
-                            "Test Base": base_denominators[test_index],
-                            "Test N": test_n,
-                            "Test %": test_pct,
-                            "Lift": (test_pct - control_pct) if include_lift else None,
-                            "Sig Test": sig_display,
-                            "Notes": (
-                                _build_topline_note(subgroup_label, control_pct, test_pct, significant_direction)
-                                if include_significance_notes
-                                else ""
-                            ),
-                        }
+                    significant_direction = _build_significance_direction(
+                        row["sig_letters"],
+                        control_index,
+                        test_index,
                     )
+                    note = _build_topline_note(
+                        subgroup_label,
+                        control_pct,
+                        test_pct,
+                        significant_direction,
+                    )
+                    if not note:
+                        continue
+                    key = (table.variable, row["label"])
+                    note_lookup.setdefault(key, [])
+                    if note not in note_lookup[key]:
+                        note_lookup[key].append(note)
+    return note_lookup
+
+
+def _build_topline_rows(
+    total_comparison_sheet: WorkbookSheet | None,
+    banner_sheets: list[WorkbookSheet],
+    comparison_col: str | None,
+    include_lift: bool,
+    include_significance_notes: bool,
+) -> list[dict[str, Any]]:
+    """Flatten banner comparisons into one topline sheet.
+
+    Inputs:
+        total_comparison_sheet: The one total-level comparison sheet used for
+            the topline grid itself.
+        banner_sheets: Banner sheets used only to derive subgroup-level notes.
+        comparison_col: The selected comparison variable, usually `cell`.
+        include_lift: Whether the topline sheet should show lift values.
+        include_significance_notes: Whether the topline sheet should include
+            analyst-style notes for significant differences.
+
+    Outputs:
+        A list of flat topline rows. Each row describes one question response
+        on the total sample for control vs test, plus optional banner-derived
+        notes.
+    """
+    rows: list[dict[str, Any]] = []
+    if not total_comparison_sheet:
+        return rows
+
+    note_lookup = _build_banner_note_lookup(banner_sheets, comparison_col)
+    control_test_pairs = _find_control_test_pair_indexes(total_comparison_sheet.groups, comparison_col)
+    if not control_test_pairs:
+        return rows
+
+    control_index, test_index, subgroup_label = control_test_pairs[0]
+    for table in total_comparison_sheet.tables:
+        answering_section = next(
+            (section for section in table.sections if section.get("label") == "Total Answering"),
+            None,
+        )
+        if not answering_section:
+            continue
+        base_denominators = list(answering_section.get("base_denominators", []))
+        for row in answering_section.get("rows", []):
+            control_n = row["counts"][control_index]
+            test_n = row["counts"][test_index]
+            control_pct = row["percentages"][control_index] or 0.0
+            test_pct = row["percentages"][test_index] or 0.0
+            significant_direction = _build_significance_direction(
+                row["sig_letters"],
+                control_index,
+                test_index,
+            )
+            key = (table.variable, row["label"])
+            note_text = ""
+            if include_significance_notes:
+                note_text = "\n".join(note_lookup.get(key, []))
+
+            rows.append(
+                {
+                    "Question": table.question_label,
+                    "Variable": table.variable,
+                    "Response": row["label"],
+                    "Banner": total_comparison_sheet.banner_name,
+                    "Segment": subgroup_label,
+                    "Control Base": base_denominators[control_index],
+                    "Control N": control_n,
+                    "Control %": control_pct,
+                    "Control Sig": row["sig_letters"][control_index],
+                    "Test Base": base_denominators[test_index],
+                    "Test N": test_n,
+                    "Test %": test_pct,
+                    "Test Sig": row["sig_letters"][test_index],
+                    "Lift": (test_pct - control_pct) if include_lift else None,
+                    "Sig Test": significant_direction,
+                    "Notes": note_text,
+                }
+            )
     return rows
 
 
@@ -751,6 +829,7 @@ def generate_workbook_package(
     comparison_scope = normalize_text(stat_config.get("comparison_scope")) or "lowest_banner_level"
 
     sheet_specs: list[WorkbookSheet] = []
+    total_comparison_sheet: WorkbookSheet | None = None
     if not banner_rows:
         groups = _build_banner_groups(
             analysis_df,
@@ -773,16 +852,45 @@ def generate_workbook_package(
             )
             for question_row in enabled_questions
         ]
-        sheet_specs.append(
-            WorkbookSheet(
-                name="All Tables",
-                banner_name="All Tables",
-                levels=[],
-                groups=groups,
-                tables=tables,
-            )
+        only_sheet = WorkbookSheet(
+            name="All Tables",
+            banner_name="All Tables",
+            levels=[],
+            groups=groups,
+            tables=tables,
         )
+        sheet_specs.append(only_sheet)
+        total_comparison_sheet = only_sheet
     else:
+        if comparison_col and normalize_text(comparison_col) in analysis_df.columns:
+            total_groups = _build_banner_groups(
+                analysis_df,
+                {"name": normalize_text(comparison_col), "levels": [normalize_text(comparison_col)]},
+                False,
+                question_lookup,
+                custom_variables,
+                comparison_col,
+                comparison_group_order,
+            )
+            total_tables = [
+                _build_question_table(
+                    analysis_df,
+                    question_row,
+                    total_groups,
+                    net_definitions,
+                    scale_mappings,
+                    alpha,
+                    "control_vs_test",
+                )
+                for question_row in enabled_questions
+            ]
+            total_comparison_sheet = WorkbookSheet(
+                name="Topline Comparison",
+                banner_name="Topline Comparison",
+                levels=[normalize_text(comparison_col)],
+                groups=total_groups,
+                tables=total_tables,
+            )
         for banner_row in banner_rows:
             groups = _build_banner_groups(
                 analysis_df,
@@ -838,7 +946,8 @@ def generate_workbook_package(
         stat_config.get("include_lift", False)
     )
     topline_rows = _build_topline_rows(
-        topline_question_sheets,
+        total_comparison_sheet=total_comparison_sheet,
+        banner_sheets=topline_question_sheets,
         comparison_col=comparison_col,
         include_lift=effective_topline_lift,
         include_significance_notes=bool(topline_config.get("include_significance_notes", True))
