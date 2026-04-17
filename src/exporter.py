@@ -85,10 +85,19 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     _apply_header_style(results_cell, VN_RED)
     current_row = 11
 
+    rows = list(getattr(topline_sheet, "rows", []))
+    comparison_variable_label = "Comparison"
+    left_group_label = "Group 1"
+    right_group_label = "Group 2"
+    if rows:
+        comparison_variable_label = rows[0].get("Comparison Variable", comparison_variable_label)
+        left_group_label = rows[0].get("Left Label", left_group_label)
+        right_group_label = rows[0].get("Right Label", right_group_label)
+
     header_values = {
-        (11, 2): "Cell",
-        (11, 3): "C",
-        (11, 4): "T",
+        (11, 2): comparison_variable_label,
+        (11, 3): left_group_label,
+        (11, 4): right_group_label,
         (11, 5): "Lift",
         (12, 2): "Base Size",
         (12, 7): "NOTES",
@@ -100,7 +109,6 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         else:
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY if column_index != 7 else None)
 
-    rows = list(getattr(topline_sheet, "rows", []))
     if not rows:
         worksheet.merge_cells(start_row=14, start_column=2, end_row=14, end_column=7)
         empty_cell = worksheet.cell(
@@ -113,9 +121,9 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         return
 
     base_row = rows[0]
-    worksheet.cell(row=12, column=3, value=base_row.get("Control Base"))
+    worksheet.cell(row=12, column=3, value=base_row.get("Left Base"))
     _apply_body_style(worksheet.cell(row=12, column=3))
-    worksheet.cell(row=12, column=4, value=base_row.get("Test Base"))
+    worksheet.cell(row=12, column=4, value=base_row.get("Right Base"))
     _apply_body_style(worksheet.cell(row=12, column=4))
     worksheet.cell(row=12, column=5, value=None)
     _apply_body_style(worksheet.cell(row=12, column=5), fill_color=VN_LIGHT_GRAY)
@@ -129,23 +137,23 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         label_cell = worksheet.cell(row=current_row, column=2, value=row_label)
         _apply_body_style(label_cell, wrap=True)
 
-        control_pct = row.get("Control %")
-        control_sig = str(row.get("Control Sig", "") or "")
-        control_display = ""
-        if control_pct is not None:
-            control_display = f"{control_pct:.0%}{control_sig}"
-        control_pct_cell = worksheet.cell(row=current_row, column=3, value=control_display)
-        _apply_body_style(control_pct_cell)
-        control_pct_cell.alignment = Alignment(horizontal="center", vertical="top")
+        left_pct = row.get("Left %")
+        left_sig = str(row.get("Left Sig", "") or "")
+        left_display = ""
+        if left_pct is not None:
+            left_display = f"{left_pct:.0%}{left_sig}"
+        left_pct_cell = worksheet.cell(row=current_row, column=3, value=left_display)
+        _apply_body_style(left_pct_cell)
+        left_pct_cell.alignment = Alignment(horizontal="center", vertical="top")
 
-        test_pct = row.get("Test %")
-        test_sig = str(row.get("Test Sig", "") or "")
-        test_display = ""
-        if test_pct is not None:
-            test_display = f"{test_pct:.0%}{test_sig}"
-        test_pct_cell = worksheet.cell(row=current_row, column=4, value=test_display)
-        _apply_body_style(test_pct_cell)
-        test_pct_cell.alignment = Alignment(horizontal="center", vertical="top")
+        right_pct = row.get("Right %")
+        right_sig = str(row.get("Right Sig", "") or "")
+        right_display = ""
+        if right_pct is not None:
+            right_display = f"{right_pct:.0%}{right_sig}"
+        right_pct_cell = worksheet.cell(row=current_row, column=4, value=right_display)
+        _apply_body_style(right_pct_cell)
+        right_pct_cell.alignment = Alignment(horizontal="center", vertical="top")
 
         lift_value = row.get("Lift")
         lift_cell = worksheet.cell(row=current_row, column=5, value=lift_value)
@@ -225,6 +233,14 @@ def _write_banner_sheet(workbook, sheet) -> None:
             for position, group_index in enumerate(non_total_indexes):
                 group = visible_groups[group_index]
                 current_value = normalize_text(group.get("values", {}).get(level_name))
+                if not current_value:
+                    split_parts = [
+                        part.strip()
+                        for part in normalize_text(group.get("label")).split("|")
+                        if part.strip()
+                    ]
+                    if level_index < len(split_parts):
+                        current_value = split_parts[level_index]
                 if start_group is None:
                     start_group = group_index
                     previous_value = current_value

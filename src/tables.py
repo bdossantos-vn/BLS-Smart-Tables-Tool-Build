@@ -591,20 +591,21 @@ def _build_question_table(
     return SheetTable(variable=variable, question_label=question_label, sections=sections)
 
 
-def _find_control_test_pair_indexes(
+def _find_comparison_pair_indexes(
     groups: list[dict[str, Any]],
     comparison_col: str | None,
-) -> list[tuple[int, int, str]]:
-    """Find control/test group pairs for topline comparisons.
+) -> list[tuple[int, int, str, str, str]]:
+    """Find comparison-group pairs for topline comparisons.
 
     Inputs:
         groups: Banner groups already built for one sheet.
         comparison_col: The configured comparison variable, usually `cell`.
 
     Outputs:
-        A list of `(control_index, test_index, subgroup_label)` tuples. The
-        subgroup label describes the non-comparison part of the banner path so
-        notes can read like `test females sig higher than control females`.
+        A list of `(left_index, right_index, subgroup_label, left_label,
+        right_label)` tuples. The subgroup label describes the non-comparison
+        part of the banner path so notes can read like `test females sig
+        higher than control females`.
     """
     normalized_comparison = normalize_text(comparison_col)
     if not normalized_comparison:
@@ -625,75 +626,89 @@ def _find_control_test_pair_indexes(
         subgroup_key = tuple(sorted(values.items()))
         group_lookup.setdefault(subgroup_key, {})[comparison_value] = index
 
-    pairs: list[tuple[int, int, str]] = []
+    pairs: list[tuple[int, int, str, str, str]] = []
     for subgroup_key, indexed_values in group_lookup.items():
-        if "control" not in indexed_values or "test" not in indexed_values:
+        ordered_values = list(indexed_values.keys())
+        if len(ordered_values) < 2:
             continue
         subgroup_label = "Total"
         if subgroup_key:
             subgroup_label = " | ".join(value for _, value in subgroup_key)
-        pairs.append((indexed_values["control"], indexed_values["test"], subgroup_label))
+        left_label = ordered_values[0]
+        right_label = ordered_values[1]
+        pairs.append(
+            (
+                indexed_values[left_label],
+                indexed_values[right_label],
+                subgroup_label,
+                left_label,
+                right_label,
+            )
+        )
     return pairs
 
 
 def _build_significance_direction(
     sig_letters: list[str],
-    control_index: int,
-    test_index: int,
+    left_index: int,
+    right_index: int,
 ) -> str:
-    """Return which side is significantly higher for one control/test pair.
+    """Return which side is significantly higher for one comparison pair.
 
     Inputs:
         sig_letters: Significance-letter outputs for one response row.
-        control_index: Column index for the control group.
-        test_index: Column index for the test group.
+        left_index: Column index for the left comparison group.
+        right_index: Column index for the right comparison group.
 
     Outputs:
-        Returns `test`, `control`, or an empty string when there is no
+        Returns `right`, `left`, or an empty string when there is no
         significant difference between the pair.
     """
-    test_sig = normalize_text(sig_letters[test_index]) if test_index < len(sig_letters) else ""
-    control_sig = normalize_text(sig_letters[control_index]) if control_index < len(sig_letters) else ""
-    if control_sig:
-        return "control"
-    if test_sig:
-        return "test"
+    right_sig = normalize_text(sig_letters[right_index]) if right_index < len(sig_letters) else ""
+    left_sig = normalize_text(sig_letters[left_index]) if left_index < len(sig_letters) else ""
+    if left_sig:
+        return "left"
+    if right_sig:
+        return "right"
     return ""
 
 
 def _build_topline_note(
     subgroup_label: str,
-    control_pct: float,
-    test_pct: float,
+    left_label: str,
+    right_label: str,
+    left_pct: float,
+    right_pct: float,
     significant_direction: str,
 ) -> str:
     """Build one plain-English topline note.
 
     Inputs:
         subgroup_label: Lowest-level banner subgroup label.
-        control_pct: Control percentage stored as a decimal.
-        test_pct: Test percentage stored as a decimal.
-        significant_direction: Either `test`, `control`, or blank.
+        left_label: Left comparison-group label.
+        right_label: Right comparison-group label.
+        left_pct: Left-group percentage stored as a decimal.
+        right_pct: Right-group percentage stored as a decimal.
+        significant_direction: Either `right`, `left`, or blank.
 
     Outputs:
         A short note that reads like an analyst summary.
     """
-    if significant_direction not in {"test", "control"}:
+    if significant_direction not in {"right", "left"}:
         return ""
     subgroup_suffix = ""
     if subgroup_label and subgroup_label != "Total":
         subgroup_suffix = f" {subgroup_label}"
-    higher_value = test_pct if significant_direction == "test" else control_pct
-    lower_value = control_pct if significant_direction == "test" else test_pct
-    lift_points = round((test_pct - control_pct) * 100)
+    higher_value = right_pct if significant_direction == "right" else left_pct
+    lift_points = round((right_pct - left_pct) * 100)
     direction_text = "higher"
-    if significant_direction == "test":
+    if significant_direction == "right":
         return (
-            f"test{subgroup_suffix} sig {direction_text} than control{subgroup_suffix} "
+            f"{right_label}{subgroup_suffix} sig {direction_text} than {left_label}{subgroup_suffix} "
             f"({higher_value:.0%}, {lift_points:+d} pts lift)"
         )
     return (
-        f"control{subgroup_suffix} sig {direction_text} than test{subgroup_suffix} "
+        f"{left_label}{subgroup_suffix} sig {direction_text} than {right_label}{subgroup_suffix} "
         f"({higher_value:.0%}, {abs(lift_points):+d} pts lift)"
     )
 
@@ -716,8 +731,8 @@ def _build_banner_note_lookup(
     for sheet in sheets:
         if not sheet.levels:
             continue
-        control_test_pairs = _find_control_test_pair_indexes(sheet.groups, comparison_col)
-        if not control_test_pairs:
+        comparison_pairs = _find_comparison_pair_indexes(sheet.groups, comparison_col)
+        if not comparison_pairs:
             continue
         for table in sheet.tables:
             answering_section = next(
@@ -727,18 +742,20 @@ def _build_banner_note_lookup(
             if not answering_section:
                 continue
             for row in answering_section.get("rows", []):
-                for control_index, test_index, subgroup_label in control_test_pairs:
-                    control_pct = row["percentages"][control_index] or 0.0
-                    test_pct = row["percentages"][test_index] or 0.0
+                for left_index, right_index, subgroup_label, left_label, right_label in comparison_pairs:
+                    left_pct = row["percentages"][left_index] or 0.0
+                    right_pct = row["percentages"][right_index] or 0.0
                     significant_direction = _build_significance_direction(
                         row["sig_letters"],
-                        control_index,
-                        test_index,
+                        left_index,
+                        right_index,
                     )
                     note = _build_topline_note(
                         subgroup_label,
-                        control_pct,
-                        test_pct,
+                        left_label,
+                        right_label,
+                        left_pct,
+                        right_pct,
                         significant_direction,
                     )
                     if not note:
@@ -778,12 +795,12 @@ def _build_topline_rows(
         return rows
 
     note_lookup = _build_banner_note_lookup(banner_sheets, comparison_col)
-    normalized_labels = [normalize_text(group.get("label")).lower() for group in total_comparison_sheet.groups]
-    if "control" not in normalized_labels or "test" not in normalized_labels:
+    if len(total_comparison_sheet.groups) < 2:
         return rows
-    control_index = normalized_labels.index("control")
-    test_index = normalized_labels.index("test")
-    subgroup_label = "Total"
+    left_index = 0
+    right_index = 1
+    left_group_label = normalize_text(total_comparison_sheet.groups[left_index].get("label")) or "Group 1"
+    right_group_label = normalize_text(total_comparison_sheet.groups[right_index].get("label")) or "Group 2"
     for table in total_comparison_sheet.tables:
         answering_section = next(
             (section for section in table.sections if section.get("label") == "Total Answering"),
@@ -793,14 +810,14 @@ def _build_topline_rows(
             continue
         base_denominators = list(answering_section.get("base_denominators", []))
         for row in answering_section.get("rows", []):
-            control_n = row["counts"][control_index]
-            test_n = row["counts"][test_index]
-            control_pct = row["percentages"][control_index] or 0.0
-            test_pct = row["percentages"][test_index] or 0.0
+            left_n = row["counts"][left_index]
+            right_n = row["counts"][right_index]
+            left_pct = row["percentages"][left_index] or 0.0
+            right_pct = row["percentages"][right_index] or 0.0
             significant_direction = _build_significance_direction(
                 row["sig_letters"],
-                control_index,
-                test_index,
+                left_index,
+                right_index,
             )
             key = (table.variable, row["label"])
             note_text = ""
@@ -812,17 +829,18 @@ def _build_topline_rows(
                     "Question": table.question_label,
                     "Variable": table.variable,
                     "Response": row["label"],
-                    "Banner": "Total",
-                    "Segment": subgroup_label,
-                    "Control Base": base_denominators[control_index],
-                    "Control N": control_n,
-                    "Control %": control_pct,
-                    "Control Sig": row["sig_letters"][control_index],
-                    "Test Base": base_denominators[test_index],
-                    "Test N": test_n,
-                    "Test %": test_pct,
-                    "Test Sig": row["sig_letters"][test_index],
-                    "Lift": (test_pct - control_pct) if include_lift else None,
+                    "Comparison Variable": normalize_text(comparison_col) or "Comparison",
+                    "Left Label": left_group_label,
+                    "Left Base": base_denominators[left_index],
+                    "Left N": left_n,
+                    "Left %": left_pct,
+                    "Left Sig": row["sig_letters"][left_index],
+                    "Right Label": right_group_label,
+                    "Right Base": base_denominators[right_index],
+                    "Right N": right_n,
+                    "Right %": right_pct,
+                    "Right Sig": row["sig_letters"][right_index],
+                    "Lift": (right_pct - left_pct) if include_lift else None,
                     "Sig Test": significant_direction,
                     "Notes": note_text,
                 }
