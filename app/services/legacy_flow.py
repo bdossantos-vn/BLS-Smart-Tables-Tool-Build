@@ -2051,7 +2051,7 @@ def render_step_10() -> None:
         value=bool(st.session_state.stat_config.get("enabled", True)),
     )
     include_n_count = st.checkbox(
-        "Include N Count in Banner Tables",
+        "Include N Count in Exported Banner Tables",
         value=bool(st.session_state.stat_config.get("include_n_count", False)),
     )
     include_lift = st.checkbox(

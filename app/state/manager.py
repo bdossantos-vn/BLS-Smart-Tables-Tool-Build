@@ -26,7 +26,7 @@ EXTRA_DEFAULTS: dict[str, Any] = {
     },
     "topline_editor": None,
     "topline_change_log": [],
-    "topline_editor_source_columns": [],
+    "topline_editor_source_signature": [],
     "project_setup_mode": "Start from scratch",
     "template_upload_message": "",
     "app_current_step": "1. Project Setup",
