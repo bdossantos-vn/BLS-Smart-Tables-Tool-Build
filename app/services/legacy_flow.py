@@ -2051,8 +2051,9 @@ def render_step_10() -> None:
         value=bool(st.session_state.stat_config.get("enabled", True)),
     )
     include_n_count = st.checkbox(
-        "Include N Count in Exported Banner Tables",
+        "Include N Count in Banner Table Export",
         value=bool(st.session_state.stat_config.get("include_n_count", False)),
+        help="When checked, exported banner tables will include a second row for respondent counts under each percentage row.",
     )
     include_lift = st.checkbox(
         "Include lift",

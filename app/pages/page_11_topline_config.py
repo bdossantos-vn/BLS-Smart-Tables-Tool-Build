@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 
 import pandas as pd
 import streamlit as st
 
 from src.custom_vars import build_question_lookup
-from src.metadata import parse_answer_choices, serialize_answer_choices
+from src.metadata import serialize_answer_choices
 from src.utils import format_timestamp
 
 
@@ -60,10 +61,11 @@ def _build_topline_catalog() -> list[dict[str, object]]:
             {
                 "Column": variable,
                 "Question Text": question.get("question_label", variable),
-                "Response Choices Count": len(valid_selected_choices),
-                "Response Choices": serialize_answer_choices(valid_selected_choices),
+                "Response Choices Count": len(available_choices),
+                "Available Response Choices": serialize_answer_choices(available_choices),
                 "Include in Topline": include_in_topline,
                 "_default_choices": available_choices,
+                "_selected_choices": valid_selected_choices,
                 "_row_type": "question",
             }
         )
@@ -80,10 +82,11 @@ def _build_topline_catalog() -> list[dict[str, object]]:
             {
                 "Column": variable_name,
                 "Question Text": f"Custom Variable - {record.get('builder_type', 'Custom Variable')}",
-                "Response Choices Count": len(valid_selected_choices),
-                "Response Choices": serialize_answer_choices(valid_selected_choices),
+                "Response Choices Count": len(available_choices),
+                "Available Response Choices": serialize_answer_choices(available_choices),
                 "Include in Topline": include_in_topline,
                 "_default_choices": available_choices,
+                "_selected_choices": valid_selected_choices,
                 "_row_type": "custom_variable",
             }
         )
@@ -136,6 +139,12 @@ def _reset_topline_editor() -> None:
     st.session_state.topline_editor = _build_topline_editor_frame()
 
 
+def _topline_choice_key(variable: str) -> str:
+    """Build a safe session-state key for one topline response chooser."""
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", variable).strip("_") or "variable"
+    return f"topline_choice_selector_{slug}"
+
+
 def render() -> None:
     """Render the Topline Configuration page."""
     st.header("9. Topline Configuration")
@@ -166,10 +175,51 @@ def render() -> None:
             "Response Choices Count": st.column_config.NumberColumn(
                 "Response Choices Count", disabled=True, width="small"
             ),
-            "Response Choices": st.column_config.TextColumn("Response Choices", width="large"),
+            "Available Response Choices": st.column_config.TextColumn(
+                "Available Response Choices",
+                disabled=True,
+                width="large",
+            ),
             "Include in Topline": st.column_config.CheckboxColumn("Include in Topline"),
         },
     )
+
+    selected_editor_rows = [
+        row
+        for row in editor_df.to_dict(orient="records")
+        if bool(row.get("Include in Topline", False))
+    ]
+    source_lookup = {
+        str(row.get("Column", "")).strip(): row
+        for row in editor_source_df.to_dict(orient="records")
+    }
+
+    if selected_editor_rows:
+        st.subheader("Topline Response Selection")
+        st.caption("Choose the exact response options, nets, or custom-variable buckets to show in the topline.")
+        for row in selected_editor_rows:
+            variable = str(row.get("Column", "")).strip()
+            source_row = source_lookup.get(variable, {})
+            default_choices = list(source_row.get("_default_choices", []))
+            saved_choices = list(source_row.get("_selected_choices", default_choices))
+            valid_saved_choices = [choice for choice in saved_choices if choice in default_choices]
+            choice_key = _topline_choice_key(variable)
+            if (
+                choice_key not in st.session_state
+                or not isinstance(st.session_state.get(choice_key), list)
+                or any(choice not in default_choices for choice in st.session_state.get(choice_key, []))
+            ):
+                st.session_state[choice_key] = valid_saved_choices
+
+            with st.expander(f"{variable} Response Choices", expanded=False):
+                st.multiselect(
+                    "Select topline response choices",
+                    options=default_choices,
+                    key=choice_key,
+                    help="Only the selected response choices will appear in the topline export.",
+                )
+    else:
+        st.caption("Check one or more rows above to choose topline response options.")
 
     button_left, button_right = st.columns(2)
     with button_left:
@@ -189,16 +239,16 @@ def render() -> None:
             for source_row, edited_row in zip(source_records, edited_records):
                 variable = str(edited_row.get("Column", "")).strip()
                 default_choices = list(source_row.get("_default_choices", []))
-                parsed_choices = [
-                    choice for choice in parse_answer_choices(str(edited_row.get("Response Choices", "")))
-                    if choice in default_choices
-                ]
+                choice_key = _topline_choice_key(variable)
+                selected_choices = list(st.session_state.get(choice_key, source_row.get("_selected_choices", default_choices)))
+                parsed_choices = [choice for choice in selected_choices if choice in default_choices]
                 updated_rows.append(
                     {
                         **source_row,
-                        "Response Choices Count": len(parsed_choices),
-                        "Response Choices": serialize_answer_choices(parsed_choices),
+                        "Response Choices Count": len(default_choices),
+                        "Available Response Choices": serialize_answer_choices(default_choices),
                         "Include in Topline": bool(edited_row.get("Include in Topline", False)),
+                        "_selected_choices": parsed_choices,
                     }
                 )
                 if bool(edited_row.get("Include in Topline", False)):
