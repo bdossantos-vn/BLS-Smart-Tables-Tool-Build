@@ -410,17 +410,90 @@ def _resolve_default_comparison(column_names: list[str], detected_cell: str | No
     return None
 
 
+def _sort_comparison_values(values: list[str], comparison_col: str | None) -> list[str]:
+    """Return comparison values in a stable and analyst-friendly order."""
+    cleaned_values = [normalize_text(value) for value in values if normalize_text(value)]
+    if not comparison_col:
+        return sorted(cleaned_values, key=str.lower)
+
+    if normalize_text(comparison_col).lower() == "cell":
+        numeric_pairs: list[tuple[int, str]] = []
+        non_numeric_values: list[str] = []
+        for value in cleaned_values:
+            try:
+                numeric_pairs.append((int(float(value)), value))
+            except (TypeError, ValueError):
+                non_numeric_values.append(value)
+        if numeric_pairs and len(numeric_pairs) == len(cleaned_values):
+            return [value for _, value in sorted(numeric_pairs, key=lambda item: item[0])]
+
+    if any("control" in value.lower() for value in cleaned_values):
+        return sorted(
+            cleaned_values,
+            key=lambda value: (0 if "control" in value.lower() else 1, value.lower()),
+        )
+    return sorted(cleaned_values, key=str.lower)
+
+
+def _default_comparison_group_labels(
+    cleaned_df: pd.DataFrame,
+    comparison_col: str | None,
+    existing_labels: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build default analyst-facing labels for comparison groups.
+
+    Inputs:
+        cleaned_df: Current analysis dataframe.
+        comparison_col: Selected comparison variable.
+        existing_labels: Previously saved labels to preserve when possible.
+
+    Outputs:
+        Mapping of raw comparison values to display labels.
+    """
+    if not comparison_col:
+        return {"Total": "Total"}
+
+    existing_labels = {normalize_text(key): normalize_text(value) for key, value in (existing_labels or {}).items()}
+    values = cleaned_df[comparison_col].dropna().map(normalize_text).tolist()
+    ordered_values = _sort_comparison_values(list(dict.fromkeys(values)), comparison_col)
+    labels: dict[str, str] = {}
+
+    is_cell = normalize_text(comparison_col).lower() == "cell"
+    numeric_lookup: dict[str, int] = {}
+    if is_cell:
+        try:
+            numeric_lookup = {value: int(float(value)) for value in ordered_values}
+        except (TypeError, ValueError):
+            numeric_lookup = {}
+
+    for value in ordered_values:
+        preserved = existing_labels.get(value)
+        if preserved:
+            labels[value] = preserved
+            continue
+        if is_cell and value in numeric_lookup:
+            number = numeric_lookup[value]
+            if number == 0:
+                labels[value] = "Control"
+            elif len(ordered_values) == 2 and set(numeric_lookup.values()) == {0, 1} and number == 1:
+                labels[value] = "Test"
+            elif number >= 1:
+                labels[value] = f"Test {number}"
+            else:
+                labels[value] = value
+        else:
+            labels[value] = value
+    return labels
+
+
 def _default_comparison_group_order(cleaned_df: pd.DataFrame, comparison_col: str | None) -> dict[str, int]:
     """Build the default row order for the selected comparison variable."""
     if not comparison_col:
         return {"Total": 1}
 
     values = [normalize_text(value) for value in cleaned_df[comparison_col].dropna().tolist()]
-    unique_values = sorted({value for value in values if value})
-    if comparison_col.lower() == "cell" and any("control" in value.lower() for value in unique_values):
-        ordered = sorted(unique_values, key=lambda value: (0 if "control" in value.lower() else 1, value.lower()))
-    else:
-        ordered = sorted(unique_values, key=str.lower)
+    unique_values = list(dict.fromkeys(value for value in values if value))
+    ordered = _sort_comparison_values(unique_values, comparison_col)
     return {value: index for index, value in enumerate(ordered, start=1)}
 
 
@@ -457,8 +530,13 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
     st.session_state.comparison_rows_removed = rows_removed
     st.session_state.comparison_configured = True
     st.session_state.comparison_group_order = _default_comparison_group_order(filtered_df, comparison_col)
+    st.session_state.comparison_group_labels = _default_comparison_group_labels(
+        filtered_df,
+        comparison_col,
+        st.session_state.get("comparison_group_labels", {}),
+    )
     st.session_state.locked_cell_bases = {
-        row["Cell"]: int(row["N"])
+        row["Raw Value"]: int(row["N"])
         for row in _build_comparison_summary_frame(filtered_df, comparison_col).to_dict(orient="records")
     }
     st.session_state.cell_sort_order = dict(st.session_state.comparison_group_order)
@@ -474,15 +552,24 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
 def _build_comparison_summary_frame(cleaned_df: pd.DataFrame, comparison_col: str | None) -> pd.DataFrame:
     """Build the summary table for the selected comparison variable."""
     if not comparison_col:
-        return pd.DataFrame([{"Cell": "Total", "N": int(len(cleaned_df))}])
+        return pd.DataFrame([{"Raw Value": "Total", "Display Label": "Total", "N": int(len(cleaned_df))}])
 
-    counts = cleaned_df[comparison_col].astype(str).str.strip().value_counts().rename_axis("Cell").reset_index(name="N")
+    counts = (
+        cleaned_df[comparison_col]
+        .astype(str)
+        .str.strip()
+        .value_counts()
+        .rename_axis("Raw Value")
+        .reset_index(name="N")
+    )
     order_map = st.session_state.get("comparison_group_order", {})
+    label_map = st.session_state.get("comparison_group_labels", {})
+    counts["Display Label"] = counts["Raw Value"].map(lambda value: label_map.get(value, value))
     if order_map:
-        counts["sort_order"] = counts["Cell"].map(lambda value: order_map.get(value, 9999))
-        counts = counts.sort_values(["sort_order", "Cell"]).drop(columns=["sort_order"]).reset_index(drop=True)
+        counts["sort_order"] = counts["Raw Value"].map(lambda value: order_map.get(value, 9999))
+        counts = counts.sort_values(["sort_order", "Raw Value"]).drop(columns=["sort_order"]).reset_index(drop=True)
     else:
-        counts = counts.sort_values("Cell").reset_index(drop=True)
+        counts = counts.sort_values("Raw Value").reset_index(drop=True)
     return counts
 
 
@@ -490,8 +577,8 @@ def _build_comparison_order_editor(cleaned_df: pd.DataFrame, comparison_col: str
     """Build an editable order table for comparison groups."""
     summary = _build_comparison_summary_frame(cleaned_df, comparison_col)
     order_map = st.session_state.get("comparison_group_order", {})
-    summary["Sort Order"] = summary["Cell"].map(lambda value: order_map.get(value, 1)).astype(int)
-    return summary[["Cell", "N", "Sort Order"]]
+    summary["Sort Order"] = summary["Raw Value"].map(lambda value: order_map.get(value, 1)).astype(int)
+    return summary[["Raw Value", "Display Label", "N", "Sort Order"]]
 
 
 def _current_included_count() -> int:
@@ -542,7 +629,7 @@ def _move_comparison_group(group_name: str, direction: str) -> None:
     }
     st.session_state.cell_sort_order = dict(st.session_state.comparison_group_order)
     st.session_state.locked_cell_bases = {
-        row["Cell"]: int(row["N"])
+        row["Raw Value"]: int(row["N"])
         for row in _build_comparison_summary_frame(
             st.session_state.cleaned_df,
             st.session_state.comparison_col,
@@ -621,6 +708,11 @@ def _apply_intake_result(result) -> None:
     st.session_state.comparison_group_order = _default_comparison_group_order(
         result.cleaned_df,
         result.cell_column,
+    )
+    st.session_state.comparison_group_labels = _default_comparison_group_labels(
+        result.cleaned_df,
+        result.cell_column,
+        st.session_state.get("comparison_group_labels", {}),
     )
     st.session_state.locked_cell_bases = {}
     st.session_state.cell_sort_order = {}
@@ -736,11 +828,49 @@ def render_step_1() -> None:
         st.subheader("Intake Summary")
         summary_left, summary_right = st.columns([1.2, 1])
         with summary_left:
-            st.dataframe(
-                _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col),
+            comparison_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
+            edited_summary = st.data_editor(
+                comparison_summary,
+                key="comparison_summary_editor",
                 use_container_width=True,
                 hide_index=True,
+                num_rows="fixed",
+                column_config={
+                    "Raw Value": st.column_config.TextColumn(disabled=True),
+                    "Display Label": st.column_config.TextColumn(help="Rename the visible group label used across the app and export."),
+                    "N": st.column_config.NumberColumn(disabled=True),
+                },
             )
+            label_left, label_right = st.columns(2)
+            with label_left:
+                if st.button("Update Labels", key="update_comparison_labels", use_container_width=True):
+                    updated_labels = {
+                        normalize_text(row["Raw Value"]): normalize_text(row["Display Label"]) or normalize_text(row["Raw Value"])
+                        for row in edited_summary.to_dict(orient="records")
+                    }
+                    previous_labels = dict(st.session_state.get("comparison_group_labels", {}))
+                    st.session_state.comparison_group_labels = updated_labels
+                    changed_bits = []
+                    for raw_value, new_label in updated_labels.items():
+                        old_label = normalize_text(previous_labels.get(raw_value, raw_value)) or raw_value
+                        if old_label != new_label:
+                            changed_bits.append(f"{raw_value}: {old_label} -> {new_label}")
+                    if changed_bits:
+                        _append_intake_change("Comparison labels updated (" + "; ".join(changed_bits) + ").")
+                    else:
+                        _append_intake_change("Comparison labels updated (no label changes).")
+                    st.success("Comparison labels updated.")
+                    st.rerun()
+            with label_right:
+                if st.button("Reset Labels", key="reset_comparison_labels", use_container_width=True):
+                    st.session_state.comparison_group_labels = _default_comparison_group_labels(
+                        cleaned_df,
+                        st.session_state.comparison_col,
+                        {},
+                    )
+                    _append_intake_change("Comparison labels reset to default labels.")
+                    st.success("Comparison labels reset.")
+                    st.rerun()
         with summary_right:
             st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
             st.write(f"Columns Included: `{_current_included_count()}`")
@@ -753,9 +883,10 @@ def render_step_1() -> None:
             st.caption("Use the move buttons to control the display order for comparison groups.")
             ordered_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
             for row in ordered_summary.to_dict(orient="records"):
-                group_name = row["Cell"]
+                group_name = row["Raw Value"]
+                display_label = row["Display Label"]
                 row_cols = st.columns([4, 1, 0.8, 0.8])
-                row_cols[0].write(group_name)
+                row_cols[0].write(display_label)
                 row_cols[1].write(int(row["N"]))
                 if row_cols[2].button("↑", key=f"up_{group_name}", use_container_width=True):
                     _move_comparison_group(group_name, "up")

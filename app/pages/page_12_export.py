@@ -42,6 +42,7 @@ def render() -> None:
                 stat_config=st.session_state.stat_config or {},
                 comparison_col=st.session_state.get("comparison_col"),
                 comparison_group_order=st.session_state.get("comparison_group_order", {}),
+                comparison_group_labels=st.session_state.get("comparison_group_labels", {}),
                 topline_config=st.session_state.get("topline_config", {}),
             )
             st.session_state.generated_tables = workbook_package

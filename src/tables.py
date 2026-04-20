@@ -332,6 +332,7 @@ def _build_banner_groups(
     custom_variables: list[dict[str, Any]],
     comparison_col: str | None,
     comparison_group_order: dict[str, int],
+    comparison_group_labels: dict[str, str],
 ) -> list[dict[str, Any]]:
     """Build the display groups for one banner sheet."""
     groups: list[dict[str, Any]] = []
@@ -372,7 +373,14 @@ def _build_banner_groups(
         mask = pd.Series(True, index=df.index)
         for level in levels:
             mask = mask & (df[level].map(normalize_text) == normalize_text(values[level]))
-        label = " | ".join(normalize_text(values[level]) for level in levels)
+        label_parts: list[str] = []
+        for level in levels:
+            raw_value = normalize_text(values[level])
+            if normalize_text(level) == normalize_text(comparison_col):
+                label_parts.append(comparison_group_labels.get(raw_value, raw_value))
+            else:
+                label_parts.append(raw_value)
+        label = " | ".join(label_parts)
         groups.append(
             {
                 "label": label,
@@ -387,6 +395,7 @@ def _build_total_comparison_groups(
     df: pd.DataFrame,
     comparison_col: str | None,
     comparison_group_order: dict[str, int],
+    comparison_group_labels: dict[str, str],
 ) -> list[dict[str, Any]]:
     """Build plain total-level comparison groups with no banner nesting.
 
@@ -414,7 +423,7 @@ def _build_total_comparison_groups(
     for value in unique_values:
         groups.append(
             {
-                "label": value,
+                "label": comparison_group_labels.get(value, value),
                 "mask": (values == value).fillna(False),
                 "values": {comparison_variable: value},
             }
@@ -865,6 +874,7 @@ def generate_workbook_package(
     stat_config: dict[str, Any],
     comparison_col: str | None,
     comparison_group_order: dict[str, int],
+    comparison_group_labels: dict[str, str],
     topline_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the full workbook package used by the export layer.
@@ -904,6 +914,7 @@ def generate_workbook_package(
             custom_variables,
             comparison_col,
             comparison_group_order,
+            comparison_group_labels,
         )
         tables = [
             _build_question_table(
@@ -932,6 +943,7 @@ def generate_workbook_package(
                 analysis_df,
                 comparison_col,
                 comparison_group_order,
+                comparison_group_labels,
             )
             total_tables = [
                 _build_question_table(
@@ -961,6 +973,7 @@ def generate_workbook_package(
                 custom_variables,
                 comparison_col,
                 comparison_group_order,
+                comparison_group_labels,
             )
             tables = [
                 _build_question_table(

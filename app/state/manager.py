@@ -63,6 +63,7 @@ def sync_project_config_from_session() -> None:
         "comparison_col": st.session_state.get("comparison_col"),
         "comparison_configured": bool(st.session_state.get("comparison_configured")),
         "comparison_rows_removed": int(st.session_state.get("comparison_rows_removed", 0)),
+        "comparison_group_labels": deepcopy(st.session_state.get("comparison_group_labels", {})),
     }
     project_config["variables"] = {
         "included_columns": list(st.session_state.get("included_columns", [])),
@@ -117,6 +118,9 @@ def load_project_template(template_payload: dict[str, Any]) -> None:
     st.session_state.net_definitions = deepcopy(project_config.get("nets", {}))
     st.session_state.custom_variables = list(project_config.get("custom_variables", {}).values())
     st.session_state.topline_config = deepcopy(project_config.get("topline", EXTRA_DEFAULTS["topline_config"]))
+    st.session_state.comparison_group_labels = deepcopy(
+        project_config.get("data", {}).get("comparison_group_labels", {})
+    )
     st.session_state.template_upload_message = "Template loaded successfully."
 
 
