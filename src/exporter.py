@@ -169,7 +169,7 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     worksheet.freeze_panes = "B11"
 
 
-def _write_banner_sheet(workbook, sheet) -> None:
+def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
     """Write one banner worksheet in an analyst-friendly table format.
 
     Inputs:
@@ -178,6 +178,8 @@ def _write_banner_sheet(workbook, sheet) -> None:
 
     Outputs:
         Adds one formatted worksheet to the workbook.
+        include_n_count: Whether response-level N rows should be included under
+        each percent row.
     """
     worksheet = workbook.create_sheet(title=str(sheet.name)[:31] or "Sheet1")
     _set_sheet_columns(worksheet, len(sheet.groups))
@@ -295,8 +297,20 @@ def _write_banner_sheet(workbook, sheet) -> None:
         if not total_base_section or not answering_section:
             continue
 
-        question_cell = worksheet.cell(row=current_row, column=1, value=table.question_label)
+        response_block_height = 1 + (len(total_base_section["rows"]) * (2 if include_n_count else 1))
+        question_start_row = current_row
+        question_end_row = current_row + response_block_height - 1
+
+        worksheet.merge_cells(
+            start_row=question_start_row,
+            start_column=1,
+            end_row=question_end_row,
+            end_column=1,
+        )
+        question_cell = worksheet.cell(row=question_start_row, column=1, value=table.question_label)
         _apply_header_style(question_cell, VN_RED)
+        question_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
         count_label_cell = worksheet.cell(row=current_row, column=2, value="Total Count (All)")
         _apply_body_style(count_label_cell, bold=True, fill_color=VN_LIGHT_GRAY)
         for column_index, denominator in zip(data_columns, total_base_section["base_denominators"]):
@@ -309,27 +323,29 @@ def _write_banner_sheet(workbook, sheet) -> None:
             label_text = count_row["label"]
             response_cell = worksheet.cell(row=current_row, column=2, value=label_text)
             _apply_body_style(response_cell, bold=bool(count_row.get("kind") == "net"), wrap=True)
-            for column_index, count in zip(data_columns, count_row["counts"]):
-                count_cell = worksheet.cell(row=current_row, column=column_index, value=count)
-                _apply_body_style(count_cell, fill_color=label_fill)
-            current_row += 1
+            response_cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-            pct_label_cell = worksheet.cell(row=current_row, column=2, value="")
-            _apply_body_style(pct_label_cell, fill_color=label_fill)
-            for column_index, percentage in zip(data_columns, pct_row["percentages"]):
-                percent_cell = worksheet.cell(row=current_row, column=column_index, value=percentage)
-                _apply_body_style(percent_cell, fill_color=label_fill)
+            for column_index, percentage, sig_text in zip(
+                data_columns,
+                pct_row["percentages"],
+                pct_row["sig_letters"],
+            ):
+                display_value = ""
                 if percentage is not None:
-                    percent_cell.number_format = "0%"
+                    display_value = f"{percentage:.0%}{normalize_text(sig_text)}"
+                percent_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
+                _apply_body_style(percent_cell, fill_color=label_fill)
+                percent_cell.alignment = Alignment(horizontal="center", vertical="center")
             current_row += 1
 
-            sig_label_cell = worksheet.cell(row=current_row, column=2, value="")
-            _apply_body_style(sig_label_cell, fill_color=label_fill)
-            for column_index, sig_text in zip(data_columns, pct_row["sig_letters"]):
-                sig_cell = worksheet.cell(row=current_row, column=column_index, value=sig_text)
-                _apply_body_style(sig_cell, fill_color=label_fill)
-                sig_cell.alignment = Alignment(horizontal="center", vertical="center")
-            current_row += 1
+            if include_n_count:
+                count_label_cell = worksheet.cell(row=current_row, column=2, value="")
+                _apply_body_style(count_label_cell, fill_color=label_fill)
+                for column_index, count in zip(data_columns, count_row["counts"]):
+                    count_cell = worksheet.cell(row=current_row, column=column_index, value=count)
+                    _apply_body_style(count_cell, fill_color=label_fill)
+                    count_cell.alignment = Alignment(horizontal="center", vertical="center")
+                current_row += 1
 
         current_row += 2
 
@@ -360,7 +376,11 @@ def export_workbook_to_excel_bytes(
         _write_topline_sheet(workbook, topline_sheet)
 
     for sheet in workbook_package.get("sheets", []):
-        _write_banner_sheet(workbook, sheet)
+        _write_banner_sheet(
+            workbook,
+            sheet,
+            include_n_count=bool(workbook_package.get("include_n_count", False)),
+        )
 
     output = BytesIO()
     workbook.save(output)

@@ -307,15 +307,10 @@ def _age_bucket_key(choice: str) -> tuple[int, int] | None:
 
 def _sort_scale_choices(choices: list[str]) -> list[str]:
     """Sort common scale labels from most positive to most negative."""
-    scored: list[tuple[int, int, str]] = []
+    scored: list[tuple[tuple[int, int], int, str]] = []
     unmatched: list[tuple[int, str]] = []
     for index, choice in enumerate(choices):
-        normalized = choice.lower()
-        matched_score = None
-        for pattern, score in SCALE_ORDER_PATTERNS:
-            if pattern in normalized:
-                matched_score = score
-                break
+        matched_score = _scale_choice_score(choice)
         if matched_score is None:
             unmatched.append((index, choice))
         else:
@@ -325,6 +320,89 @@ def _sort_scale_choices(choices: list[str]) -> list[str]:
     ordered = [choice for _, _, choice in sorted(scored, key=lambda item: (item[0], item[1]))]
     ordered.extend(choice for _, choice in unmatched)
     return ordered
+
+
+def _scale_choice_score(choice: str) -> tuple[int, int] | None:
+    """Score one scale label so obvious positive-to-negative families sort consistently.
+
+    Inputs:
+        choice: One answer-choice label from a scale question.
+
+    Outputs:
+        A sortable tuple where lower values are more positive. Returns `None`
+        when the label does not match any known scale family.
+    """
+    normalized = choice.lower().strip()
+
+    if "leads much more often" in normalized:
+        return (0, 0)
+    if "leads somewhat more often" in normalized:
+        return (1, 0)
+    if "follows somewhat more often" in normalized:
+        return (3, 0)
+    if "follows much more often" in normalized or "follows more often" in normalized:
+        return (4, 0)
+
+    if "i am a dedicated harry potter fan" in normalized:
+        return (0, 0)
+    if "feel nostalgic toward it" in normalized:
+        return (1, 0)
+    if "new to the series but interested" in normalized:
+        return (2, 0)
+    if "not a fan" in normalized:
+        return (4, 0)
+
+    if "love it" in normalized:
+        return (0, 0)
+    if "like it" in normalized:
+        return (1, 0)
+    if "neutral" in normalized or "about the same" in normalized or "neither agree nor disagree" in normalized:
+        return (2, 0)
+    if "dislike it" in normalized:
+        return (3, 0)
+    if "hate it" in normalized:
+        return (4, 0)
+
+    if "much better" in normalized:
+        return (0, 0)
+    if "somewhat better" in normalized:
+        return (1, 0)
+    if "somewhat worse" in normalized:
+        return (3, 0)
+    if "much worse" in normalized:
+        return (4, 0)
+
+    if "strongly agree" in normalized:
+        return (0, 0)
+    if "somewhat agree" in normalized:
+        return (1, 0)
+    if "somewhat disagree" in normalized:
+        return (3, 0)
+    if "strongly disagree" in normalized:
+        return (4, 0)
+
+    positive_weight = None
+    if "very " in normalized:
+        positive_weight = 0
+    elif "quite " in normalized:
+        positive_weight = 1
+    elif "somewhat " in normalized:
+        positive_weight = 1
+    elif "moderately " in normalized:
+        positive_weight = 2
+    elif "not that " in normalized or "not very " in normalized or "not likely" in normalized:
+        positive_weight = 3
+    elif "not at all " in normalized or "very unlikely" in normalized:
+        positive_weight = 4
+
+    if positive_weight is not None:
+        if any(token in normalized for token in ["interested", "likely"]):
+            return (positive_weight, 1)
+
+    for pattern, score in SCALE_ORDER_PATTERNS:
+        if pattern in normalized:
+            return (score, 9)
+    return None
 
 
 def _sort_pattern_list(choices: list[str], ordered_patterns: list[tuple[str, int]]) -> list[str]:
@@ -368,7 +446,8 @@ def sort_answer_choices(answer_choices: list[str], question_type: str, question_
         return []
 
     label_lower = question_label.lower()
-    if "how old" in label_lower or label_lower.strip() == "age":
+    age_hits = sum(1 for choice in answer_choices if _age_bucket_key(choice) is not None)
+    if "age" in label_lower or age_hits >= max(2, len(answer_choices) // 2):
         return _anchor_exclusive_choices_last(_sort_age_choices(answer_choices))
     if (
         "relationship with the harry potter series" in label_lower
