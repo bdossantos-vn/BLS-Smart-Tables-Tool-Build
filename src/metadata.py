@@ -50,6 +50,8 @@ SCALE_LABEL_HINTS = [
 SCALE_VALUE_HINTS = [
     "very interested",
     "somewhat interested",
+    "moderately interested",
+    "not that interested",
     "not very interested",
     "not at all interested",
     "love it",
@@ -58,6 +60,9 @@ SCALE_VALUE_HINTS = [
     "dislike it",
     "hate it",
     "very likely",
+    "quite likely",
+    "moderately likely",
+    "not that likely",
     "somewhat likely",
     "not likely",
     "very unlikely",
@@ -70,6 +75,11 @@ SCALE_VALUE_HINTS = [
     "new to the series but interested",
     "nostalgic toward it",
     "not a fan",
+    "leads much more often",
+    "leads somewhat more often",
+    "follows somewhat more often",
+    "follows much more often",
+    "follows more often",
     "about the same",
     "somewhat worse",
     "much worse",
@@ -77,27 +87,13 @@ SCALE_VALUE_HINTS = [
     "much better",
 ]
 
-AGE_PATTERNS = [
-    ("under 18", 0),
-    ("18 - 24", 1),
-    ("18-24", 1),
-    ("25 - 34", 2),
-    ("25-34", 2),
-    ("35 - 44", 3),
-    ("35-44", 3),
-    ("45+", 4),
-    ("45 +", 4),
-    ("55+", 5),
-    ("55 +", 5),
-    ("65+", 6),
-    ("65 +", 6),
-]
-
 SCALE_ORDER_PATTERNS = [
     ("love it", 0),
     ("very unlikely", 4),
     ("not at all interested", 4),
+    ("not at all likely", 4),
     ("not very interested", 3),
+    ("not that interested", 3),
     ("strongly disagree", 4),
     ("dislike it", 3),
     ("hate it", 4),
@@ -105,17 +101,26 @@ SCALE_ORDER_PATTERNS = [
     ("very interested", 0),
     ("strongly agree", 0),
     ("much better", 0),
+    ("leads much more often", 0),
+    ("quite likely", 1),
     ("somewhat likely", 1),
     ("somewhat interested", 1),
     ("somewhat agree", 1),
     ("somewhat better", 1),
     ("like it", 1),
+    ("leads somewhat more often", 1),
     ("about the same", 2),
     ("neutral", 2),
+    ("moderately interested", 2),
+    ("moderately likely", 2),
     ("neither agree nor disagree", 2),
+    ("follows somewhat more often", 2),
     ("somewhat worse", 3),
+    ("not that likely", 3),
     ("not likely", 3),
     ("somewhat disagree", 3),
+    ("follows much more often", 3),
+    ("follows more often", 3),
     ("much worse", 4),
 ]
 
@@ -262,15 +267,10 @@ def get_metadata_editor_columns() -> dict[str, Any]:
 
 def _sort_age_choices(choices: list[str]) -> list[str]:
     """Sort common age bucket labels into ascending age order."""
-    scored: list[tuple[int, str]] = []
+    scored: list[tuple[tuple[int, int], str]] = []
     unmatched: list[str] = []
     for choice in choices:
-        normalized = choice.lower()
-        matched_score = None
-        for pattern, score in AGE_PATTERNS:
-            if pattern in normalized:
-                matched_score = score
-                break
+        matched_score = _age_bucket_key(choice)
         if matched_score is None:
             unmatched.append(choice)
         else:
@@ -280,6 +280,29 @@ def _sort_age_choices(choices: list[str]) -> list[str]:
     ordered = [choice for _, choice in sorted(scored, key=lambda item: item[0])]
     ordered.extend(unmatched)
     return ordered
+
+
+def _age_bucket_key(choice: str) -> tuple[int, int] | None:
+    """Convert common age bucket labels into a sortable (start_age, end_age) key."""
+    normalized = choice.lower().strip()
+
+    under_match = re.search(r"under\s+(\d+)", normalized)
+    if under_match:
+        upper = int(under_match.group(1))
+        return (0, upper)
+
+    plus_match = re.search(r"(\d+)\s*\+", normalized)
+    if plus_match:
+        lower = int(plus_match.group(1))
+        return (lower, 999)
+
+    range_match = re.search(r"(\d+)\s*-\s*(\d+)", normalized)
+    if range_match:
+        lower = int(range_match.group(1))
+        upper = int(range_match.group(2))
+        return (lower, upper)
+
+    return None
 
 
 def _sort_scale_choices(choices: list[str]) -> list[str]:
