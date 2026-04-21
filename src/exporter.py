@@ -173,10 +173,7 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
 
     current_row = 13
     for row in rows:
-        row_label = row.get("Question", "")
-        response = row.get("Response", "")
-        if response:
-            row_label = f"{row_label} | {response}"
+        row_label = row.get("Topline Label") or row.get("Variable") or row.get("Question", "")
         label_cell = worksheet.cell(row=current_row, column=2, value=row_label)
         _apply_body_style(label_cell, wrap=True)
 
@@ -211,7 +208,11 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
 
         notes_cell = worksheet.cell(row=current_row, column=7, value=row.get("Notes", ""))
         _apply_body_style(notes_cell, wrap=True)
-        note_base_cell = worksheet.cell(row=current_row, column=8, value=row.get("Note Base", ""))
+        note_base_cell = worksheet.cell(
+            row=current_row,
+            column=8,
+            value=row.get("Note Base") or "Total Answering",
+        )
         _apply_body_style(note_base_cell, fill_color=VN_LIGHT_GRAY)
         note_base_cell.alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
         current_row += 1

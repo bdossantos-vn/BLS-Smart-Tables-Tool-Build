@@ -909,6 +909,7 @@ def _build_topline_rows(
 
             rows.append(
                 {
+                    "Topline Label": normalized_variable or table.question_label,
                     "Question": table.question_label,
                     "Variable": table.variable,
                     "Response": row["label"],
@@ -926,7 +927,7 @@ def _build_topline_rows(
                     "Lift": (right_pct - left_pct) if include_lift else None,
                     "Sig Test": significant_direction,
                     "Notes": note_text,
-                    "Note Base": note_base_section_map.get(normalized_variable, "Total Answering"),
+                    "Note Base": note_base_section_map.get(normalized_variable) or "Total Answering",
                 }
             )
     return rows
