@@ -58,8 +58,8 @@ def build_default_adhoc_crosstab_row() -> dict[str, str]:
     """Return a blank AdHoc crosstab row."""
     return {
         "name": "",
-        "variable": "",
-        "banner": "",
+        "row_variable": "",
+        "column_variable": "",
     }
 
 

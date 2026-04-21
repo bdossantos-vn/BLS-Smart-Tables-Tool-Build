@@ -301,6 +301,26 @@ def _build_variable_order_lookup(
     return []
 
 
+def _build_custom_variable_question_row(
+    variable: str,
+    custom_variables: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Build question-like metadata for a materialized custom variable."""
+    for record in custom_variables:
+        if normalize_text(record.get("name")) != variable:
+            continue
+        answer_choices = [normalize_text(bucket.get("label")) for bucket in record.get("buckets", []) if normalize_text(bucket.get("label"))]
+        if normalize_text(record.get("fallback_mode")) == "Create additional option":
+            answer_choices.append(normalize_text(record.get("fallback_label")) or "Other")
+        return {
+            "variable": variable,
+            "question_label": variable,
+            "detected_type": "Single-Select",
+            "answer_choices_list": answer_choices,
+        }
+    return None
+
+
 def _sort_group_rows(
     rows: list[dict[str, Any]],
     levels: list[str],
@@ -1233,17 +1253,18 @@ def generate_workbook_package(
         adhoc_ci = normalize_confidence_intervals(adhoc_stat_config.get("confidence_intervals", [95]))
         adhoc_alpha = (100 - adhoc_ci[0]) / 100 if adhoc_ci else 0.05
         adhoc_scope = normalize_text(adhoc_stat_config.get("comparison_scope")) or "lowest_banner_level"
-        banner_lookup = {normalize_text(row.get("name")): row for row in banner_rows}
         metadata_lookup = {
             normalize_text(row.get("variable")): row for row in enabled_questions
         }
         for row in adhoc_config_rows:
-            variable = normalize_text(row.get("variable"))
-            banner_name = normalize_text(row.get("banner"))
-            table_name = normalize_text(row.get("name")) or variable
-            banner_row = banner_lookup.get(banner_name)
-            question_row = metadata_lookup.get(variable)
-            if not banner_row or not question_row:
+            row_variable = normalize_text(row.get("row_variable") or row.get("variable"))
+            column_variable = normalize_text(row.get("column_variable") or row.get("banner"))
+            table_name = normalize_text(row.get("name")) or row_variable
+            question_row = metadata_lookup.get(row_variable) or _build_custom_variable_question_row(
+                row_variable,
+                custom_variables,
+            )
+            if not row_variable or not column_variable or not question_row or column_variable not in analysis_df.columns:
                 continue
             filtered_df, applied_filters = _apply_targeted_filters(
                 analysis_df,
@@ -1251,6 +1272,10 @@ def generate_workbook_package(
                 ["All Tables", table_name],
                 question_lookup,
             )
+            banner_row = {
+                "name": table_name,
+                "levels": [column_variable],
+            }
             groups = _build_banner_groups(
                 filtered_df,
                 banner_row,
@@ -1273,7 +1298,7 @@ def generate_workbook_package(
                 comparison_group_labels,
             )
             table.banner_name = table_name
-            table.levels = list(banner_row["levels"])
+            table.levels = [column_variable]
             table.groups = groups
             table.footnotes = _build_table_footnotes(
                 adhoc_stat_config,

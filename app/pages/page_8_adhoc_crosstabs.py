@@ -16,7 +16,7 @@ def render() -> None:
     """Render the Custom AdHoc Crosstabs page."""
     st.header("8. Custom AdHoc Crosstabs")
     st.write(
-        "Build custom crosstab tables by pairing one question/custom variable with one saved banner. "
+        "Build custom crosstab tables by pairing one row variable with one column variable. "
         "All AdHoc tables will export together on a single sheet."
     )
 
@@ -30,12 +30,6 @@ def render() -> None:
     )
     variable_options = [item["id"] for item in variable_catalog]
     variable_labels = {item["id"]: item["label"] for item in variable_catalog}
-
-    banner_rows = list(st.session_state.get("banner_config", {}).get("banners", []))
-    banner_options = [normalize_text(row.get("name")) for row in banner_rows if normalize_text(row.get("name"))]
-    if not banner_options:
-        st.info("Create at least one banner on the Banner Configuration page before building AdHoc crosstabs.")
-        return
 
     existing_tables = list(st.session_state.adhoc_crosstabs_config.get("tables", []))
     table_count = int(
@@ -59,40 +53,40 @@ def render() -> None:
             "Crosstab Name",
             value=row.get("name", ""),
             key=f"adhoc_table_name_{index}",
-            help="Optional short export label. If blank, the source variable name will be used.",
+            help="Optional short export label. If blank, the row variable name will be used.",
         )
         left, right = st.columns(2)
-        variable = left.selectbox(
-            "Question / Custom Variable",
+        row_variable = left.selectbox(
+            "Row Variable",
             options=["", *variable_options],
-            index=([ "", *variable_options ].index(row.get("variable", "")) if row.get("variable", "") in ["", *variable_options] else 0),
+            index=([ "", *variable_options ].index(row.get("row_variable", "")) if row.get("row_variable", "") in ["", *variable_options] else 0),
             format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
-            key=f"adhoc_table_variable_{index}",
+            key=f"adhoc_table_row_variable_{index}",
         )
-        banner = right.selectbox(
-            "Banner",
-            options=["", *banner_options],
-            index=([ "", *banner_options ].index(normalize_text(row.get("banner"))) if normalize_text(row.get("banner")) in ["", *banner_options] else 0),
-            format_func=lambda value: value if value else "Select banner",
-            key=f"adhoc_table_banner_{index}",
+        column_variable = right.selectbox(
+            "Column Variable",
+            options=["", *variable_options],
+            index=([ "", *variable_options ].index(row.get("column_variable", "")) if row.get("column_variable", "") in ["", *variable_options] else 0),
+            format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
+            key=f"adhoc_table_column_variable_{index}",
         )
         rendered_tables.append(
             {
-                "name": normalize_text(table_name) or normalize_text(variable),
-                "variable": normalize_text(variable),
-                "banner": normalize_text(banner),
+                "name": normalize_text(table_name) or normalize_text(row_variable),
+                "row_variable": normalize_text(row_variable),
+                "column_variable": normalize_text(column_variable),
             }
         )
 
     valid_tables = [
         row for row in rendered_tables
-        if normalize_text(row.get("variable")) and normalize_text(row.get("banner"))
+        if normalize_text(row.get("row_variable")) and normalize_text(row.get("column_variable"))
     ]
     st.session_state.adhoc_crosstabs_config = {
         "tables": valid_tables,
     }
 
     if table_count and not valid_tables:
-        st.warning("Configure at least one valid AdHoc Crosstab with both a variable and a banner.")
+        st.warning("Configure at least one valid AdHoc Crosstab with both a row variable and a column variable.")
     else:
         st.success("AdHoc Crosstab configuration saved.")
