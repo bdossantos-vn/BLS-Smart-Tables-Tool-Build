@@ -1005,6 +1005,8 @@ def _build_banner_note_lookup(
             table_levels = list(getattr(table, "levels", []) or sheet.levels)
             if not table_levels or not table_groups:
                 continue
+            if normalize_text(table_levels[-1]) != normalized_comparison:
+                continue
             if len(table_levels) == 1 and normalize_text(table_levels[0]) == normalized_comparison:
                 continue
             comparison_pairs = _find_comparison_pair_indexes(table_groups, comparison_col)
