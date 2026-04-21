@@ -1001,11 +1001,14 @@ def _build_banner_note_lookup(
     """
     note_lookup: dict[tuple[str, str], list[str]] = {}
     note_base_section_map = note_base_section_map or {}
+    normalized_comparison = normalize_text(comparison_col)
     for sheet in sheets:
         for table in sheet.tables:
             table_groups = list(getattr(table, "groups", []) or sheet.groups)
             table_levels = list(getattr(table, "levels", []) or sheet.levels)
             if not table_levels or not table_groups:
+                continue
+            if len(table_levels) == 1 and normalize_text(table_levels[0]) == normalized_comparison:
                 continue
             comparison_pairs = _find_comparison_pair_indexes(table_groups, comparison_col)
             if not comparison_pairs:
