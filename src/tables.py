@@ -942,9 +942,12 @@ def _build_significance_direction(
     """
     right_sig = normalize_text(sig_letters[right_index]) if right_index < len(sig_letters) else ""
     left_sig = normalize_text(sig_letters[left_index]) if left_index < len(sig_letters) else ""
-    if left_sig:
+    pair_letters = alpha_letter_sequence(len(sig_letters))
+    right_letter = pair_letters[right_index] if right_index < len(pair_letters) else ""
+    left_letter = pair_letters[left_index] if left_index < len(pair_letters) else ""
+    if right_letter and right_letter in left_sig:
         return "left"
-    if right_sig:
+    if left_letter and left_letter in right_sig:
         return "right"
     return ""
 
