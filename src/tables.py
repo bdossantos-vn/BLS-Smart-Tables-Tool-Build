@@ -325,16 +325,6 @@ def _build_custom_variable_question_row(
     return None
 
 
-def _build_adhoc_multiselect_question_row(
-    question_row: dict[str, Any],
-) -> dict[str, Any]:
-    """Build a question row that expands multi-select choices into binary rows."""
-    return {
-        **question_row,
-        "adhoc_multiselect_binary": True,
-    }
-
-
 def _build_adhoc_multiselect_groups(
     df: pd.DataFrame,
     variable: str,
@@ -1357,8 +1347,6 @@ def generate_workbook_package(
             )
             if not row_variable or not column_variable or not question_row or column_variable not in analysis_df.columns:
                 continue
-            if normalize_text(question_row.get("detected_type")) == "Multi-Select":
-                question_row = _build_adhoc_multiselect_question_row(question_row)
             filtered_df, applied_filters = _apply_targeted_filters(
                 analysis_df,
                 global_filters,
