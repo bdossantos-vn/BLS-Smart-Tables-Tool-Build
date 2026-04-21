@@ -386,6 +386,14 @@ def _build_banner_groups(
                 "label": label,
                 "mask": mask.fillna(False),
                 "values": values,
+                "display_values": {
+                    level: (
+                        comparison_group_labels.get(normalize_text(values[level]), normalize_text(values[level]))
+                        if normalize_text(level) == normalize_text(comparison_col)
+                        else normalize_text(values[level])
+                    )
+                    for level in levels
+                },
             }
         )
     return groups
@@ -770,6 +778,8 @@ def _build_banner_note_lookup(
             if not answering_section:
                 continue
             for row in answering_section.get("rows", []):
+                row_notes: list[str] = []
+                row_directions: list[str] = []
                 for left_index, right_index, subgroup_label, left_label, right_label in comparison_pairs:
                     left_pct = row["percentages"][left_index] or 0.0
                     right_pct = row["percentages"][right_index] or 0.0
@@ -788,8 +798,20 @@ def _build_banner_note_lookup(
                     )
                     if not note:
                         continue
-                    key = (table.variable, row["label"])
-                    note_lookup.setdefault(key, [])
+                    row_notes.append(note)
+                    row_directions.append(significant_direction)
+                # If every subgroup on this banner tells the same directional story,
+                # suppress subgroup notes and let the topline carry the total-sample read.
+                if (
+                    row_notes
+                    and len(row_directions) == len(comparison_pairs)
+                    and len(set(row_directions)) == 1
+                    and len(row_directions) > 1
+                ):
+                    continue
+                key = (table.variable, row["label"])
+                note_lookup.setdefault(key, [])
+                for note in row_notes:
                     if note not in note_lookup[key]:
                         note_lookup[key].append(note)
     return note_lookup
@@ -848,9 +870,10 @@ def _build_topline_rows(
             continue
         base_denominators = list(total_base_section.get("base_denominators", []))
         for row in answering_section.get("rows", []):
+            has_saved_selection = table.variable in response_selection_map
             allowed_responses = response_selection_map.get(table.variable, [])
             normalized_allowed = {normalize_text(value) for value in allowed_responses}
-            if allowed_responses and not (
+            if has_saved_selection and not (
                 normalize_text(row["label"]) in normalized_allowed
                 or normalize_text(row.get("source_label")) in normalized_allowed
             ):

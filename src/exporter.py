@@ -299,7 +299,9 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
                 previous_value = None
                 for position, group_index in enumerate(non_total_indexes):
                     group = visible_groups[group_index]
-                    current_value = normalize_text(group.get("values", {}).get(level_name))
+                    current_value = normalize_text(group.get("display_values", {}).get(level_name))
+                    if not current_value:
+                        current_value = normalize_text(group.get("values", {}).get(level_name))
                     if not current_value:
                         split_parts = [
                             part.strip()
