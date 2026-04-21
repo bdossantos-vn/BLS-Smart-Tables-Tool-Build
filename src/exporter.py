@@ -511,12 +511,18 @@ def _write_banner_sheet(
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
         for column_index, pair in zip(left_lift_columns, lift_pairs):
-            lift_base_value = f"{total_base_section['base_denominators'][pair['left_index']]}/{total_base_section['base_denominators'][pair['right_index']]}"
+            lift_base_value = (
+                total_base_section["base_denominators"][pair["left_index"]]
+                + total_base_section["base_denominators"][pair["right_index"]]
+            )
             cell = worksheet.cell(row=current_row, column=column_index, value=lift_base_value)
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
         for column_index, pair in zip(right_lift_columns, lift_pairs):
-            lift_base_value = f"{answering_section['base_denominators'][pair['left_index']]}/{answering_section['base_denominators'][pair['right_index']]}"
+            lift_base_value = (
+                answering_section["base_denominators"][pair["left_index"]]
+                + answering_section["base_denominators"][pair["right_index"]]
+            )
             cell = worksheet.cell(row=current_row, column=column_index, value=lift_base_value)
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
