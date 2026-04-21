@@ -442,11 +442,15 @@ def _get_question_rows(
     question_row: dict[str, Any],
     net_definitions: dict[str, dict[str, bool]],
     scale_mappings: dict[str, dict[str, Any]],
+    comparison_col: str | None = None,
+    comparison_group_labels: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the ordered output rows for one question table."""
     rows: list[dict[str, Any]] = []
     question_type = normalize_text(question_row.get("detected_type"))
     answer_choices = list(question_row.get("answer_choices_list", []))
+    comparison_variable = normalize_text(comparison_col)
+    label_map = comparison_group_labels or {}
     if question_type == "Scale / Likert":
         net_choice_map = build_enabled_net_choice_map(variable, net_definitions, scale_mappings)
         for net_label in ["T2B", "T3B", "B2B", "B3B"]:
@@ -459,9 +463,14 @@ def _get_question_rows(
                     }
                 )
     for choice in answer_choices:
+        row_label = choice
+        if normalize_text(variable) == comparison_variable:
+            normalized_choice = normalize_text(choice)
+            row_label = label_map.get(normalized_choice, choice)
         rows.append(
             {
-                "label": choice,
+                "label": row_label,
+                "source_label": choice,
                 "choices": [choice],
                 "kind": "choice",
             }
@@ -541,12 +550,21 @@ def _build_question_table(
     scale_mappings: dict[str, dict[str, Any]],
     alpha: float,
     comparison_scope: str,
+    comparison_col: str | None = None,
+    comparison_group_labels: dict[str, str] | None = None,
 ) -> SheetTable:
     """Build one question table for all visible groups on a banner sheet."""
     variable = normalize_text(question_row.get("variable"))
     question_label = normalize_text(question_row.get("question_label")) or variable
     question_series = df[variable] if variable in df.columns else pd.Series([None] * len(df), index=df.index)
-    output_rows = _get_question_rows(variable, question_row, net_definitions, scale_mappings)
+    output_rows = _get_question_rows(
+        variable,
+        question_row,
+        net_definitions,
+        scale_mappings,
+        comparison_col=comparison_col,
+        comparison_group_labels=comparison_group_labels,
+    )
 
     total_base_denominators = [int(group["mask"].sum()) for group in groups]
     answering_masks = question_series.map(lambda value: normalize_text(value) != "").fillna(False)
@@ -583,6 +601,7 @@ def _build_question_table(
             rows.append(
                 {
                     "label": output_row["label"],
+                    "source_label": output_row.get("source_label", output_row["label"]),
                     "kind": output_row["kind"],
                     "counts": counts_by_group,
                     "percentages": percentages_by_group,
@@ -782,6 +801,7 @@ def _build_topline_rows(
     comparison_col: str | None,
     include_lift: bool,
     include_significance_notes: bool,
+    included_variables: set[str] | None = None,
     response_selection_map: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Flatten banner comparisons into one topline sheet.
@@ -804,6 +824,7 @@ def _build_topline_rows(
     if not total_comparison_sheet:
         return rows
 
+    included_variables = included_variables or set()
     response_selection_map = response_selection_map or {}
     note_lookup = _build_banner_note_lookup(banner_sheets, comparison_col)
     if len(total_comparison_sheet.groups) < 2:
@@ -813,18 +834,26 @@ def _build_topline_rows(
     left_group_label = normalize_text(total_comparison_sheet.groups[left_index].get("label")) or "Group 1"
     right_group_label = normalize_text(total_comparison_sheet.groups[right_index].get("label")) or "Group 2"
     for table in total_comparison_sheet.tables:
+        if included_variables and normalize_text(table.variable) not in included_variables:
+            continue
         answering_section = next(
             (section for section in table.sections if section.get("label") == "Total Answering"),
             None,
         )
-        if not answering_section:
+        total_base_section = next(
+            (section for section in table.sections if section.get("label") == "Total Base"),
+            None,
+        )
+        if not answering_section or not total_base_section:
             continue
-        base_denominators = list(answering_section.get("base_denominators", []))
+        base_denominators = list(total_base_section.get("base_denominators", []))
         for row in answering_section.get("rows", []):
             allowed_responses = response_selection_map.get(table.variable, [])
-            if allowed_responses and normalize_text(row["label"]) not in {
-                normalize_text(value) for value in allowed_responses
-            }:
+            normalized_allowed = {normalize_text(value) for value in allowed_responses}
+            if allowed_responses and not (
+                normalize_text(row["label"]) in normalized_allowed
+                or normalize_text(row.get("source_label")) in normalized_allowed
+            ):
                 continue
             left_n = row["counts"][left_index]
             right_n = row["counts"][right_index]
@@ -893,7 +922,8 @@ def generate_workbook_package(
     enabled_questions = [
         row
         for row in question_metadata
-        if normalize_text(row.get("detected_type")) not in {"Ignore", "Open-End Text"}
+        if bool(row.get("include", True))
+        and normalize_text(row.get("detected_type")) not in {"Ignore", "Open-End Text"}
         and normalize_text(row.get("variable")) in analysis_df.columns
     ]
 
@@ -925,6 +955,8 @@ def generate_workbook_package(
                 scale_mappings,
                 alpha,
                 comparison_scope,
+                comparison_col,
+                comparison_group_labels,
             )
             for question_row in enabled_questions
         ]
@@ -954,6 +986,8 @@ def generate_workbook_package(
                     scale_mappings,
                     alpha,
                     "control_vs_test",
+                    comparison_col,
+                    comparison_group_labels,
                 )
                 for question_row in enabled_questions
             ]
@@ -984,6 +1018,8 @@ def generate_workbook_package(
                     scale_mappings,
                     alpha,
                     comparison_scope,
+                    comparison_col,
+                    comparison_group_labels,
                 )
                 for question_row in enabled_questions
             ]
@@ -1035,6 +1071,7 @@ def generate_workbook_package(
         include_lift=effective_topline_lift,
         include_significance_notes=bool(topline_config.get("include_significance_notes", True))
         and effective_topline_lift,
+        included_variables=topline_variables,
         response_selection_map=response_selection_map,
     )
 
