@@ -928,6 +928,7 @@ def _build_significance_direction(
     sig_letters: list[str],
     left_index: int,
     right_index: int,
+    has_total_column: bool = False,
 ) -> str:
     """Return which side is significantly higher for one comparison pair.
 
@@ -942,14 +943,7 @@ def _build_significance_direction(
     """
     right_sig = normalize_text(sig_letters[right_index]) if right_index < len(sig_letters) else ""
     left_sig = normalize_text(sig_letters[left_index]) if left_index < len(sig_letters) else ""
-    pair_letters = alpha_letter_sequence(len(sig_letters))
-    right_letter = pair_letters[right_index] if right_index < len(pair_letters) else ""
-    left_letter = pair_letters[left_index] if left_index < len(pair_letters) else ""
-    if right_letter and right_letter in left_sig:
-        return "left"
-    if left_letter and left_letter in right_sig:
-        return "right"
-    return ""
+    return "significant" if left_sig or right_sig else ""
 
 
 def _build_topline_note(
@@ -1036,7 +1030,10 @@ def _build_banner_note_lookup(
                         row["sig_letters"],
                         left_index,
                         right_index,
+                        has_total_column=bool(table_groups and table_groups[0].get("label") == "Total"),
                     )
+                    if significant_direction:
+                        significant_direction = "right" if right_pct > left_pct else "left"
                     note = _build_topline_note(
                         subgroup_label,
                         left_label,
@@ -1136,7 +1133,10 @@ def _build_topline_rows(
                 row["sig_letters"],
                 left_index,
                 right_index,
+                has_total_column=bool(total_comparison_sheet.groups and total_comparison_sheet.groups[0].get("label") == "Total"),
             )
+            if significant_direction:
+                significant_direction = "right" if right_pct > left_pct else "left"
             key = (table.variable, row["label"])
             note_text = ""
             if include_significance_notes:
