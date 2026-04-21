@@ -21,12 +21,18 @@ PROJECT_CONFIG_TEMPLATE: dict[str, Any] = {
     "scales": {},
     "nets": {},
     "custom_variables": {},
+    "ad_hoc_crosstabs": {},
     "banners": {},
     "filters": {},
     "weights": {},
-    "stats": {},
+    "stats": {
+        "banners": {},
+        "adhoc_crosstabs": {},
+    },
     "topline": {
         "variables": [],
+        "response_selections": {},
+        "note_base_sections": {},
         "include_lift": False,
         "include_significance_notes": True,
     },
@@ -40,4 +46,3 @@ def build_default_project_config() -> dict[str, Any]:
         A deep copy of the default configuration template.
     """
     return deepcopy(PROJECT_CONFIG_TEMPLATE)
-

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
 
@@ -22,6 +22,10 @@ class SheetTable:
     variable: str
     question_label: str
     sections: list[dict[str, Any]]
+    banner_name: str = ""
+    levels: list[str] = field(default_factory=list)
+    groups: list[dict[str, Any]] = field(default_factory=list)
+    footnotes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -33,6 +37,8 @@ class WorkbookSheet:
     levels: list[str]
     groups: list[dict[str, Any]]
     tables: list[SheetTable]
+    footnotes: list[str] = field(default_factory=list)
+    notation_location: str = "appended_to_metric"
 
 
 @dataclass
@@ -65,6 +71,9 @@ def describe_generation_readiness(default_state: dict, current_state: dict) -> l
         messages.append(f"{banner_count} banner sheet(s) are configured.")
     else:
         messages.append("No banners configured. Export will use a single `All Tables` sheet.")
+    adhoc_count = len(current_state.get("adhoc_crosstabs_config", {}).get("tables", []))
+    if adhoc_count:
+        messages.append(f"{adhoc_count} AdHoc Crosstab(s) are configured.")
     return messages
 
 
@@ -437,6 +446,105 @@ def _build_total_comparison_groups(
             }
         )
     return groups
+
+
+def _target_matches(applies_to: list[str], target_names: list[str]) -> bool:
+    """Return whether one config row applies to the current export target."""
+    normalized_targets = {normalize_text(value) for value in target_names if normalize_text(value)}
+    normalized_applies = {normalize_text(value) for value in applies_to if normalize_text(value)}
+    if not normalized_applies or "all tables" in normalized_applies:
+        return True
+    return bool(normalized_targets & normalized_applies)
+
+
+def _evaluate_filter_branch(
+    df: pd.DataFrame,
+    branch: dict[str, Any],
+    question_lookup: dict[str, dict[str, Any]],
+) -> pd.Series:
+    """Evaluate one saved filter branch against the analysis dataframe."""
+    conditions = list(branch.get("conditions", []))
+    if not conditions:
+        return pd.Series(True, index=df.index)
+    match_logic = normalize_text(branch.get("match_logic")) or "ALL"
+    branch_mask: pd.Series | None = None
+    for condition in conditions:
+        variable = normalize_text(condition.get("variable"))
+        operator = normalize_text(condition.get("operator"))
+        choices = list(condition.get("values", []))
+        if variable not in df.columns:
+            condition_mask = pd.Series(False, index=df.index)
+        else:
+            expanded_choices = _expand_selected_choices(variable, choices, question_lookup)
+            condition_mask = _condition_matches(df[variable], operator, expanded_choices)
+        if branch_mask is None:
+            branch_mask = condition_mask
+        elif match_logic == "ANY":
+            branch_mask = branch_mask | condition_mask
+        else:
+            branch_mask = branch_mask & condition_mask
+    return (branch_mask if branch_mask is not None else pd.Series(True, index=df.index)).fillna(False)
+
+
+def _apply_targeted_filters(
+    df: pd.DataFrame,
+    global_filters: dict[str, Any],
+    target_names: list[str],
+    question_lookup: dict[str, dict[str, Any]],
+) -> tuple[pd.DataFrame, list[str]]:
+    """Apply saved filter rows that target the current sheet/table."""
+    filtered_df = df.copy()
+    applied_filters: list[str] = []
+    for row in global_filters.get("rows", []):
+        if not _target_matches(list(row.get("applies_to", [])), target_names):
+            continue
+        branch_masks: list[pd.Series] = []
+        for branch in row.get("branches", []):
+            branch_masks.append(_evaluate_filter_branch(filtered_df, branch, question_lookup))
+        if not branch_masks:
+            continue
+        combined_mask = branch_masks[0]
+        for mask in branch_masks[1:]:
+            combined_mask = combined_mask | mask
+        filtered_df = filtered_df.loc[combined_mask.fillna(False)].copy()
+        applied_filters.append(normalize_text(row.get("name")) or "Unnamed Filter")
+    return filtered_df, applied_filters
+
+
+def _resolve_weighting_footnotes(weighting_config: dict[str, Any], target_names: list[str]) -> list[str]:
+    """Summarize weighting rows that target the current sheet/table."""
+    notes: list[str] = []
+    for row in weighting_config.get("weights", []):
+        if not _target_matches(list(row.get("applies_to", [])), target_names):
+            continue
+        weight_name = normalize_text(row.get("name")) or "Unnamed Weight"
+        notes.append(f"Weighting configured: {weight_name}")
+    return notes
+
+
+def _build_table_footnotes(
+    stat_config: dict[str, Any],
+    applied_filters: list[str],
+    weighting_notes: list[str],
+) -> list[str]:
+    """Build export footnotes for one sheet or table."""
+    footnotes: list[str] = []
+    comparison_scope = normalize_text(stat_config.get("comparison_scope"))
+    if comparison_scope == "none" or not bool(stat_config.get("enabled", True)):
+        footnotes.append("Stat testing: None")
+    else:
+        ci_values = normalize_confidence_intervals(stat_config.get("confidence_intervals", [95]))
+        ci_text = ", ".join(f"{value}%" for value in ci_values) if ci_values else "95%"
+        footnotes.append(f"Stat testing: independent two-sample z-test at {ci_text}")
+    if applied_filters:
+        footnotes.append(f"Filters applied: {', '.join(applied_filters)}")
+    else:
+        footnotes.append("Filters applied: None")
+    if weighting_notes:
+        footnotes.extend(weighting_notes)
+    else:
+        footnotes.append("Weighting applied: None")
+    return footnotes
 
 
 def _compute_choice_count(series: pd.Series, choice: str) -> pd.Series:
@@ -938,12 +1046,16 @@ def generate_workbook_package(
     question_metadata: list[dict[str, Any]],
     custom_variables: list[dict[str, Any]],
     banner_config: dict[str, Any],
+    adhoc_crosstabs_config: dict[str, Any],
     net_definitions: dict[str, dict[str, bool]],
     scale_mappings: dict[str, dict[str, Any]],
-    stat_config: dict[str, Any],
+    banner_stat_config: dict[str, Any],
+    adhoc_stat_config: dict[str, Any],
     comparison_col: str | None,
     comparison_group_order: dict[str, int],
     comparison_group_labels: dict[str, str],
+    global_filters: dict[str, Any] | None = None,
+    weighting_config: dict[str, Any] | None = None,
     topline_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the full workbook package used by the export layer.
@@ -958,6 +1070,8 @@ def generate_workbook_package(
     """
     question_lookup = build_question_lookup(question_metadata, net_definitions, scale_mappings)
     analysis_df = _materialize_custom_variables(cleaned_df, custom_variables, question_lookup)
+    global_filters = global_filters or {"rows": []}
+    weighting_config = weighting_config or {"weights": []}
 
     enabled_questions = [
         row
@@ -969,9 +1083,9 @@ def generate_workbook_package(
 
     banner_rows = _normalize_banner_rows(banner_config)
     include_total = bool(banner_config.get("include_total", True))
-    confidence_intervals = normalize_confidence_intervals(stat_config.get("confidence_intervals", [95]))
-    alpha = (100 - confidence_intervals[0]) / 100 if confidence_intervals else 0.05
-    comparison_scope = normalize_text(stat_config.get("comparison_scope")) or "lowest_banner_level"
+    banner_confidence_intervals = normalize_confidence_intervals(banner_stat_config.get("confidence_intervals", [95]))
+    banner_alpha = (100 - banner_confidence_intervals[0]) / 100 if banner_confidence_intervals else 0.05
+    banner_comparison_scope = normalize_text(banner_stat_config.get("comparison_scope")) or "lowest_banner_level"
 
     sheet_specs: list[WorkbookSheet] = []
     total_comparison_sheet: WorkbookSheet | None = None
@@ -993,8 +1107,8 @@ def generate_workbook_package(
                 groups,
                 net_definitions,
                 scale_mappings,
-                alpha,
-                comparison_scope,
+                banner_alpha,
+                banner_comparison_scope,
                 comparison_col,
                 comparison_group_labels,
             )
@@ -1006,6 +1120,12 @@ def generate_workbook_package(
             levels=[],
             groups=groups,
             tables=tables,
+            footnotes=_build_table_footnotes(
+                banner_stat_config,
+                [],
+                _resolve_weighting_footnotes(weighting_config, ["All Tables"]),
+            ),
+            notation_location=normalize_text(banner_stat_config.get("notation_location")) or "appended_to_metric",
         )
         sheet_specs.append(only_sheet)
         total_comparison_sheet = only_sheet
@@ -1024,7 +1144,7 @@ def generate_workbook_package(
                     total_groups,
                     net_definitions,
                     scale_mappings,
-                    alpha,
+                    banner_alpha,
                     "control_vs_test",
                     comparison_col,
                     comparison_group_labels,
@@ -1039,8 +1159,15 @@ def generate_workbook_package(
                 tables=total_tables,
             )
         for banner_row in banner_rows:
-            groups = _build_banner_groups(
+            banner_name = banner_row["name"]
+            filtered_banner_df, applied_filters = _apply_targeted_filters(
                 analysis_df,
+                global_filters,
+                ["All Tables", banner_name],
+                question_lookup,
+            )
+            groups = _build_banner_groups(
+                filtered_banner_df,
                 banner_row,
                 include_total,
                 question_lookup,
@@ -1051,25 +1178,119 @@ def generate_workbook_package(
             )
             tables = [
                 _build_question_table(
-                    analysis_df,
+                    filtered_banner_df,
                     question_row,
                     groups,
                     net_definitions,
                     scale_mappings,
-                    alpha,
-                    comparison_scope,
+                    banner_alpha,
+                    banner_comparison_scope,
                     comparison_col,
                     comparison_group_labels,
                 )
                 for question_row in enabled_questions
             ]
+            banner_footnotes = _build_table_footnotes(
+                banner_stat_config,
+                applied_filters,
+                _resolve_weighting_footnotes(weighting_config, ["All Tables", banner_name]),
+            )
+            if banner_config.get("export_style") == "single_sheet":
+                if not sheet_specs or sheet_specs[-1].name != "All Banners":
+                    sheet_specs.append(
+                        WorkbookSheet(
+                            name="All Banners",
+                            banner_name="All Banners",
+                            levels=[],
+                            groups=[],
+                            tables=[],
+                            footnotes=[],
+                            notation_location=normalize_text(banner_stat_config.get("notation_location")) or "appended_to_metric",
+                        )
+                    )
+                for table in tables:
+                    table.banner_name = banner_name
+                    table.levels = list(banner_row["levels"])
+                    table.groups = groups
+                    table.footnotes = banner_footnotes
+                sheet_specs[-1].tables.extend(tables)
+            else:
+                sheet_specs.append(
+                    WorkbookSheet(
+                        name=banner_name,
+                        banner_name=banner_name,
+                        levels=banner_row["levels"],
+                        groups=groups,
+                        tables=tables,
+                        footnotes=banner_footnotes,
+                        notation_location=normalize_text(banner_stat_config.get("notation_location")) or "appended_to_metric",
+                    )
+                )
+
+    adhoc_tables = []
+    adhoc_config_rows = list((adhoc_crosstabs_config or {}).get("tables", []))
+    if adhoc_config_rows:
+        adhoc_ci = normalize_confidence_intervals(adhoc_stat_config.get("confidence_intervals", [95]))
+        adhoc_alpha = (100 - adhoc_ci[0]) / 100 if adhoc_ci else 0.05
+        adhoc_scope = normalize_text(adhoc_stat_config.get("comparison_scope")) or "lowest_banner_level"
+        banner_lookup = {normalize_text(row.get("name")): row for row in banner_rows}
+        metadata_lookup = {
+            normalize_text(row.get("variable")): row for row in enabled_questions
+        }
+        for row in adhoc_config_rows:
+            variable = normalize_text(row.get("variable"))
+            banner_name = normalize_text(row.get("banner"))
+            table_name = normalize_text(row.get("name")) or variable
+            banner_row = banner_lookup.get(banner_name)
+            question_row = metadata_lookup.get(variable)
+            if not banner_row or not question_row:
+                continue
+            filtered_df, applied_filters = _apply_targeted_filters(
+                analysis_df,
+                global_filters,
+                ["All Tables", table_name],
+                question_lookup,
+            )
+            groups = _build_banner_groups(
+                filtered_df,
+                banner_row,
+                include_total,
+                question_lookup,
+                custom_variables,
+                comparison_col,
+                comparison_group_order,
+                comparison_group_labels,
+            )
+            table = _build_question_table(
+                filtered_df,
+                question_row,
+                groups,
+                net_definitions,
+                scale_mappings,
+                adhoc_alpha,
+                adhoc_scope,
+                comparison_col,
+                comparison_group_labels,
+            )
+            table.banner_name = table_name
+            table.levels = list(banner_row["levels"])
+            table.groups = groups
+            table.footnotes = _build_table_footnotes(
+                adhoc_stat_config,
+                applied_filters,
+                _resolve_weighting_footnotes(weighting_config, ["All Tables", table_name]),
+            )
+            adhoc_tables.append(table)
+        if adhoc_tables:
             sheet_specs.append(
                 WorkbookSheet(
-                    name=banner_row["name"],
-                    banner_name=banner_row["name"],
-                    levels=banner_row["levels"],
-                    groups=groups,
-                    tables=tables,
+                    name="Custom AdHoc Crosstabs",
+                    banner_name="Custom AdHoc Crosstabs",
+                    levels=[],
+                    groups=[],
+                    tables=adhoc_tables,
+                    footnotes=[],
+                    notation_location=normalize_text(adhoc_stat_config.get("notation_location")) or "appended_to_metric",
                 )
             )
 
@@ -1111,7 +1332,7 @@ def generate_workbook_package(
         for sheet in sheet_specs
     ]
     effective_topline_lift = bool(topline_config.get("include_lift", False)) and bool(
-        stat_config.get("include_lift", False)
+        banner_stat_config.get("include_lift", False)
     )
     topline_rows = _build_topline_rows(
         total_comparison_sheet=total_comparison_sheet,
@@ -1128,10 +1349,10 @@ def generate_workbook_package(
     return {
         "sheets": sheet_specs,
         "topline_sheet": ToplineSheet(rows=topline_rows),
-        "confidence_intervals": confidence_intervals,
-        "comparison_scope": comparison_scope,
-        "include_lift": bool(stat_config.get("include_lift", False)),
-        "include_n_count": bool(stat_config.get("include_n_count", False)),
+        "confidence_intervals": banner_confidence_intervals,
+        "comparison_scope": banner_comparison_scope,
+        "include_lift": bool(banner_stat_config.get("include_lift", False)),
+        "include_n_count": bool(banner_stat_config.get("include_n_count", False)),
         "question_count": len(enabled_questions),
         "sheet_count": len(sheet_specs),
     }

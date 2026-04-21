@@ -20,7 +20,7 @@ def _build_export_filename(uploaded_filename: str | None) -> str:
 
 def render() -> None:
     """Render the export page and generate the final workbook."""
-    st.header("10. Table Generator & Excel Export")
+    st.header("12. Table Generator & Excel Export")
 
     readiness = describe_generation_readiness({}, st.session_state)
     for line in readiness:
@@ -37,12 +37,16 @@ def render() -> None:
                 question_metadata=st.session_state.question_metadata,
                 custom_variables=st.session_state.custom_variables,
                 banner_config=st.session_state.banner_config or {},
+                adhoc_crosstabs_config=st.session_state.get("adhoc_crosstabs_config", {}) or {},
                 net_definitions=st.session_state.net_definitions or {},
                 scale_mappings=st.session_state.scale_mappings or {},
-                stat_config=st.session_state.stat_config or {},
+                banner_stat_config=st.session_state.get("banner_stat_config", {}) or {},
+                adhoc_stat_config=st.session_state.get("adhoc_stat_config", {}) or {},
                 comparison_col=st.session_state.get("comparison_col"),
                 comparison_group_order=st.session_state.get("comparison_group_order", {}),
                 comparison_group_labels=st.session_state.get("comparison_group_labels", {}),
+                global_filters=st.session_state.get("global_filters", {}) or {},
+                weighting_config=st.session_state.get("weighting_config", {}) or {},
                 topline_config=st.session_state.get("topline_config", {}),
             )
             st.session_state.generated_tables = workbook_package

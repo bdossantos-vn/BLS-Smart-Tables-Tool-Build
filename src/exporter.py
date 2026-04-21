@@ -285,49 +285,24 @@ def _write_banner_sheet(
     include_n_count: bool = False,
     include_lift: bool = False,
 ) -> None:
-    """Write one banner worksheet in an analyst-friendly table format.
-
-    Inputs:
-        workbook: OpenPyXL workbook object.
-        sheet: One banner-sheet payload created by the table service.
-
-    Outputs:
-        Adds one formatted worksheet to the workbook.
-        include_n_count: Whether response-level N rows should be included under
-        each percent row.
-    """
-    visible_groups = list(sheet.groups)
-    lift_pairs, lift_footnote = _build_banner_lift_pairs(sheet, visible_groups) if include_lift else ([], "")
-    lift_enabled = bool(include_lift and lift_pairs)
+    """Write one banner worksheet in an analyst-friendly table format."""
+    table_groups = [table.groups for table in sheet.tables if getattr(table, "groups", None)]
+    max_group_count = max([len(sheet.groups), *[len(groups) for groups in table_groups], 1])
+    max_lift_count = 0
+    if include_lift:
+        for groups, levels in [*([(sheet.groups, sheet.levels)] if sheet.groups else []), *[(table.groups, table.levels) for table in sheet.tables if table.groups]]:
+            lift_pairs, _ = _build_banner_lift_pairs(type("obj", (), {"levels": levels}), list(groups))
+            max_lift_count = max(max_lift_count, len(lift_pairs))
 
     worksheet = workbook.create_sheet(title=str(sheet.name)[:31] or "Sheet1")
-    _set_sheet_columns(worksheet, len(sheet.groups), len(lift_pairs) if lift_enabled else 0)
+    _set_sheet_columns(worksheet, max_group_count, max_lift_count)
 
     current_row = 1
-    section_group_count = max(len(visible_groups), 1)
-    left_data_start_column = 3
-    left_lift_start_column = left_data_start_column + section_group_count
-    right_data_start_column = left_lift_start_column + (len(lift_pairs) if lift_enabled else 0)
-    right_lift_start_column = right_data_start_column + section_group_count
-    left_data_columns = [left_data_start_column + index for index in range(len(visible_groups))]
-    right_data_columns = [right_data_start_column + index for index in range(len(visible_groups))]
-    left_lift_columns = [
-        left_lift_start_column + index for index in range(len(lift_pairs))
-    ] if lift_enabled else []
-    right_lift_columns = [
-        right_lift_start_column + index for index in range(len(lift_pairs))
-    ] if lift_enabled else []
-    max_end_column = (
-        (right_lift_columns[-1] if right_lift_columns else right_data_columns[-1])
-        if right_data_columns
-        else (left_lift_columns[-1] if left_lift_columns else left_data_start_column)
-    )
-
+    max_end_column = 2 + (max_group_count * 2) + (max_lift_count * 2)
     worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
     title_cell = worksheet.cell(row=current_row, column=1, value=sheet.banner_name)
     _apply_header_style(title_cell, VN_BLACK)
     current_row += 1
-
     _write_version_stamp(
         worksheet,
         row=current_row,
@@ -341,84 +316,112 @@ def _write_banner_sheet(
     _apply_body_style(worksheet.cell(row=current_row, column=1))
     current_row += 2
 
-    banner_descriptor = " > ".join(sheet.levels) if sheet.levels else "All Tables"
-    if visible_groups:
-        worksheet.merge_cells(start_row=current_row, start_column=3, end_row=current_row, end_column=max_end_column)
-        descriptor_cell = worksheet.cell(row=current_row, column=3, value=banner_descriptor)
-        _apply_header_style(descriptor_cell, VN_ORANGE)
-    current_row += 1
-
-    level_rows = max(1, len(sheet.levels))
-    total_group_indexes = [index for index, group in enumerate(visible_groups) if group["label"] == "Total"]
-    non_total_indexes = [index for index, group in enumerate(visible_groups) if group["label"] != "Total"]
-
-    section_header_row = current_row
-    if visible_groups:
-        worksheet.merge_cells(
-            start_row=section_header_row,
-            start_column=left_data_start_column,
-            end_row=section_header_row,
-            end_column=(left_lift_columns[-1] if left_lift_columns else left_data_columns[-1]),
+    def _write_one_table(
+        current_row: int,
+        table,
+        active_banner_name: str,
+        active_levels: list[str],
+        active_groups: list[dict[str, object]],
+        footnotes: list[str],
+    ) -> int:
+        lift_pairs, lift_footnote = _build_banner_lift_pairs(type("obj", (), {"levels": active_levels}), active_groups) if include_lift else ([], "")
+        lift_enabled = bool(include_lift and lift_pairs)
+        section_group_count = max(len(active_groups), 1)
+        left_data_start_column = 3
+        left_lift_start_column = left_data_start_column + section_group_count
+        right_data_start_column = left_lift_start_column + (len(lift_pairs) if lift_enabled else 0)
+        right_lift_start_column = right_data_start_column + section_group_count
+        left_data_columns = [left_data_start_column + index for index in range(len(active_groups))]
+        right_data_columns = [right_data_start_column + index for index in range(len(active_groups))]
+        left_lift_columns = [left_lift_start_column + index for index in range(len(lift_pairs))] if lift_enabled else []
+        right_lift_columns = [right_lift_start_column + index for index in range(len(lift_pairs))] if lift_enabled else []
+        table_end_column = (
+            right_lift_columns[-1] if right_lift_columns else
+            (right_data_columns[-1] if right_data_columns else 3)
         )
-        left_title_cell = worksheet.cell(
-            row=section_header_row,
-            column=left_data_start_column,
-            value="Total Sample % / Lift (Base: Total Sample)" if lift_enabled else "Total Sample % (Base: Total Sample)",
-        )
-        _apply_header_style(left_title_cell, VN_YELLOW, font_color=VN_BLACK)
 
-        worksheet.merge_cells(
-            start_row=section_header_row,
-            start_column=right_data_start_column,
-            end_row=section_header_row,
-            end_column=(right_lift_columns[-1] if right_lift_columns else right_data_columns[-1]),
-        )
-        right_title_cell = worksheet.cell(
-            row=section_header_row,
-            column=right_data_start_column,
-            value="Total Answering % / Lift (Base: Total Answering)" if lift_enabled else "Total Answering % (Base: Total Answering)",
-        )
-        _apply_header_style(right_title_cell, VN_YELLOW, font_color=VN_BLACK)
-    current_row += 1
+        banner_descriptor = " > ".join(active_levels) if active_levels else active_banner_name or "All Tables"
+        if active_groups:
+            worksheet.merge_cells(start_row=current_row, start_column=3, end_row=current_row, end_column=table_end_column)
+            descriptor_cell = worksheet.cell(row=current_row, column=3, value=banner_descriptor)
+            _apply_header_style(descriptor_cell, VN_ORANGE)
+        current_row += 1
 
-    def _write_group_header_block(data_columns: list[int]) -> None:
-        if total_group_indexes:
-            total_column = data_columns[total_group_indexes[0]]
+        level_rows = max(1, len(active_levels))
+        total_group_indexes = [index for index, group in enumerate(active_groups) if group["label"] == "Total"]
+        non_total_indexes = [index for index, group in enumerate(active_groups) if group["label"] != "Total"]
+
+        section_header_row = current_row
+        if active_groups:
             worksheet.merge_cells(
-                start_row=current_row,
-                start_column=total_column,
-                end_row=current_row + level_rows - 1,
-                end_column=total_column,
+                start_row=section_header_row,
+                start_column=left_data_start_column,
+                end_row=section_header_row,
+                end_column=(left_lift_columns[-1] if left_lift_columns else left_data_columns[-1]),
             )
-            total_cell = worksheet.cell(row=current_row, column=total_column, value="Total")
-            _apply_body_style(total_cell, bold=True, fill_color=VN_LIGHT_GRAY)
-            total_cell.alignment = Alignment(horizontal="center", vertical="center")
+            left_title_cell = worksheet.cell(
+                row=section_header_row,
+                column=left_data_start_column,
+                value="Total Sample % / Lift (Base: Total Sample)" if lift_enabled else "Total Sample % (Base: Total Sample)",
+            )
+            _apply_header_style(left_title_cell, VN_YELLOW, font_color=VN_BLACK)
+            worksheet.merge_cells(
+                start_row=section_header_row,
+                start_column=right_data_start_column,
+                end_row=section_header_row,
+                end_column=(right_lift_columns[-1] if right_lift_columns else right_data_columns[-1]),
+            )
+            right_title_cell = worksheet.cell(
+                row=section_header_row,
+                column=right_data_start_column,
+                value="Total Answering % / Lift (Base: Total Answering)" if lift_enabled else "Total Answering % (Base: Total Answering)",
+            )
+            _apply_header_style(right_title_cell, VN_YELLOW, font_color=VN_BLACK)
+        current_row += 1
 
-        if sheet.levels and non_total_indexes:
-            for level_index, level_name in enumerate(sheet.levels):
-                header_row = current_row + level_index
-                start_group = None
-                previous_value = None
-                for position, group_index in enumerate(non_total_indexes):
-                    group = visible_groups[group_index]
-                    current_value = normalize_text(group.get("display_values", {}).get(level_name))
-                    if not current_value:
-                        current_value = normalize_text(group.get("values", {}).get(level_name))
-                    if not current_value:
-                        split_parts = [
-                            part.strip()
-                            for part in normalize_text(group.get("label")).split("|")
-                            if part.strip()
-                        ]
-                        if level_index < len(split_parts):
-                            current_value = split_parts[level_index]
-                    if start_group is None:
-                        start_group = group_index
-                        previous_value = current_value
-                        continue
-                    if current_value != previous_value:
+        def _write_group_header_block(data_columns: list[int]) -> None:
+            if total_group_indexes:
+                total_column = data_columns[total_group_indexes[0]]
+                worksheet.merge_cells(
+                    start_row=current_row,
+                    start_column=total_column,
+                    end_row=current_row + level_rows - 1,
+                    end_column=total_column,
+                )
+                total_cell = worksheet.cell(row=current_row, column=total_column, value="Total")
+                _apply_body_style(total_cell, bold=True, fill_color=VN_LIGHT_GRAY)
+                total_cell.alignment = Alignment(horizontal="center", vertical="center")
+            if active_levels and non_total_indexes:
+                for level_index, level_name in enumerate(active_levels):
+                    header_row = current_row + level_index
+                    start_group = None
+                    previous_value = None
+                    for position, group_index in enumerate(non_total_indexes):
+                        group = active_groups[group_index]
+                        current_value = normalize_text(group.get("display_values", {}).get(level_name))
+                        if not current_value:
+                            current_value = normalize_text(group.get("values", {}).get(level_name))
+                        if start_group is None:
+                            start_group = group_index
+                            previous_value = current_value
+                            continue
+                        if current_value != previous_value:
+                            start_column = data_columns[start_group]
+                            end_column = data_columns[non_total_indexes[position - 1]]
+                            worksheet.merge_cells(
+                                start_row=header_row,
+                                start_column=start_column,
+                                end_row=header_row,
+                                end_column=end_column,
+                            )
+                            merged_cell = worksheet.cell(row=header_row, column=start_column, value=previous_value)
+                            _apply_body_style(merged_cell, bold=True)
+                            merged_cell.alignment = Alignment(horizontal="center", vertical="center")
+                            start_group = group_index
+                            previous_value = current_value
+                    if start_group is not None:
                         start_column = data_columns[start_group]
-                        end_column = data_columns[non_total_indexes[position - 1]]
+                        end_column = data_columns[non_total_indexes[-1]]
                         worksheet.merge_cells(
                             start_row=header_row,
                             start_column=start_column,
@@ -428,83 +431,49 @@ def _write_banner_sheet(
                         merged_cell = worksheet.cell(row=header_row, column=start_column, value=previous_value)
                         _apply_body_style(merged_cell, bold=True)
                         merged_cell.alignment = Alignment(horizontal="center", vertical="center")
-                        start_group = group_index
-                        previous_value = current_value
-                if start_group is not None:
-                    start_column = data_columns[start_group]
-                    end_column = data_columns[non_total_indexes[-1]]
-                    worksheet.merge_cells(
-                        start_row=header_row,
-                        start_column=start_column,
-                        end_row=header_row,
-                        end_column=end_column,
-                    )
-                    merged_cell = worksheet.cell(row=header_row, column=start_column, value=previous_value)
-                    _apply_body_style(merged_cell, bold=True)
-                    merged_cell.alignment = Alignment(horizontal="center", vertical="center")
-        else:
-            header_row = current_row
-            for column_index, group in zip(data_columns, visible_groups):
-                group_cell = worksheet.cell(row=header_row, column=column_index, value=group["label"])
-                _apply_body_style(
-                    group_cell,
-                    bold=(group["label"] == "Total"),
-                    fill_color=VN_LIGHT_GRAY if group["label"] == "Total" else None,
-                )
-                group_cell.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                header_row = current_row
+                for column_index, group in zip(data_columns, active_groups):
+                    group_cell = worksheet.cell(row=header_row, column=column_index, value=group["label"])
+                    _apply_body_style(group_cell, bold=(group["label"] == "Total"), fill_color=VN_LIGHT_GRAY if group["label"] == "Total" else None)
+                    group_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    _write_group_header_block(left_data_columns)
-    _write_group_header_block(right_data_columns)
+        _write_group_header_block(left_data_columns)
+        _write_group_header_block(right_data_columns)
 
-    sig_row = current_row + level_rows
-    for data_columns in [left_data_columns, right_data_columns]:
-        for index, group in enumerate(visible_groups):
-            column_index = data_columns[index]
-            if group["label"] != "Total":
-                sig_letter = chr(64 + index) if index < 27 else ""
-                sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
-                _apply_body_style(sig_cell)
-                sig_cell.alignment = Alignment(horizontal="center", vertical="center")
-    if lift_enabled:
-        for column_index, pair in zip(left_lift_columns, lift_pairs):
-            worksheet.merge_cells(
-                start_row=current_row,
-                start_column=column_index,
-                end_row=sig_row,
-                end_column=column_index,
-            )
-            lift_header_cell = worksheet.cell(row=current_row, column=column_index, value=f"{pair['parent_label']} Lift")
-            _apply_body_style(lift_header_cell, bold=True, fill_color=VN_LIGHT_GRAY, wrap=True)
-            lift_header_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        for column_index, pair in zip(right_lift_columns, lift_pairs):
-            worksheet.merge_cells(
-                start_row=current_row,
-                start_column=column_index,
-                end_row=sig_row,
-                end_column=column_index,
-            )
-            lift_header_cell = worksheet.cell(row=current_row, column=column_index, value=f"{pair['parent_label']} Lift")
-            _apply_body_style(lift_header_cell, bold=True, fill_color=VN_LIGHT_GRAY, wrap=True)
-            lift_header_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    current_row = sig_row + 3
+        sig_row = current_row + level_rows
+        for data_columns in [left_data_columns, right_data_columns]:
+            for index, group in enumerate(active_groups):
+                column_index = data_columns[index]
+                if group["label"] != "Total":
+                    sig_letter = chr(64 + index) if index < 27 else ""
+                    sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
+                    _apply_body_style(sig_cell)
+                    sig_cell.alignment = Alignment(horizontal="center", vertical="center")
+        if lift_enabled:
+            for column_index, pair in zip(left_lift_columns, lift_pairs):
+                worksheet.merge_cells(start_row=current_row, start_column=column_index, end_row=sig_row, end_column=column_index)
+                lift_header_cell = worksheet.cell(row=current_row, column=column_index, value=f"{pair['parent_label']} Lift")
+                _apply_body_style(lift_header_cell, bold=True, fill_color=VN_LIGHT_GRAY, wrap=True)
+                lift_header_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            for column_index, pair in zip(right_lift_columns, lift_pairs):
+                worksheet.merge_cells(start_row=current_row, start_column=column_index, end_row=sig_row, end_column=column_index)
+                lift_header_cell = worksheet.cell(row=current_row, column=column_index, value=f"{pair['parent_label']} Lift")
+                _apply_body_style(lift_header_cell, bold=True, fill_color=VN_LIGHT_GRAY, wrap=True)
+                lift_header_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        current_row = sig_row + 3
 
-    for table in sheet.tables:
         total_base_section = next((section for section in table.sections if section["label"] == "Total Base"), None)
         answering_section = next((section for section in table.sections if section["label"] == "Total Answering"), None)
         if not total_base_section or not answering_section:
-            continue
+            return current_row
 
-        response_block_height = len(total_base_section["rows"]) * (2 if include_n_count else 1)
+        notation_location = getattr(sheet, "notation_location", "appended_to_metric")
+        response_block_height = len(total_base_section["rows"]) * (1 + (1 if notation_location == "below_metric" else 0) + (1 if include_n_count else 0))
         question_label_row = current_row + 2
         question_end_row = question_label_row + max(response_block_height - 1, 0)
-
         if response_block_height > 1:
-            worksheet.merge_cells(
-                start_row=question_label_row,
-                start_column=1,
-                end_row=question_end_row,
-                end_column=1,
-            )
+            worksheet.merge_cells(start_row=question_label_row, start_column=1, end_row=question_end_row, end_column=1)
         question_cell = worksheet.cell(row=question_label_row, column=1, value=table.question_label)
         _apply_header_style(question_cell, VN_RED)
         question_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -527,52 +496,45 @@ def _write_banner_sheet(
 
         for total_row, answering_row in zip(total_base_section["rows"], answering_section["rows"]):
             label_fill = VN_LIGHT_GRAY if total_row.get("kind") == "net" else None
-            label_text = total_row["label"]
-            response_cell = worksheet.cell(row=current_row, column=2, value=label_text)
+            response_cell = worksheet.cell(row=current_row, column=2, value=total_row["label"])
             _apply_body_style(response_cell, bold=bool(total_row.get("kind") == "net"), wrap=True)
             response_cell.alignment = Alignment(vertical="center", wrap_text=True)
-
-            for data_columns, section_row in [
-                (left_data_columns, total_row),
-                (right_data_columns, answering_row),
-            ]:
-                for column_index, percentage, sig_text in zip(
-                    data_columns,
-                    section_row["percentages"],
-                    section_row["sig_letters"],
-                ):
+            for data_columns, section_row in [(left_data_columns, total_row), (right_data_columns, answering_row)]:
+                for column_index, percentage, sig_text in zip(data_columns, section_row["percentages"], section_row["sig_letters"]):
                     display_value = ""
                     if percentage is not None:
-                        display_value = f"{percentage:.0%}{normalize_text(sig_text)}"
+                        display_value = f"{percentage:.0%}{normalize_text(sig_text)}" if notation_location != "below_metric" else f"{percentage:.0%}"
                     percent_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
                     _apply_body_style(percent_cell, fill_color=label_fill)
                     percent_cell.alignment = Alignment(horizontal="center", vertical="center")
             if lift_enabled:
                 for column_index, pair in zip(left_lift_columns, lift_pairs):
-                    display_value = _format_lift_display(
-                        total_row["percentages"][pair["left_index"]],
-                        total_row["percentages"][pair["right_index"]],
-                    )
-                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
+                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=_format_lift_display(total_row["percentages"][pair["left_index"]], total_row["percentages"][pair["right_index"]]))
                     _apply_body_style(lift_cell, fill_color=label_fill)
                     lift_cell.alignment = Alignment(horizontal="center", vertical="center")
                 for column_index, pair in zip(right_lift_columns, lift_pairs):
-                    display_value = _format_lift_display(
-                        answering_row["percentages"][pair["left_index"]],
-                        answering_row["percentages"][pair["right_index"]],
-                    )
-                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
+                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=_format_lift_display(answering_row["percentages"][pair["left_index"]], answering_row["percentages"][pair["right_index"]]))
                     _apply_body_style(lift_cell, fill_color=label_fill)
                     lift_cell.alignment = Alignment(horizontal="center", vertical="center")
             current_row += 1
 
+            if notation_location == "below_metric":
+                sig_label_cell = worksheet.cell(row=current_row, column=2, value="")
+                _apply_body_style(sig_label_cell, fill_color=label_fill)
+                for data_columns, section_row in [(left_data_columns, total_row), (right_data_columns, answering_row)]:
+                    for column_index, sig_text in zip(data_columns, section_row["sig_letters"]):
+                        sig_cell = worksheet.cell(row=current_row, column=column_index, value=normalize_text(sig_text))
+                        _apply_body_style(sig_cell, fill_color=label_fill)
+                        sig_cell.alignment = Alignment(horizontal="center", vertical="center")
+                for column_index in [*left_lift_columns, *right_lift_columns]:
+                    blank_cell = worksheet.cell(row=current_row, column=column_index, value="")
+                    _apply_body_style(blank_cell, fill_color=label_fill)
+                current_row += 1
+
             if include_n_count:
                 count_label_cell = worksheet.cell(row=current_row, column=2, value="")
                 _apply_body_style(count_label_cell, fill_color=label_fill)
-                for data_columns, section_row in [
-                    (left_data_columns, total_row),
-                    (right_data_columns, answering_row),
-                ]:
+                for data_columns, section_row in [(left_data_columns, total_row), (right_data_columns, answering_row)]:
                     for column_index, count in zip(data_columns, section_row["counts"]):
                         count_cell = worksheet.cell(row=current_row, column=column_index, value=count)
                         _apply_body_style(count_cell, fill_color=label_fill)
@@ -580,21 +542,39 @@ def _write_banner_sheet(
                 for column_index in [*left_lift_columns, *right_lift_columns]:
                     count_cell = worksheet.cell(row=current_row, column=column_index, value="")
                     _apply_body_style(count_cell, fill_color=label_fill)
-                    count_cell.alignment = Alignment(horizontal="center", vertical="center")
                 current_row += 1
 
-        current_row += 2
+        if include_lift and not lift_enabled and lift_footnote:
+            footnotes = [*footnotes, lift_footnote]
+        if footnotes:
+            for note in footnotes:
+                worksheet.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=table_end_column)
+                footnote_cell = worksheet.cell(row=current_row, column=2, value=note)
+                _apply_body_style(footnote_cell, fill_color=VN_LIGHT_GRAY, wrap=True)
+                footnote_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                current_row += 1
+        return current_row + 2
 
-    if include_lift and not lift_enabled and lift_footnote:
-        worksheet.merge_cells(
-            start_row=current_row,
-            start_column=2,
-            end_row=current_row,
-            end_column=max_end_column,
-        )
-        footnote_cell = worksheet.cell(row=current_row, column=2, value=lift_footnote)
-        _apply_body_style(footnote_cell, fill_color=VN_LIGHT_GRAY, wrap=True)
-        footnote_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    if sheet.groups:
+        for table in sheet.tables:
+            current_row = _write_one_table(
+                current_row,
+                table,
+                sheet.banner_name,
+                sheet.levels,
+                list(sheet.groups),
+                list(sheet.footnotes),
+            )
+    else:
+        for table in sheet.tables:
+            current_row = _write_one_table(
+                current_row,
+                table,
+                getattr(table, "banner_name", sheet.banner_name),
+                list(getattr(table, "levels", [])),
+                list(getattr(table, "groups", [])),
+                list(getattr(table, "footnotes", [])),
+            )
 
     worksheet.freeze_panes = "D7"
 

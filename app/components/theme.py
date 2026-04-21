@@ -59,6 +59,12 @@ def apply_theme() -> None:
                 color: var(--vn-white);
             }
 
+            [data-testid="stSidebar"] .stButton > button,
+            [data-testid="stSidebar"] .stDownloadButton > button {
+                color: var(--vn-black);
+                background: var(--vn-white);
+            }
+
             [data-testid="stSidebar"] hr {
                 border-color: rgba(255, 255, 255, 0.14);
             }

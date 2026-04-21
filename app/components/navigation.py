@@ -20,17 +20,19 @@ STEPS: list[dict[str, str]] = [
     {"id": "net_definitions", "label": "5. Net Definitions"},
     {"id": "custom_variables", "label": "6. Custom Variables"},
     {"id": "banner_config", "label": "7. Banner Configuration"},
-    {"id": "stat_setup", "label": "8. Statistical Setup"},
-    {"id": "topline_config", "label": "9. Topline Configuration"},
-    {"id": "export", "label": "10. Export"},
+    {"id": "adhoc_crosstabs", "label": "8. Custom AdHoc Crosstabs"},
+    {"id": "filter_config", "label": "9. Filter Configuration"},
+    {"id": "stat_setup", "label": "10. Statistical Setup"},
+    {"id": "topline_config", "label": "11. Topline Configuration"},
+    {"id": "export", "label": "12. Export"},
 ]
 
 LEGACY_LABEL_REDIRECTS = {
-    "8. Filter Configuration": "8. Statistical Setup",
-    "9. Weighting": "8. Statistical Setup",
-    "10. Statistical Setup": "8. Statistical Setup",
-    "11. Topline Configuration": "9. Topline Configuration",
-    "12. Export": "10. Export",
+    "8. Filter Configuration": "9. Filter Configuration",
+    "9. Weighting": "10. Statistical Setup",
+    "10. Statistical Setup": "10. Statistical Setup",
+    "11. Topline Configuration": "11. Topline Configuration",
+    "12. Export": "12. Export",
 }
 
 
@@ -115,6 +117,8 @@ def render_sidebar() -> str:
                     st.session_state.project_config = build_default_project_config()
                     st.session_state.topline_config = {
                         "variables": [],
+                        "response_selections": {},
+                        "note_base_sections": {},
                         "include_lift": False,
                         "include_significance_notes": True,
                     }

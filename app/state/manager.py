@@ -13,6 +13,7 @@ from typing import Any
 import streamlit as st
 
 from app.models.project_config import build_default_project_config
+from src.config import build_default_adhoc_crosstab_config, build_default_stat_config
 from src.state import init_session_state
 
 
@@ -31,6 +32,9 @@ EXTRA_DEFAULTS: dict[str, Any] = {
     "project_setup_mode": "Start from scratch",
     "template_upload_message": "",
     "app_current_step": "1. Project Setup",
+    "adhoc_crosstabs_config": build_default_adhoc_crosstab_config(),
+    "banner_stat_config": build_default_stat_config(),
+    "adhoc_stat_config": build_default_stat_config(),
 }
 
 
@@ -86,10 +90,16 @@ def sync_project_config_from_session() -> None:
         item.get("name", f"custom_{index}"): deepcopy(item)
         for index, item in enumerate(st.session_state.get("custom_variables", []), start=1)
     }
+    project_config["ad_hoc_crosstabs"] = deepcopy(
+        st.session_state.get("adhoc_crosstabs_config", EXTRA_DEFAULTS["adhoc_crosstabs_config"])
+    )
     project_config["banners"] = deepcopy(st.session_state.get("banner_config", {}))
     project_config["filters"] = deepcopy(st.session_state.get("global_filters", {}))
     project_config["weights"] = deepcopy(st.session_state.get("weighting_config", {}))
-    project_config["stats"] = deepcopy(st.session_state.get("stat_config", {}))
+    project_config["stats"] = {
+        "banners": deepcopy(st.session_state.get("banner_stat_config", EXTRA_DEFAULTS["banner_stat_config"])),
+        "adhoc_crosstabs": deepcopy(st.session_state.get("adhoc_stat_config", EXTRA_DEFAULTS["adhoc_stat_config"])),
+    }
     project_config["topline"] = deepcopy(st.session_state.get("topline_config", EXTRA_DEFAULTS["topline_config"]))
     st.session_state.project_config = project_config
 
@@ -112,9 +122,19 @@ def load_project_template(template_payload: dict[str, Any]) -> None:
     st.session_state.project_config = project_config
     st.session_state.project_setup_mode = project_config.get("project", {}).get("setup_mode", "Upload template")
     st.session_state.banner_config = deepcopy(project_config.get("banners", {}))
+    st.session_state.adhoc_crosstabs_config = deepcopy(
+        project_config.get("ad_hoc_crosstabs", EXTRA_DEFAULTS["adhoc_crosstabs_config"])
+    )
     st.session_state.global_filters = deepcopy(project_config.get("filters", {}))
     st.session_state.weighting_config = deepcopy(project_config.get("weights", {}))
-    st.session_state.stat_config = deepcopy(project_config.get("stats", {}))
+    stats_config = deepcopy(project_config.get("stats", {}))
+    st.session_state.banner_stat_config = deepcopy(
+        stats_config.get("banners", EXTRA_DEFAULTS["banner_stat_config"])
+    )
+    st.session_state.adhoc_stat_config = deepcopy(
+        stats_config.get("adhoc_crosstabs", EXTRA_DEFAULTS["adhoc_stat_config"])
+    )
+    st.session_state.stat_config = deepcopy(st.session_state.banner_stat_config)
     st.session_state.scale_mappings = deepcopy(project_config.get("scales", {}))
     st.session_state.net_definitions = deepcopy(project_config.get("nets", {}))
     st.session_state.custom_variables = list(project_config.get("custom_variables", {}).values())

@@ -1721,7 +1721,7 @@ def render_step_6() -> None:
 
 def render_step_7() -> None:
     """Render the banner configuration page."""
-    st.header("6. Banner Configuration")
+    st.header("7. Banner Configuration")
     st.write("Build one or more banners with up to 3 nested levels.")
 
     if not st.session_state.banner_config:
@@ -1737,6 +1737,13 @@ def render_step_7() -> None:
     include_total = st.checkbox(
         "Include total column",
         value=bool(st.session_state.banner_config.get("include_total", True)),
+    )
+    export_style = st.selectbox(
+        "Export Style",
+        options=["one_per_sheet", "single_sheet"],
+        index=0 if st.session_state.banner_config.get("export_style", "one_per_sheet") == "one_per_sheet" else 1,
+        format_func=lambda value: "1 banner per sheet" if value == "one_per_sheet" else "All banners in single sheet",
+        help="Choose whether banner exports should be split by banner or combined into one sheet.",
     )
     existing_banners = list(st.session_state.banner_config.get("banners", []))
     banner_count = int(
@@ -1824,6 +1831,7 @@ def render_step_7() -> None:
         "banner_variables": selected_banners,
         "banners": rendered_banners,
         "include_total": include_total,
+        "export_style": export_style,
     }
 
     issues = validate_analysis_config(
@@ -1842,7 +1850,7 @@ def render_step_7() -> None:
 
 def render_step_8() -> None:
     """Render the filter configuration page."""
-    st.header("7. Filter Configuration")
+    st.header("9. Filter Configuration")
 
     if not st.session_state.global_filters:
         st.session_state.global_filters = {"rows": []}
@@ -1869,6 +1877,10 @@ def render_step_8() -> None:
         banner_name = normalize_text(banner.get("name"))
         if banner_name and banner_name not in apply_targets:
             apply_targets.append(banner_name)
+    for table in st.session_state.get("adhoc_crosstabs_config", {}).get("tables", []):
+        table_name = normalize_text(table.get("name")) or normalize_text(table.get("variable"))
+        if table_name and table_name not in apply_targets:
+            apply_targets.append(table_name)
 
     global_filter_rows = int(
         st.number_input(

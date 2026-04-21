@@ -52,6 +52,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "custom_var_reset_requested": False,
     "custom_var_edit_payload": None,
     "net_definitions": {},
+    "adhoc_crosstabs_config": {"tables": []},
     "topline_editor": None,
     "topline_change_log": [],
     "topline_editor_source_columns": [],
@@ -61,6 +62,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "banner_config": {},
     "local_overrides": {},
     "stat_config": {},
+    "banner_stat_config": {},
+    "adhoc_stat_config": {},
     "generated_tables": {},
 }
 

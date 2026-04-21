@@ -20,6 +20,7 @@ def build_default_banner_config() -> dict:
         "banner_variables": [],
         "banners": [],
         "include_total": True,
+        "export_style": "one_per_sheet",
     }
 
 
@@ -39,8 +40,44 @@ def build_default_stat_config() -> dict:
         "confidence_intervals": [95],
         "alpha": 0.05,
         "enabled": True,
-        "comparison_scope": "lowest_banner_level",
+        "comparison_scope": "control_vs_test",
+        "include_n_count": False,
+        "include_lift": False,
+        "notation_location": "appended_to_metric",
     }
+
+
+def build_default_adhoc_crosstab_config() -> dict:
+    """Return the default custom AdHoc Crosstab configuration."""
+    return {
+        "tables": [],
+    }
+
+
+def build_default_adhoc_crosstab_row() -> dict[str, str]:
+    """Return a blank AdHoc crosstab row."""
+    return {
+        "name": "",
+        "variable": "",
+        "banner": "",
+    }
+
+
+def build_stat_comparison_options(comparison_col: str | None = None) -> list[tuple[str, str]]:
+    """Return UI options for statistical comparison behavior."""
+    options = [("none", "None"), ("lowest_banner_level", "All lowest banner-level groups")]
+    if normalize_text(comparison_col):
+        options.insert(1, ("control_vs_test", "Control vs test within each banner"))
+    return options
+
+
+def build_stat_notation_options() -> list[tuple[str, str]]:
+    """Return UI options for significance notation placement."""
+    return [
+        ("appended_to_metric", "Appended to Metric"),
+        ("below_metric", "Below Metric"),
+    ]
+    
 
 
 def build_analysis_variable_catalog(
