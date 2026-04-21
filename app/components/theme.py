@@ -65,6 +65,18 @@ def apply_theme() -> None:
                 background: var(--vn-white);
             }
 
+            [data-testid="stSidebar"] .stButton > button *,
+            [data-testid="stSidebar"] .stDownloadButton > button * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+            }
+
+            [data-testid="stSidebar"] .stButton > button:hover *,
+            [data-testid="stSidebar"] .stDownloadButton > button:hover * {
+                color: var(--vn-white) !important;
+                fill: var(--vn-white) !important;
+            }
+
             [data-testid="stSidebar"] hr {
                 border-color: rgba(255, 255, 255, 0.14);
             }
