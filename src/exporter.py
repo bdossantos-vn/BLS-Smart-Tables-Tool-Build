@@ -74,13 +74,69 @@ def _write_version_stamp(worksheet, row: int, start_column: int, end_column: int
     stamp_cell.alignment = Alignment(horizontal="right", vertical="center")
 
 
-def _set_sheet_columns(worksheet, group_count: int) -> None:
+def _set_sheet_columns(worksheet, group_count: int, lift_count: int = 0) -> None:
     """Set practical column widths for a question-table worksheet."""
     worksheet.column_dimensions["A"].width = 42
     worksheet.column_dimensions["B"].width = 20
     total_data_columns = max(group_count, 1) * 2
     for column_index in range(3, 3 + total_data_columns):
         worksheet.column_dimensions[get_column_letter(column_index)].width = 14
+    lift_start = 3 + total_data_columns
+    for column_index in range(lift_start, lift_start + (lift_count * 2)):
+        worksheet.column_dimensions[get_column_letter(column_index)].width = 12
+
+
+def _build_banner_lift_pairs(sheet, visible_groups: list[dict]) -> tuple[list[dict], str]:
+    """Return binary lowest-level lift pairs for one banner sheet."""
+    if not sheet.levels:
+        return [], "Lift could not be performed since the comparison variable is not binary."
+
+    lowest_level = sheet.levels[-1]
+    non_total_groups = [group for group in visible_groups if group.get("label") != "Total"]
+    if not non_total_groups:
+        return [], "Lift could not be performed since the comparison variable is not binary."
+
+    parent_lookup: dict[tuple[str, ...], list[tuple[int, dict]]] = {}
+    for group_index, group in enumerate(visible_groups):
+        if group.get("label") == "Total":
+            continue
+        display_values = group.get("display_values", {}) or {}
+        parent_key = tuple(
+            normalize_text(display_values.get(level) or group.get("values", {}).get(level))
+            for level in sheet.levels[:-1]
+        )
+        parent_lookup.setdefault(parent_key, []).append((group_index, group))
+
+    lift_pairs: list[dict] = []
+    for parent_key, members in parent_lookup.items():
+        if len(members) != 2:
+            return [], "Lift could not be performed since the comparison variable is not binary."
+        (left_index, left_group), (right_index, right_group) = members
+        left_display = left_group.get("display_values", {}) or {}
+        right_display = right_group.get("display_values", {}) or {}
+        lowest_left = normalize_text(left_display.get(lowest_level) or left_group.get("values", {}).get(lowest_level))
+        lowest_right = normalize_text(right_display.get(lowest_level) or right_group.get("values", {}).get(lowest_level))
+        if not lowest_left or not lowest_right or lowest_left == lowest_right:
+            return [], "Lift could not be performed since the comparison variable is not binary."
+        parent_label = " | ".join(value for value in parent_key if value)
+        if not parent_label:
+            parent_label = f"{lowest_right} vs {lowest_left}"
+        lift_pairs.append(
+            {
+                "parent_label": parent_label,
+                "left_index": left_index,
+                "right_index": right_index,
+            }
+        )
+    return lift_pairs, ""
+
+
+def _format_lift_display(left_pct: float | None, right_pct: float | None) -> str:
+    """Format a lift value as signed point difference."""
+    if left_pct is None or right_pct is None:
+        return ""
+    lift_points = round((right_pct - left_pct) * 100)
+    return f"{lift_points:+d} pts"
 
 
 def _set_topline_columns(worksheet) -> None:
@@ -223,7 +279,12 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     worksheet.freeze_panes = "B11"
 
 
-def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
+def _write_banner_sheet(
+    workbook,
+    sheet,
+    include_n_count: bool = False,
+    include_lift: bool = False,
+) -> None:
     """Write one banner worksheet in an analyst-friendly table format.
 
     Inputs:
@@ -235,17 +296,32 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
         include_n_count: Whether response-level N rows should be included under
         each percent row.
     """
+    visible_groups = list(sheet.groups)
+    lift_pairs, lift_footnote = _build_banner_lift_pairs(sheet, visible_groups) if include_lift else ([], "")
+    lift_enabled = bool(include_lift and lift_pairs)
+
     worksheet = workbook.create_sheet(title=str(sheet.name)[:31] or "Sheet1")
-    _set_sheet_columns(worksheet, len(sheet.groups))
+    _set_sheet_columns(worksheet, len(sheet.groups), len(lift_pairs) if lift_enabled else 0)
 
     current_row = 1
-    visible_groups = list(sheet.groups)
     section_group_count = max(len(visible_groups), 1)
     left_data_start_column = 3
-    right_data_start_column = left_data_start_column + section_group_count
+    left_lift_start_column = left_data_start_column + section_group_count
+    right_data_start_column = left_lift_start_column + (len(lift_pairs) if lift_enabled else 0)
+    right_lift_start_column = right_data_start_column + section_group_count
     left_data_columns = [left_data_start_column + index for index in range(len(visible_groups))]
     right_data_columns = [right_data_start_column + index for index in range(len(visible_groups))]
-    max_end_column = right_data_start_column + section_group_count - 1
+    left_lift_columns = [
+        left_lift_start_column + index for index in range(len(lift_pairs))
+    ] if lift_enabled else []
+    right_lift_columns = [
+        right_lift_start_column + index for index in range(len(lift_pairs))
+    ] if lift_enabled else []
+    max_end_column = (
+        (right_lift_columns[-1] if right_lift_columns else right_data_columns[-1])
+        if right_data_columns
+        else (left_lift_columns[-1] if left_lift_columns else left_data_start_column)
+    )
 
     worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
     title_cell = worksheet.cell(row=current_row, column=1, value=sheet.banner_name)
@@ -282,12 +358,12 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
             start_row=section_header_row,
             start_column=left_data_start_column,
             end_row=section_header_row,
-            end_column=left_data_start_column + len(visible_groups) - 1,
+            end_column=(left_lift_columns[-1] if left_lift_columns else left_data_columns[-1]),
         )
         left_title_cell = worksheet.cell(
             row=section_header_row,
             column=left_data_start_column,
-            value="Total Sample % (Base: Total Sample)",
+            value="Total Sample % / Lift (Base: Total Sample)" if lift_enabled else "Total Sample % (Base: Total Sample)",
         )
         _apply_header_style(left_title_cell, VN_YELLOW, font_color=VN_BLACK)
 
@@ -295,12 +371,12 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
             start_row=section_header_row,
             start_column=right_data_start_column,
             end_row=section_header_row,
-            end_column=right_data_start_column + len(visible_groups) - 1,
+            end_column=(right_lift_columns[-1] if right_lift_columns else right_data_columns[-1]),
         )
         right_title_cell = worksheet.cell(
             row=section_header_row,
             column=right_data_start_column,
-            value="Total Answering % (Base: Total Answering)",
+            value="Total Answering % / Lift (Base: Total Answering)" if lift_enabled else "Total Answering % (Base: Total Answering)",
         )
         _apply_header_style(right_title_cell, VN_YELLOW, font_color=VN_BLACK)
     current_row += 1
@@ -389,6 +465,27 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
                 sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
                 _apply_body_style(sig_cell)
                 sig_cell.alignment = Alignment(horizontal="center", vertical="center")
+    if lift_enabled:
+        for column_index, pair in zip(left_lift_columns, lift_pairs):
+            worksheet.merge_cells(
+                start_row=current_row,
+                start_column=column_index,
+                end_row=sig_row,
+                end_column=column_index,
+            )
+            lift_header_cell = worksheet.cell(row=current_row, column=column_index, value=f"{pair['parent_label']} Lift")
+            _apply_body_style(lift_header_cell, bold=True, fill_color=VN_LIGHT_GRAY, wrap=True)
+            lift_header_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for column_index, pair in zip(right_lift_columns, lift_pairs):
+            worksheet.merge_cells(
+                start_row=current_row,
+                start_column=column_index,
+                end_row=sig_row,
+                end_column=column_index,
+            )
+            lift_header_cell = worksheet.cell(row=current_row, column=column_index, value=f"{pair['parent_label']} Lift")
+            _apply_body_style(lift_header_cell, bold=True, fill_color=VN_LIGHT_GRAY, wrap=True)
+            lift_header_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     current_row = sig_row + 3
 
     for table in sheet.tables:
@@ -422,6 +519,10 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
             cell = worksheet.cell(row=current_row, column=column_index, value=denominator)
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
+        for column_index in [*left_lift_columns, *right_lift_columns]:
+            cell = worksheet.cell(row=current_row, column=column_index, value="")
+            _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
         current_row += 2
 
         for total_row, answering_row in zip(total_base_section["rows"], answering_section["rows"]):
@@ -446,6 +547,23 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
                     percent_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
                     _apply_body_style(percent_cell, fill_color=label_fill)
                     percent_cell.alignment = Alignment(horizontal="center", vertical="center")
+            if lift_enabled:
+                for column_index, pair in zip(left_lift_columns, lift_pairs):
+                    display_value = _format_lift_display(
+                        total_row["percentages"][pair["left_index"]],
+                        total_row["percentages"][pair["right_index"]],
+                    )
+                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
+                    _apply_body_style(lift_cell, fill_color=label_fill)
+                    lift_cell.alignment = Alignment(horizontal="center", vertical="center")
+                for column_index, pair in zip(right_lift_columns, lift_pairs):
+                    display_value = _format_lift_display(
+                        answering_row["percentages"][pair["left_index"]],
+                        answering_row["percentages"][pair["right_index"]],
+                    )
+                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
+                    _apply_body_style(lift_cell, fill_color=label_fill)
+                    lift_cell.alignment = Alignment(horizontal="center", vertical="center")
             current_row += 1
 
             if include_n_count:
@@ -459,9 +577,24 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
                         count_cell = worksheet.cell(row=current_row, column=column_index, value=count)
                         _apply_body_style(count_cell, fill_color=label_fill)
                         count_cell.alignment = Alignment(horizontal="center", vertical="center")
+                for column_index in [*left_lift_columns, *right_lift_columns]:
+                    count_cell = worksheet.cell(row=current_row, column=column_index, value="")
+                    _apply_body_style(count_cell, fill_color=label_fill)
+                    count_cell.alignment = Alignment(horizontal="center", vertical="center")
                 current_row += 1
 
         current_row += 2
+
+    if include_lift and not lift_enabled and lift_footnote:
+        worksheet.merge_cells(
+            start_row=current_row,
+            start_column=2,
+            end_row=current_row,
+            end_column=max_end_column,
+        )
+        footnote_cell = worksheet.cell(row=current_row, column=2, value=lift_footnote)
+        _apply_body_style(footnote_cell, fill_color=VN_LIGHT_GRAY, wrap=True)
+        footnote_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
     worksheet.freeze_panes = "D7"
 
@@ -494,6 +627,7 @@ def export_workbook_to_excel_bytes(
             workbook,
             sheet,
             include_n_count=bool(workbook_package.get("include_n_count", False)),
+            include_lift=bool(workbook_package.get("include_lift", False)),
         )
 
     output = BytesIO()

@@ -1130,6 +1130,7 @@ def generate_workbook_package(
         "topline_sheet": ToplineSheet(rows=topline_rows),
         "confidence_intervals": confidence_intervals,
         "comparison_scope": comparison_scope,
+        "include_lift": bool(stat_config.get("include_lift", False)),
         "include_n_count": bool(stat_config.get("include_n_count", False)),
         "question_count": len(enabled_questions),
         "sheet_count": len(sheet_specs),
