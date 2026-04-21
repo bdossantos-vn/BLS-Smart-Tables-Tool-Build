@@ -32,6 +32,19 @@ def _build_custom_variable_choices(record: dict[str, object]) -> list[str]:
     return choices
 
 
+def _default_topline_choices(variable: str, question: dict[str, object]) -> list[str]:
+    """Return the default selected topline choices for one variable."""
+    available_choices = [
+        str(choice) for choice in question.get("answer_choices_list", []) if str(choice).strip()
+    ]
+    enabled_net_labels = [
+        str(label) for label in question.get("choice_expansion_map", {}).keys() if str(label).strip()
+    ]
+    if enabled_net_labels:
+        return enabled_net_labels
+    return available_choices
+
+
 def _build_topline_catalog() -> list[dict[str, object]]:
     """Build the list of topline-eligible rows from included columns and custom variables."""
     included_columns = list(st.session_state.get("included_columns", []))
@@ -51,11 +64,12 @@ def _build_topline_catalog() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for variable in included_columns:
         question = question_lookup.get(variable, {})
-        available_choices = [
+        available_choices = _default_topline_choices(variable, question)
+        all_display_choices = [
             str(choice) for choice in question.get("answer_choices_list", []) if str(choice).strip()
         ]
         selected_choices = response_selections.get(variable, available_choices)
-        valid_selected_choices = [choice for choice in selected_choices if choice in available_choices]
+        valid_selected_choices = [choice for choice in selected_choices if choice in all_display_choices]
         if not saved_variables:
             include_in_topline = True
         else:
@@ -64,10 +78,11 @@ def _build_topline_catalog() -> list[dict[str, object]]:
             {
                 "Column": variable,
                 "Question Text": question.get("question_label", variable),
-                "Response Choices Count": len(available_choices),
-                "Available Response Choices": serialize_answer_choices(available_choices),
+                "Response Choices Count": len(all_display_choices),
+                "Available Response Choices": serialize_answer_choices(all_display_choices),
                 "Include in Topline": include_in_topline,
-                "_default_choices": available_choices,
+                "_default_choices": all_display_choices,
+                "_preferred_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
                 "_note_base_section": note_base_sections.get(variable, "Total Answering"),
                 "_row_type": "question",
@@ -90,6 +105,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
                 "Available Response Choices": serialize_answer_choices(available_choices),
                 "Include in Topline": include_in_topline,
                 "_default_choices": available_choices,
+                "_preferred_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
                 "_note_base_section": note_base_sections.get(variable_name, "Total Answering"),
                 "_row_type": "custom_variable",
@@ -125,11 +141,7 @@ def _reset_topline_editor() -> None:
         st.session_state.get("scale_mappings", {}),
     )
     response_selections = {
-        variable: [
-            str(choice)
-            for choice in question_lookup.get(variable, {}).get("answer_choices_list", [])
-            if str(choice).strip()
-        ]
+        variable: _default_topline_choices(variable, question_lookup.get(variable, {}))
         for variable in included_columns
     }
     for record in st.session_state.get("custom_variables", []):
@@ -187,7 +199,7 @@ def render() -> None:
 
     editor_source_df = st.session_state.topline_editor.copy()
     editor_df = st.data_editor(
-        editor_source_df.drop(columns=["_default_choices", "_row_type"], errors="ignore"),
+        editor_source_df.drop(columns=["_default_choices", "_preferred_default_choices", "_row_type"], errors="ignore"),
         key="topline_columns_editor",
         use_container_width=True,
         hide_index=True,
@@ -239,7 +251,8 @@ def render() -> None:
             variable = str(row.get("Column", "")).strip()
             source_row = source_lookup.get(variable, {})
             default_choices = list(source_row.get("_default_choices", []))
-            saved_choices = list(source_row.get("_selected_choices", default_choices))
+            preferred_default_choices = list(source_row.get("_preferred_default_choices", default_choices))
+            saved_choices = list(source_row.get("_selected_choices", preferred_default_choices))
             valid_saved_choices = [choice for choice in saved_choices if choice in default_choices]
             choice_key = _topline_choice_key(variable)
             note_base_key = _topline_note_base_key(variable)
@@ -290,9 +303,15 @@ def render() -> None:
             for source_row, edited_row in zip(source_records, edited_records):
                 variable = str(edited_row.get("Column", "")).strip()
                 default_choices = list(source_row.get("_default_choices", []))
+                preferred_default_choices = list(source_row.get("_preferred_default_choices", default_choices))
                 choice_key = _topline_choice_key(variable)
                 note_base_key = _topline_note_base_key(variable)
-                selected_choices = list(st.session_state.get(choice_key, source_row.get("_selected_choices", default_choices)))
+                selected_choices = list(
+                    st.session_state.get(
+                        choice_key,
+                        source_row.get("_selected_choices", preferred_default_choices),
+                    )
+                )
                 parsed_choices = [choice for choice in selected_choices if choice in default_choices]
                 selected_note_base = str(
                     st.session_state.get(note_base_key, source_row.get("_note_base_section", "Total Answering"))
@@ -305,6 +324,7 @@ def render() -> None:
                         "Response Choices Count": len(default_choices),
                         "Available Response Choices": serialize_answer_choices(default_choices),
                         "Include in Topline": bool(edited_row.get("Include in Topline", False)),
+                        "_preferred_default_choices": preferred_default_choices,
                         "_selected_choices": parsed_choices,
                         "_note_base_section": selected_note_base,
                     }
@@ -314,7 +334,7 @@ def render() -> None:
                     updated_response_selections[variable] = parsed_choices
                     updated_note_base_sections[variable] = selected_note_base
 
-                previous_choices = list(previous_response_selections.get(variable, default_choices))
+                previous_choices = list(previous_response_selections.get(variable, preferred_default_choices))
                 if previous_choices != parsed_choices:
                     response_updates.append(
                         f"{variable}: {serialize_answer_choices(previous_choices)} -> "
