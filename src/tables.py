@@ -876,7 +876,7 @@ def _find_comparison_pair_indexes(
     if not normalized_comparison:
         return []
 
-    group_lookup: dict[tuple[tuple[str, str], ...], dict[str, tuple[int, str]]] = {}
+    group_lookup: dict[tuple[tuple[str, str], ...], dict[str, tuple[int, str, str]]] = {}
     for index, group in enumerate(groups):
         if group.get("label") == "Total":
             continue
@@ -900,7 +900,11 @@ def _find_comparison_pair_indexes(
         for key, value in values.items():
             subgroup_pairs.append((key, display_values.get(key) or value))
         subgroup_key = tuple(sorted(subgroup_pairs))
-        group_lookup.setdefault(subgroup_key, {})[comparison_value] = (index, comparison_display)
+        group_lookup.setdefault(subgroup_key, {})[comparison_value] = (
+            index,
+            comparison_display,
+            normalize_text(comparison_display).lower(),
+        )
 
     pairs: list[tuple[int, int, str, str, str]] = []
     for subgroup_key, indexed_values in group_lookup.items():
@@ -910,8 +914,32 @@ def _find_comparison_pair_indexes(
         subgroup_label = "Total"
         if subgroup_key:
             subgroup_label = " | ".join(value for _, value in subgroup_key)
-        left_index, left_label = indexed_values[ordered_values[0]]
-        right_index, right_label = indexed_values[ordered_values[1]]
+        control_key = next(
+            (
+                value
+                for value in ordered_values
+                if indexed_values[value][2] == "control"
+            ),
+            None,
+        )
+        if control_key and len(ordered_values) > 2:
+            left_index, left_label, _ = indexed_values[control_key]
+            for value in ordered_values:
+                if value == control_key:
+                    continue
+                right_index, right_label, _ = indexed_values[value]
+                pairs.append(
+                    (
+                        left_index,
+                        right_index,
+                        subgroup_label,
+                        left_label,
+                        right_label,
+                    )
+                )
+            continue
+        left_index, left_label, _ = indexed_values[ordered_values[0]]
+        right_index, right_label, _ = indexed_values[ordered_values[1]]
         pairs.append(
             (
                 left_index,
@@ -928,7 +956,7 @@ def _build_significance_direction(
     sig_letters: list[str],
     left_index: int,
     right_index: int,
-    has_total_column: bool = False,
+    active_comparison_indexes: list[int] | None = None,
 ) -> str:
     """Return which side is significantly higher for one comparison pair.
 
@@ -943,7 +971,20 @@ def _build_significance_direction(
     """
     right_sig = normalize_text(sig_letters[right_index]) if right_index < len(sig_letters) else ""
     left_sig = normalize_text(sig_letters[left_index]) if left_index < len(sig_letters) else ""
-    return "significant" if left_sig or right_sig else ""
+    active_comparison_indexes = active_comparison_indexes or list(range(len(sig_letters)))
+    pair_letters = alpha_letter_sequence(len(active_comparison_indexes))
+    index_to_letter = {
+        actual_index: pair_letters[position]
+        for position, actual_index in enumerate(active_comparison_indexes)
+        if position < len(pair_letters)
+    }
+    left_letter = index_to_letter.get(left_index, "")
+    right_letter = index_to_letter.get(right_index, "")
+    if right_letter and right_letter in left_sig:
+        return "left"
+    if left_letter and left_letter in right_sig:
+        return "right"
+    return ""
 
 
 def _build_topline_note(
@@ -1025,6 +1066,11 @@ def _build_banner_note_lookup(
             for row in note_source_section.get("rows", []):
                 row_notes: list[str] = []
                 row_directions: list[str] = []
+                active_comparison_indexes = [
+                    index
+                    for index, group in enumerate(table_groups)
+                    if group.get("label") != "Total"
+                ]
                 for left_index, right_index, subgroup_label, left_label, right_label in comparison_pairs:
                     left_pct = row["percentages"][left_index] or 0.0
                     right_pct = row["percentages"][right_index] or 0.0
@@ -1032,7 +1078,7 @@ def _build_banner_note_lookup(
                         row["sig_letters"],
                         left_index,
                         right_index,
-                        has_total_column=bool(table_groups and table_groups[0].get("label") == "Total"),
+                        active_comparison_indexes=active_comparison_indexes,
                     )
                     if significant_direction:
                         significant_direction = "right" if right_pct > left_pct else "left"
@@ -1105,6 +1151,11 @@ def _build_topline_rows(
     right_index = 1
     left_group_label = normalize_text(total_comparison_sheet.groups[left_index].get("label")) or "Group 1"
     right_group_label = normalize_text(total_comparison_sheet.groups[right_index].get("label")) or "Group 2"
+    active_topline_indexes = [
+        index
+        for index, group in enumerate(total_comparison_sheet.groups)
+        if group.get("label") != "Total"
+    ]
     for table in total_comparison_sheet.tables:
         normalized_variable = normalize_text(table.variable)
         if included_variables and normalized_variable not in included_variables:
@@ -1135,7 +1186,7 @@ def _build_topline_rows(
                 row["sig_letters"],
                 left_index,
                 right_index,
-                has_total_column=bool(total_comparison_sheet.groups and total_comparison_sheet.groups[0].get("label") == "Total"),
+                active_comparison_indexes=active_topline_indexes,
             )
             if significant_direction:
                 significant_direction = "right" if right_pct > left_pct else "left"
