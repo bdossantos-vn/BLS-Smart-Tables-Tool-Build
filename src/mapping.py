@@ -48,6 +48,49 @@ def build_default_scale_mapping(series: pd.Series, preferred_order: list[str] | 
     }
 
 
+def _reconcile_scale_mapping(
+    mapping: dict[str, Any],
+    canonical_values: list[str],
+) -> dict[str, Any]:
+    """Align one saved scale mapping to the canonical question choice order.
+
+    This keeps persisted mappings resilient when older app versions seeded a
+    bad order. If the saved rows contain the same set of answer choices as the
+    canonical question metadata, we normalize them back to canonical order
+    while respecting polarity.
+    """
+    normalized_canonical = [normalize_text(value) for value in canonical_values if normalize_text(value)]
+    if not normalized_canonical:
+        return mapping
+
+    saved_rows = sorted(mapping.get("rows", []), key=lambda item: int(item.get("bucket", 0)))
+    saved_values = [normalize_text(row.get("response_value")) for row in saved_rows if normalize_text(row.get("response_value"))]
+    if not saved_values:
+        return mapping
+
+    if set(saved_values) != set(normalized_canonical):
+        return mapping
+
+    polarity = normalize_text(mapping.get("polarity", "standard")) or "standard"
+    ordered_values = list(normalized_canonical)
+    if polarity == "flipped":
+        ordered_values = list(reversed(ordered_values))
+
+    rows = []
+    for index, value in enumerate(ordered_values, start=1):
+        rows.append(
+            {
+                "response_value": value,
+                "bucket": index,
+                "top_box_eligible": index in {1, len(ordered_values)},
+            }
+        )
+    return {
+        "rows": rows,
+        "polarity": polarity if polarity in {"standard", "flipped"} else "standard",
+    }
+
+
 def ensure_scale_mappings(
     scale_questions: list[dict[str, Any]],
     cleaned_df: pd.DataFrame,
@@ -57,10 +100,18 @@ def ensure_scale_mappings(
     mappings = dict(current_mappings)
     for question in scale_questions:
         variable = question["variable"]
-        if variable not in mappings and variable in cleaned_df.columns:
-            mappings[variable] = build_default_scale_mapping(
-                cleaned_df[variable],
-                preferred_order=question.get("answer_choices_list", []),
+        if variable not in cleaned_df.columns:
+            continue
+        canonical_mapping = build_default_scale_mapping(
+            cleaned_df[variable],
+            preferred_order=question.get("answer_choices_list", []),
+        )
+        if variable not in mappings:
+            mappings[variable] = canonical_mapping
+        else:
+            mappings[variable] = _reconcile_scale_mapping(
+                mappings[variable],
+                [row.get("response_value", "") for row in canonical_mapping.get("rows", [])],
             )
     return mappings
 
