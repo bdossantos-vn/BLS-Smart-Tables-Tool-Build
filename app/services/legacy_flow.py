@@ -735,7 +735,7 @@ def _apply_intake_result(result) -> None:
 
 def render_step_1() -> None:
     """Render the data intake page."""
-    st.header("1. Data Intake")
+    st.header("2. Data Intake")
     st.write(
         "Upload your Excel file to get started."
     )
@@ -1085,7 +1085,7 @@ def render_step_1() -> None:
 
 def render_step_3() -> None:
     """Render the question audit page."""
-    st.header("2. Survey Question Audit")
+    st.header("3. Survey Question Audit")
     cleaned_df = st.session_state.cleaned_df
     question_labels = st.session_state.question_labels
     cell_col = st.session_state.cell_col
@@ -1160,7 +1160,7 @@ def render_step_3() -> None:
 def render_step_4() -> None:
     """Render the scale mapping and polarity page."""
     scale_seed_version = 1
-    st.header("3. Scale Mapping & Polarity")
+    st.header("4. Scale Mapping & Polarity")
     cleaned_df = st.session_state.cleaned_df
     question_metadata = st.session_state.question_metadata
 
@@ -1258,7 +1258,7 @@ def render_step_4() -> None:
 
 def render_step_5_nets() -> None:
     """Render the net-definition setup page."""
-    st.header("4. Net Definitions")
+    st.header("5. Net Definitions")
     st.write("Choose which intra-question nets to create for each scale question.")
 
     cleaned_df = st.session_state.cleaned_df
@@ -1347,7 +1347,7 @@ def render_step_6() -> None:
         _load_custom_variable_into_builder(st.session_state.custom_var_edit_payload)
         st.session_state.custom_var_edit_payload = None
 
-    st.header("5. Custom Variable Builder")
+    st.header("6. Custom Variable Builder")
     st.write(
         "Build either a simple variable from one source question or a complex variable using "
         "multi question condition logic."
@@ -2161,7 +2161,7 @@ def render_step_9() -> None:
 
 def render_step_10() -> None:
     """Render the statistical setup scaffold."""
-    st.header("8. Statistical Setup")
+    st.header("10. Statistical Setup")
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 
@@ -2247,7 +2247,7 @@ def render_step_10() -> None:
 
 def render_step_11() -> None:
     """Render the table generator and export scaffold."""
-    st.header("10. Table Generator & Excel Export")
+    st.header("12. Table Generator & Excel Export")
     readiness = describe_generation_readiness(DEFAULT_STATE, st.session_state)
     for line in readiness:
         st.write(f"- {line}")
