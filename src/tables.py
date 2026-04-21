@@ -1104,18 +1104,16 @@ def _build_topline_rows(
         normalized_variable = normalize_text(table.variable)
         if included_variables and normalized_variable not in included_variables:
             continue
-        answering_section = next(
-            (section for section in table.sections if section.get("label") == "Total Answering"),
+        selected_note_base = note_base_section_map.get(normalized_variable) or "Total Answering"
+        metric_section_label = "Total Base" if selected_note_base == "Total Sample" else "Total Answering"
+        metric_section = next(
+            (section for section in table.sections if section.get("label") == metric_section_label),
             None,
         )
-        total_base_section = next(
-            (section for section in table.sections if section.get("label") == "Total Base"),
-            None,
-        )
-        if not answering_section or not total_base_section:
+        if not metric_section:
             continue
-        base_denominators = list(total_base_section.get("base_denominators", []))
-        for row in answering_section.get("rows", []):
+        base_denominators = list(metric_section.get("base_denominators", []))
+        for row in metric_section.get("rows", []):
             has_saved_selection = normalized_variable in response_selection_map
             allowed_responses = response_selection_map.get(normalized_variable, [])
             normalized_allowed = {normalize_text(value) for value in allowed_responses}
@@ -1158,7 +1156,7 @@ def _build_topline_rows(
                     "Lift": (right_pct - left_pct) if include_lift else None,
                     "Sig Test": significant_direction,
                     "Notes": note_text,
-                    "Note Base": note_base_section_map.get(normalized_variable) or "Total Answering",
+                    "Note Base": selected_note_base,
                 }
             )
     return rows
