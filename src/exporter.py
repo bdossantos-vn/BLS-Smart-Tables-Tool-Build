@@ -174,6 +174,9 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     current_row = 13
     for row in rows:
         row_label = row.get("Topline Label") or row.get("Variable") or row.get("Question", "")
+        response = row.get("Response", "")
+        if response:
+            row_label = f"{row_label} | {response}"
         label_cell = worksheet.cell(row=current_row, column=2, value=row_label)
         _apply_body_style(label_cell, wrap=True)
 
