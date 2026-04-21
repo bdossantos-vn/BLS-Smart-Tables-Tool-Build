@@ -322,6 +322,11 @@ def _sort_scale_choices(choices: list[str]) -> list[str]:
     return ordered
 
 
+def _contains_phrase(normalized: str, phrase: str) -> bool:
+    """Return whether a normalized choice contains a phrase on token boundaries."""
+    return re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", normalized) is not None
+
+
 def _scale_choice_score(choice: str) -> tuple[int, int] | None:
     """Score one scale label so obvious positive-to-negative families sort consistently.
 
@@ -334,51 +339,51 @@ def _scale_choice_score(choice: str) -> tuple[int, int] | None:
     """
     normalized = choice.lower().strip()
 
-    if "leads much more often" in normalized:
+    if _contains_phrase(normalized, "leads much more often"):
         return (0, 0)
-    if "leads somewhat more often" in normalized:
+    if _contains_phrase(normalized, "leads somewhat more often"):
         return (1, 0)
-    if "follows somewhat more often" in normalized:
+    if _contains_phrase(normalized, "follows somewhat more often"):
         return (3, 0)
-    if "follows much more often" in normalized or "follows more often" in normalized:
+    if _contains_phrase(normalized, "follows much more often") or _contains_phrase(normalized, "follows more often"):
         return (4, 0)
 
-    if "i am a dedicated harry potter fan" in normalized:
+    if _contains_phrase(normalized, "i am a dedicated harry potter fan"):
         return (0, 0)
-    if "feel nostalgic toward it" in normalized:
+    if _contains_phrase(normalized, "feel nostalgic toward it"):
         return (1, 0)
-    if "new to the series but interested" in normalized:
+    if _contains_phrase(normalized, "new to the series but interested"):
         return (2, 0)
-    if "not a fan" in normalized:
+    if _contains_phrase(normalized, "not a fan"):
         return (4, 0)
 
-    if "love it" in normalized:
+    if _contains_phrase(normalized, "love it"):
         return (0, 0)
-    if "like it" in normalized:
+    if _contains_phrase(normalized, "dislike it"):
+        return (3, 0)
+    if _contains_phrase(normalized, "hate it"):
+        return (4, 0)
+    if _contains_phrase(normalized, "like it"):
         return (1, 0)
-    if "neutral" in normalized or "about the same" in normalized or "neither agree nor disagree" in normalized:
+    if _contains_phrase(normalized, "neutral") or _contains_phrase(normalized, "about the same") or _contains_phrase(normalized, "neither agree nor disagree"):
         return (2, 0)
-    if "dislike it" in normalized:
+
+    if _contains_phrase(normalized, "much better"):
+        return (0, 0)
+    if _contains_phrase(normalized, "somewhat better"):
+        return (1, 0)
+    if _contains_phrase(normalized, "somewhat worse"):
         return (3, 0)
-    if "hate it" in normalized:
+    if _contains_phrase(normalized, "much worse"):
         return (4, 0)
 
-    if "much better" in normalized:
+    if _contains_phrase(normalized, "strongly agree"):
         return (0, 0)
-    if "somewhat better" in normalized:
+    if _contains_phrase(normalized, "somewhat agree"):
         return (1, 0)
-    if "somewhat worse" in normalized:
+    if _contains_phrase(normalized, "somewhat disagree"):
         return (3, 0)
-    if "much worse" in normalized:
-        return (4, 0)
-
-    if "strongly agree" in normalized:
-        return (0, 0)
-    if "somewhat agree" in normalized:
-        return (1, 0)
-    if "somewhat disagree" in normalized:
-        return (3, 0)
-    if "strongly disagree" in normalized:
+    if _contains_phrase(normalized, "strongly disagree"):
         return (4, 0)
 
     positive_weight = None
