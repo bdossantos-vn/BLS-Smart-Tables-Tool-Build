@@ -365,16 +365,16 @@ def _build_adhoc_multiselect_groups(
             {
                 "label": f"{selected_label} - Selected",
                 "mask": selected_mask,
-                "values": {variable: normalized_choice, "__selected__": "Selected"},
-                "display_values": {variable: selected_label, "__selected__": "Selected"},
+                "values": {variable: normalized_choice, "__selection_status__": "Selected"},
+                "display_values": {variable: selected_label, "__selection_status__": "Selected"},
             }
         )
         groups.append(
             {
                 "label": f"{selected_label} - Not Selected",
                 "mask": not_selected_mask,
-                "values": {variable: normalized_choice, "__selected__": "Not Selected"},
-                "display_values": {variable: selected_label, "__selected__": "Not Selected"},
+                "values": {variable: normalized_choice, "__selection_status__": "Not Selected"},
+                "display_values": {variable: selected_label, "__selection_status__": "Not Selected"},
             }
         )
     return groups
@@ -615,6 +615,7 @@ def _build_table_footnotes(
         ci_values = normalize_confidence_intervals(stat_config.get("confidence_intervals", [95]))
         ci_text = ", ".join(f"{value}%" for value in ci_values) if ci_values else "95%"
         footnotes.append(f"Stat testing: independent two-sample z-test at {ci_text}")
+        footnotes.append("Significance letters compare within each section only.")
     if applied_filters:
         footnotes.append(f"Filters applied: {', '.join(applied_filters)}")
     else:
@@ -1374,6 +1375,7 @@ def generate_workbook_package(
                     comparison_col,
                     comparison_group_labels,
                 )
+                column_levels = [column_variable, "__selection_status__"]
             else:
                 banner_row = {
                     "name": table_name,
@@ -1389,6 +1391,7 @@ def generate_workbook_package(
                     comparison_group_order,
                     comparison_group_labels,
                 )
+                column_levels = [column_variable]
             table = _build_question_table(
                 filtered_df,
                 question_row,
@@ -1401,7 +1404,7 @@ def generate_workbook_package(
                 comparison_group_labels,
             )
             table.banner_name = table_name
-            table.levels = [column_variable]
+            table.levels = column_levels
             table.groups = groups
             table.footnotes = _build_table_footnotes(
                 adhoc_stat_config,

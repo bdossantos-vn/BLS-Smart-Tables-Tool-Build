@@ -5,6 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from src.utils import normalize_text
@@ -79,11 +80,11 @@ def _set_sheet_columns(worksheet, group_count: int, lift_count: int = 0) -> None
     worksheet.column_dimensions["A"].width = 42
     worksheet.column_dimensions["B"].width = 20
     total_data_columns = max(group_count, 1) * 2
-    for column_index in range(3, 3 + total_data_columns):
+    total_sheet_columns = total_data_columns + (lift_count * 2) + 1
+    for column_index in range(3, 3 + total_sheet_columns):
         worksheet.column_dimensions[get_column_letter(column_index)].width = 14
-    lift_start = 3 + total_data_columns
-    for column_index in range(lift_start, lift_start + (lift_count * 2)):
-        worksheet.column_dimensions[get_column_letter(column_index)].width = 12
+    separator_column = 3 + group_count + lift_count
+    worksheet.column_dimensions[get_column_letter(separator_column)].width = 3
 
 
 def _build_banner_lift_pairs(sheet, visible_groups: list[dict]) -> tuple[list[dict], str]:
@@ -137,6 +138,26 @@ def _format_lift_display(left_pct: float | None, right_pct: float | None) -> str
         return ""
     lift_points = round((right_pct - left_pct) * 100)
     return f"{lift_points:+d} pts"
+
+
+def _format_level_label(level_name: str) -> str:
+    """Return a human-friendly banner-level label for export headers."""
+    normalized = normalize_text(level_name)
+    if normalized == "__selection_status__":
+        return "Selection Status"
+    return level_name
+
+
+def _paint_separator_column(worksheet, column_index: int, start_row: int, end_row: int) -> None:
+    """Fill a narrow black separator column between table sections."""
+    if end_row < start_row:
+        return
+    for row_index in range(start_row, end_row + 1):
+        cell = worksheet.cell(row=row_index, column=column_index)
+        if isinstance(cell, MergedCell):
+            continue
+        cell.fill = PatternFill("solid", fgColor=_excel_rgb(VN_BLACK))
+        cell.border = Border()
 
 
 def _set_topline_columns(worksheet) -> None:
@@ -298,7 +319,7 @@ def _write_banner_sheet(
     _set_sheet_columns(worksheet, max_group_count, max_lift_count)
 
     current_row = 1
-    max_end_column = 2 + (max_group_count * 2) + (max_lift_count * 2)
+    max_end_column = 3 + (max_group_count * 2) + (max_lift_count * 2)
     worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_end_column)
     title_cell = worksheet.cell(row=current_row, column=1, value=sheet.banner_name)
     _apply_header_style(title_cell, VN_BLACK)
@@ -329,7 +350,8 @@ def _write_banner_sheet(
         section_group_count = max(len(active_groups), 1)
         left_data_start_column = 3
         left_lift_start_column = left_data_start_column + section_group_count
-        right_data_start_column = left_lift_start_column + (len(lift_pairs) if lift_enabled else 0)
+        separator_column = left_lift_start_column + (len(lift_pairs) if lift_enabled else 0)
+        right_data_start_column = separator_column + 1
         right_lift_start_column = right_data_start_column + section_group_count
         left_data_columns = [left_data_start_column + index for index in range(len(active_groups))]
         right_data_columns = [right_data_start_column + index for index in range(len(active_groups))]
@@ -340,7 +362,7 @@ def _write_banner_sheet(
             (right_data_columns[-1] if right_data_columns else 3)
         )
 
-        banner_descriptor = " > ".join(active_levels) if active_levels else active_banner_name or "All Tables"
+        banner_descriptor = " > ".join(_format_level_label(level) for level in active_levels) if active_levels else active_banner_name or "All Tables"
         if active_groups:
             worksheet.merge_cells(start_row=current_row, start_column=3, end_row=current_row, end_column=table_end_column)
             descriptor_cell = worksheet.cell(row=current_row, column=3, value=banner_descriptor)
@@ -488,8 +510,14 @@ def _write_banner_sheet(
             cell = worksheet.cell(row=current_row, column=column_index, value=denominator)
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
-        for column_index in [*left_lift_columns, *right_lift_columns]:
-            cell = worksheet.cell(row=current_row, column=column_index, value="")
+        for column_index, pair in zip(left_lift_columns, lift_pairs):
+            lift_base_value = f"{total_base_section['base_denominators'][pair['left_index']]}/{total_base_section['base_denominators'][pair['right_index']]}"
+            cell = worksheet.cell(row=current_row, column=column_index, value=lift_base_value)
+            _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        for column_index, pair in zip(right_lift_columns, lift_pairs):
+            lift_base_value = f"{answering_section['base_denominators'][pair['left_index']]}/{answering_section['base_denominators'][pair['right_index']]}"
+            cell = worksheet.cell(row=current_row, column=column_index, value=lift_base_value)
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
         current_row += 2
@@ -553,6 +581,7 @@ def _write_banner_sheet(
                 _apply_body_style(footnote_cell, fill_color=VN_LIGHT_GRAY, wrap=True)
                 footnote_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
                 current_row += 1
+        _paint_separator_column(worksheet, separator_column, section_header_row, current_row - 1)
         return current_row + 2
 
     previous_banner_name = None
