@@ -746,23 +746,19 @@ def _build_topline_note(
     subgroup_suffix = ""
     if subgroup_label and subgroup_label != "Total":
         subgroup_suffix = f" {subgroup_label}"
-    higher_value = right_pct if significant_direction == "right" else left_pct
     lift_points = round((right_pct - left_pct) * 100)
-    direction_text = "higher"
-    if significant_direction == "right":
-        return (
-            f"{right_label}{subgroup_suffix} sig {direction_text} than {left_label}{subgroup_suffix} "
-            f"({higher_value:.0%}, {lift_points:+d} pts lift)"
-        )
     return (
-        f"{left_label}{subgroup_suffix} sig {direction_text} than {right_label}{subgroup_suffix} "
-        f"({higher_value:.0%}, {abs(lift_points):+d} pts lift)"
+        f"{right_label}{subgroup_suffix} sig "
+        f"{'higher' if significant_direction == 'right' else 'lower'} than "
+        f"{left_label}{subgroup_suffix} "
+        f"({right_pct:.0%}, {lift_points:+d} pts lift)"
     )
 
 
 def _build_banner_note_lookup(
     sheets: list[WorkbookSheet],
     comparison_col: str | None,
+    note_base_section_map: dict[str, str] | None = None,
 ) -> dict[tuple[str, str], list[str]]:
     """Collect banner-level significance notes for each question response.
 
@@ -775,6 +771,7 @@ def _build_banner_note_lookup(
         subgroup-level topline notes found across banner sheets.
     """
     note_lookup: dict[tuple[str, str], list[str]] = {}
+    note_base_section_map = note_base_section_map or {}
     for sheet in sheets:
         if not sheet.levels:
             continue
@@ -782,13 +779,17 @@ def _build_banner_note_lookup(
         if not comparison_pairs:
             continue
         for table in sheet.tables:
-            answering_section = next(
-                (section for section in table.sections if section.get("label") == "Total Answering"),
+            normalized_variable = normalize_text(table.variable)
+            section_label = note_base_section_map.get(normalized_variable, "Total Answering")
+            if section_label == "Total Sample":
+                section_label = "Total Base"
+            note_source_section = next(
+                (section for section in table.sections if section.get("label") == section_label),
                 None,
             )
-            if not answering_section:
+            if not note_source_section:
                 continue
-            for row in answering_section.get("rows", []):
+            for row in note_source_section.get("rows", []):
                 row_notes: list[str] = []
                 row_directions: list[str] = []
                 for left_index, right_index, subgroup_label, left_label, right_label in comparison_pairs:
@@ -836,6 +837,7 @@ def _build_topline_rows(
     include_significance_notes: bool,
     included_variables: set[str] | None = None,
     response_selection_map: dict[str, list[str]] | None = None,
+    note_base_section_map: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Flatten banner comparisons into one topline sheet.
 
@@ -859,7 +861,8 @@ def _build_topline_rows(
 
     included_variables = included_variables or set()
     response_selection_map = response_selection_map or {}
-    note_lookup = _build_banner_note_lookup(banner_sheets, comparison_col)
+    note_base_section_map = note_base_section_map or {}
+    note_lookup = _build_banner_note_lookup(banner_sheets, comparison_col, note_base_section_map)
     if len(total_comparison_sheet.groups) < 2:
         return rows
     left_index = 0
@@ -923,6 +926,7 @@ def _build_topline_rows(
                     "Lift": (right_pct - left_pct) if include_lift else None,
                     "Sig Test": significant_direction,
                     "Notes": note_text,
+                    "Note Base": note_base_section_map.get(normalized_variable, "Total Answering"),
                 }
             )
     return rows
@@ -1083,6 +1087,15 @@ def generate_workbook_package(
         for variable, choices in topline_config.get("response_selections", {}).items()
         if normalize_text(variable)
     }
+    note_base_section_map = {
+        normalize_text(variable): (
+            "Total Sample"
+            if str(section).strip() == "Total Sample"
+            else "Total Answering"
+        )
+        for variable, section in topline_config.get("note_base_sections", {}).items()
+        if normalize_text(variable)
+    }
     topline_question_sheets = [
         WorkbookSheet(
             name=sheet.name,
@@ -1108,6 +1121,7 @@ def generate_workbook_package(
         and effective_topline_lift,
         included_variables=topline_variables,
         response_selection_map=response_selection_map,
+        note_base_section_map=note_base_section_map,
     )
 
     return {

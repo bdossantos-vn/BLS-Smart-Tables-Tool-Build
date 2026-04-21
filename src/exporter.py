@@ -17,6 +17,9 @@ VN_ORANGE = "FFFF6927"
 VN_YELLOW = "FFFFC227"
 VN_LIGHT_GRAY = "FFF4F5F8"
 VN_BORDER_GRAY = "FFD9D9D9"
+VN_GREEN = "FF1F8F4E"
+VN_LIGHT_GREEN = "FFE6F4EA"
+VN_LIGHT_RED = "FFFDE8EC"
 EXPORT_LAYOUT_VERSION = "Layout v2026.04.20.4"
 
 
@@ -43,6 +46,16 @@ def _apply_body_style(cell, bold: bool = False, fill_color: str | None = None, w
     cell.alignment = Alignment(vertical="top", wrap_text=wrap)
     thin = Side(style="thin", color=_excel_rgb(VN_BORDER_GRAY))
     cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+
+def _apply_topline_delta_style(lift_cell, significant_direction: str) -> None:
+    """Highlight topline test results to make wins/losses easy to scan."""
+    if significant_direction == "right":
+        lift_cell.fill = PatternFill("solid", fgColor=_excel_rgb(VN_LIGHT_GREEN))
+        lift_cell.font = Font(color=_excel_rgb(VN_GREEN), bold=True, name="Proxima Nova")
+    elif significant_direction == "left":
+        lift_cell.fill = PatternFill("solid", fgColor=_excel_rgb(VN_LIGHT_RED))
+        lift_cell.font = Font(color=_excel_rgb(VN_RED), bold=True, name="Proxima Nova")
 
 
 def _write_version_stamp(worksheet, row: int, start_column: int, end_column: int) -> None:
@@ -80,7 +93,7 @@ def _set_topline_columns(worksheet) -> None:
         "E": 12,
         "F": 6,
         "G": 56,
-        "H": 8,
+        "H": 18,
         "I": 8,
     }
     for column_letter, width in widths.items():
@@ -130,6 +143,7 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         (11, 5): "Lift",
         (12, 2): "Base Size",
         (12, 7): "NOTES",
+        (12, 8): "Note Base",
     }
     for (row_index, column_index), value in header_values.items():
         cell = worksheet.cell(row=row_index, column=column_index, value=value)
@@ -190,8 +204,16 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         if lift_value is not None:
             lift_cell.number_format = "0%"
 
+        _apply_topline_delta_style(
+            lift_cell,
+            str(row.get("Sig Test", "") or ""),
+        )
+
         notes_cell = worksheet.cell(row=current_row, column=7, value=row.get("Notes", ""))
         _apply_body_style(notes_cell, wrap=True)
+        note_base_cell = worksheet.cell(row=current_row, column=8, value=row.get("Note Base", ""))
+        _apply_body_style(note_base_cell, fill_color=VN_LIGHT_GRAY)
+        note_base_cell.alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
         current_row += 1
 
     worksheet.freeze_panes = "B11"

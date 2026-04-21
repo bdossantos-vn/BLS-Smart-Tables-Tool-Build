@@ -39,6 +39,9 @@ def _build_topline_catalog() -> list[dict[str, object]]:
     response_selections = deepcopy(
         st.session_state.get("topline_config", {}).get("response_selections", {})
     )
+    note_base_sections = deepcopy(
+        st.session_state.get("topline_config", {}).get("note_base_sections", {})
+    )
     question_lookup = build_question_lookup(
         st.session_state.get("question_metadata", []),
         st.session_state.get("net_definitions", {}),
@@ -66,6 +69,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
                 "Include in Topline": include_in_topline,
                 "_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
+                "_note_base_section": note_base_sections.get(variable, "Total Answering"),
                 "_row_type": "question",
             }
         )
@@ -87,6 +91,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
                 "Include in Topline": include_in_topline,
                 "_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
+                "_note_base_section": note_base_sections.get(variable_name, "Total Answering"),
                 "_row_type": "custom_variable",
             }
         )
@@ -135,6 +140,10 @@ def _reset_topline_editor() -> None:
     current_config = deepcopy(st.session_state.get("topline_config", {}))
     current_config["variables"] = included_columns
     current_config["response_selections"] = response_selections
+    current_config["note_base_sections"] = {
+        variable: "Total Answering"
+        for variable in response_selections
+    }
     st.session_state.topline_config = current_config
     st.session_state.topline_editor = _build_topline_editor_frame()
 
@@ -143,6 +152,21 @@ def _topline_choice_key(variable: str) -> str:
     """Build a safe session-state key for one topline response chooser."""
     slug = re.sub(r"[^A-Za-z0-9_]+", "_", variable).strip("_") or "variable"
     return f"topline_choice_selector_{slug}"
+
+
+def _topline_note_base_key(variable: str) -> str:
+    """Build a safe session-state key for one topline note-base selector."""
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", variable).strip("_") or "variable"
+    return f"topline_note_base_selector_{slug}"
+
+
+def _set_all_selected_note_bases(rows: list[dict[str, object]], note_base: str) -> None:
+    """Apply one note-base choice to every currently included topline row."""
+    for row in rows:
+        variable = str(row.get("Column", "")).strip()
+        if not variable:
+            continue
+        st.session_state[_topline_note_base_key(variable)] = note_base
 
 
 def render() -> None:
@@ -196,7 +220,21 @@ def render() -> None:
 
     if selected_editor_rows:
         st.subheader("Topline Response Selection")
-        st.caption("Choose the exact response options, nets, or custom-variable buckets to show in the topline.")
+        st.caption(
+            "Choose the exact response options, nets, or custom-variable buckets to show in the topline, "
+            "and which banner-comparison base the notes should use."
+        )
+        bulk_left, bulk_right = st.columns(2)
+        with bulk_left:
+            if st.button("Set All Banner Sig Comparisons to Total Answering", use_container_width=True):
+                _set_all_selected_note_bases(selected_editor_rows, "Total Answering")
+                st.success("All selected Banner Sig Comparisons set to Total Answering.")
+                st.rerun()
+        with bulk_right:
+            if st.button("Set All Banner Sig Comparisons to Total Sample", use_container_width=True):
+                _set_all_selected_note_bases(selected_editor_rows, "Total Sample")
+                st.success("All selected Banner Sig Comparisons set to Total Sample.")
+                st.rerun()
         for row in selected_editor_rows:
             variable = str(row.get("Column", "")).strip()
             source_row = source_lookup.get(variable, {})
@@ -204,12 +242,16 @@ def render() -> None:
             saved_choices = list(source_row.get("_selected_choices", default_choices))
             valid_saved_choices = [choice for choice in saved_choices if choice in default_choices]
             choice_key = _topline_choice_key(variable)
+            note_base_key = _topline_note_base_key(variable)
+            saved_note_base = str(source_row.get("_note_base_section", "Total Answering")).strip() or "Total Answering"
             if (
                 choice_key not in st.session_state
                 or not isinstance(st.session_state.get(choice_key), list)
                 or any(choice not in default_choices for choice in st.session_state.get(choice_key, []))
             ):
                 st.session_state[choice_key] = valid_saved_choices
+            if st.session_state.get(note_base_key) not in {"Total Sample", "Total Answering"}:
+                st.session_state[note_base_key] = saved_note_base
 
             with st.expander(f"{variable} Response Choices", expanded=False):
                 st.multiselect(
@@ -217,6 +259,12 @@ def render() -> None:
                     options=default_choices,
                     key=choice_key,
                     help="Only the selected response choices will appear in the topline export.",
+                )
+                st.selectbox(
+                    "Banner Sig Comparisons",
+                    options=["Total Answering", "Total Sample"],
+                    key=note_base_key,
+                    help="Choose which banner-table base should drive the subgroup significance comparisons.",
                 )
     else:
         st.caption("Check one or more rows above to choose topline response options.")
@@ -227,10 +275,13 @@ def render() -> None:
             previous_config = deepcopy(st.session_state.get("topline_config", {}))
             previous_variables = list(previous_config.get("variables", []))
             previous_response_selections = deepcopy(previous_config.get("response_selections", {}))
+            previous_note_base_sections = deepcopy(previous_config.get("note_base_sections", {}))
 
             selected_variables: list[str] = []
             updated_response_selections: dict[str, list[str]] = {}
+            updated_note_base_sections: dict[str, str] = {}
             response_updates: list[str] = []
+            note_base_updates: list[str] = []
 
             updated_rows: list[dict[str, object]] = []
             source_records = editor_source_df.to_dict(orient="records")
@@ -240,8 +291,14 @@ def render() -> None:
                 variable = str(edited_row.get("Column", "")).strip()
                 default_choices = list(source_row.get("_default_choices", []))
                 choice_key = _topline_choice_key(variable)
+                note_base_key = _topline_note_base_key(variable)
                 selected_choices = list(st.session_state.get(choice_key, source_row.get("_selected_choices", default_choices)))
                 parsed_choices = [choice for choice in selected_choices if choice in default_choices]
+                selected_note_base = str(
+                    st.session_state.get(note_base_key, source_row.get("_note_base_section", "Total Answering"))
+                ).strip() or "Total Answering"
+                if selected_note_base not in {"Total Sample", "Total Answering"}:
+                    selected_note_base = "Total Answering"
                 updated_rows.append(
                     {
                         **source_row,
@@ -249,11 +306,13 @@ def render() -> None:
                         "Available Response Choices": serialize_answer_choices(default_choices),
                         "Include in Topline": bool(edited_row.get("Include in Topline", False)),
                         "_selected_choices": parsed_choices,
+                        "_note_base_section": selected_note_base,
                     }
                 )
                 if bool(edited_row.get("Include in Topline", False)):
                     selected_variables.append(variable)
                     updated_response_selections[variable] = parsed_choices
+                    updated_note_base_sections[variable] = selected_note_base
 
                 previous_choices = list(previous_response_selections.get(variable, default_choices))
                 if previous_choices != parsed_choices:
@@ -261,10 +320,14 @@ def render() -> None:
                         f"{variable}: {serialize_answer_choices(previous_choices)} -> "
                         f"{serialize_answer_choices(parsed_choices)}"
                     )
+                previous_note_base = str(previous_note_base_sections.get(variable, "Total Answering")).strip() or "Total Answering"
+                if previous_note_base != selected_note_base:
+                    note_base_updates.append(f"{variable}: {previous_note_base} -> {selected_note_base}")
 
             updated_config = deepcopy(previous_config)
             updated_config["variables"] = selected_variables
             updated_config["response_selections"] = updated_response_selections
+            updated_config["note_base_sections"] = updated_note_base_sections
             st.session_state.topline_config = updated_config
             st.session_state.topline_editor = pd.DataFrame(updated_rows)
 
@@ -278,7 +341,11 @@ def render() -> None:
                 _append_topline_change(
                     f"Updated topline response selections for: {'; '.join(response_updates)}"
                 )
-            if not added and not removed and not response_updates:
+            if note_base_updates:
+                _append_topline_change(
+                    f"Updated banner comparison note bases for: {'; '.join(note_base_updates)}"
+                )
+            if not added and not removed and not response_updates and not note_base_updates:
                 _append_topline_change("Topline rows saved with no content changes.")
             st.success("Topline columns updated.")
             st.rerun()

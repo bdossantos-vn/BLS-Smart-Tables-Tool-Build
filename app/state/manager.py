@@ -21,6 +21,7 @@ EXTRA_DEFAULTS: dict[str, Any] = {
     "topline_config": {
         "variables": [],
         "response_selections": {},
+        "note_base_sections": {},
         "include_lift": False,
         "include_significance_notes": True,
     },
