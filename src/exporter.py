@@ -17,6 +17,7 @@ VN_ORANGE = "FFFF6927"
 VN_YELLOW = "FFFFC227"
 VN_LIGHT_GRAY = "FFF4F5F8"
 VN_BORDER_GRAY = "FFD9D9D9"
+EXPORT_LAYOUT_VERSION = "Layout v2026.04.20.4"
 
 
 def _excel_rgb(color: str) -> str:
@@ -42,6 +43,22 @@ def _apply_body_style(cell, bold: bool = False, fill_color: str | None = None, w
     cell.alignment = Alignment(vertical="top", wrap_text=wrap)
     thin = Side(style="thin", color=_excel_rgb(VN_BORDER_GRAY))
     cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+
+def _write_version_stamp(worksheet, row: int, start_column: int, end_column: int) -> None:
+    """Write a visible exporter layout version stamp."""
+    if end_column <= start_column:
+        stamp_cell = worksheet.cell(row=row, column=start_column, value=EXPORT_LAYOUT_VERSION)
+    else:
+        worksheet.merge_cells(
+            start_row=row,
+            start_column=start_column,
+            end_row=row,
+            end_column=end_column,
+        )
+        stamp_cell = worksheet.cell(row=row, column=start_column, value=EXPORT_LAYOUT_VERSION)
+    _apply_body_style(stamp_cell, bold=True, fill_color=VN_LIGHT_GRAY)
+    stamp_cell.alignment = Alignment(horizontal="right", vertical="center")
 
 
 def _set_sheet_columns(worksheet, group_count: int) -> None:
@@ -88,6 +105,7 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     title_cell = worksheet.cell(row=current_row, column=1, value="Viral Nation | Topline")
     _apply_header_style(title_cell, VN_BLACK)
     current_row = 2
+    _write_version_stamp(worksheet, row=current_row, start_column=7, end_column=9)
     worksheet.cell(row=current_row, column=2, value="Observations:")
     _apply_body_style(worksheet.cell(row=current_row, column=2), bold=True)
     current_row = 9
@@ -208,6 +226,12 @@ def _write_banner_sheet(workbook, sheet, include_n_count: bool = False) -> None:
     _apply_header_style(title_cell, VN_BLACK)
     current_row += 1
 
+    _write_version_stamp(
+        worksheet,
+        row=current_row,
+        start_column=max(3, max_end_column - 2),
+        end_column=max_end_column,
+    )
     worksheet.cell(row=current_row, column=1, value="filtered by")
     _apply_body_style(worksheet.cell(row=current_row, column=1))
     current_row += 1
