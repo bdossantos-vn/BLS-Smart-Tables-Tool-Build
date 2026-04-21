@@ -647,7 +647,7 @@ def _find_comparison_pair_indexes(
     if not normalized_comparison:
         return []
 
-    group_lookup: dict[tuple[tuple[str, str], ...], dict[str, int]] = {}
+    group_lookup: dict[tuple[tuple[str, str], ...], dict[str, tuple[int, str]]] = {}
     for index, group in enumerate(groups):
         if group.get("label") == "Total":
             continue
@@ -656,11 +656,22 @@ def _find_comparison_pair_indexes(
             for key, value in group.get("values", {}).items()
             if normalize_text(key)
         }
+        display_values = {
+            normalize_text(key): normalize_text(value)
+            for key, value in group.get("display_values", {}).items()
+            if normalize_text(key)
+        }
         if normalized_comparison not in values:
             continue
         comparison_value = normalize_text(values.pop(normalized_comparison)).lower()
-        subgroup_key = tuple(sorted(values.items()))
-        group_lookup.setdefault(subgroup_key, {})[comparison_value] = index
+        comparison_display = display_values.get(normalized_comparison) or normalize_text(
+            group.get("label", "")
+        )
+        subgroup_pairs = []
+        for key, value in values.items():
+            subgroup_pairs.append((key, display_values.get(key) or value))
+        subgroup_key = tuple(sorted(subgroup_pairs))
+        group_lookup.setdefault(subgroup_key, {})[comparison_value] = (index, comparison_display)
 
     pairs: list[tuple[int, int, str, str, str]] = []
     for subgroup_key, indexed_values in group_lookup.items():
@@ -670,12 +681,12 @@ def _find_comparison_pair_indexes(
         subgroup_label = "Total"
         if subgroup_key:
             subgroup_label = " | ".join(value for _, value in subgroup_key)
-        left_label = ordered_values[0]
-        right_label = ordered_values[1]
+        left_index, left_label = indexed_values[ordered_values[0]]
+        right_index, right_label = indexed_values[ordered_values[1]]
         pairs.append(
             (
-                indexed_values[left_label],
-                indexed_values[right_label],
+                left_index,
+                right_index,
                 subgroup_label,
                 left_label,
                 right_label,
@@ -856,7 +867,8 @@ def _build_topline_rows(
     left_group_label = normalize_text(total_comparison_sheet.groups[left_index].get("label")) or "Group 1"
     right_group_label = normalize_text(total_comparison_sheet.groups[right_index].get("label")) or "Group 2"
     for table in total_comparison_sheet.tables:
-        if included_variables and normalize_text(table.variable) not in included_variables:
+        normalized_variable = normalize_text(table.variable)
+        if included_variables and normalized_variable not in included_variables:
             continue
         answering_section = next(
             (section for section in table.sections if section.get("label") == "Total Answering"),
@@ -870,8 +882,8 @@ def _build_topline_rows(
             continue
         base_denominators = list(total_base_section.get("base_denominators", []))
         for row in answering_section.get("rows", []):
-            has_saved_selection = table.variable in response_selection_map
-            allowed_responses = response_selection_map.get(table.variable, [])
+            has_saved_selection = normalized_variable in response_selection_map
+            allowed_responses = response_selection_map.get(normalized_variable, [])
             normalized_allowed = {normalize_text(value) for value in allowed_responses}
             if has_saved_selection and not (
                 normalize_text(row["label"]) in normalized_allowed

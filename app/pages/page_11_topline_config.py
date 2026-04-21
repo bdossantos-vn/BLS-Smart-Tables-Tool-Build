@@ -255,8 +255,12 @@ def render() -> None:
                     selected_variables.append(variable)
                     updated_response_selections[variable] = parsed_choices
 
-                if previous_response_selections.get(variable, default_choices) != parsed_choices:
-                    response_updates.append(variable)
+                previous_choices = list(previous_response_selections.get(variable, default_choices))
+                if previous_choices != parsed_choices:
+                    response_updates.append(
+                        f"{variable}: {serialize_answer_choices(previous_choices)} -> "
+                        f"{serialize_answer_choices(parsed_choices)}"
+                    )
 
             updated_config = deepcopy(previous_config)
             updated_config["variables"] = selected_variables
@@ -272,7 +276,7 @@ def render() -> None:
                 _append_topline_change(f"Removed topline rows: {', '.join(removed)}")
             if response_updates:
                 _append_topline_change(
-                    f"Updated topline response selections for: {', '.join(sorted(set(response_updates)))}"
+                    f"Updated topline response selections for: {'; '.join(response_updates)}"
                 )
             if not added and not removed and not response_updates:
                 _append_topline_change("Topline rows saved with no content changes.")
