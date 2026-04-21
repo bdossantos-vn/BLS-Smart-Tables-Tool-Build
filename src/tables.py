@@ -325,6 +325,28 @@ def _build_custom_variable_question_row(
     return None
 
 
+def _apply_selected_response_filter(
+    question_row: dict[str, Any],
+    selected_responses: list[str],
+) -> dict[str, Any]:
+    """Return a question row limited to a chosen response subset when available."""
+    allowed = {normalize_text(value) for value in selected_responses if normalize_text(value)}
+    if not allowed:
+        return question_row
+
+    filtered_choices = [
+        choice
+        for choice in question_row.get("answer_choices_list", [])
+        if normalize_text(choice) in allowed
+    ]
+    if not filtered_choices:
+        return question_row
+
+    updated_question_row = dict(question_row)
+    updated_question_row["answer_choices_list"] = filtered_choices
+    return updated_question_row
+
+
 def _build_adhoc_multiselect_groups(
     df: pd.DataFrame,
     variable: str,
@@ -1173,6 +1195,16 @@ def generate_workbook_package(
     analysis_df = _materialize_custom_variables(cleaned_df, custom_variables, question_lookup)
     global_filters = global_filters or {"rows": []}
     weighting_config = weighting_config or {"weights": []}
+    topline_config = topline_config or {}
+    adhoc_response_selection_map = {
+        normalize_text(variable): [
+            normalize_text(choice)
+            for choice in choices
+            if normalize_text(choice)
+        ]
+        for variable, choices in topline_config.get("response_selections", {}).items()
+        if normalize_text(variable)
+    }
 
     enabled_questions = [
         row
@@ -1347,6 +1379,10 @@ def generate_workbook_package(
             )
             if not row_variable or not column_variable or not question_row or column_variable not in analysis_df.columns:
                 continue
+            question_row = _apply_selected_response_filter(
+                question_row,
+                adhoc_response_selection_map.get(row_variable, []),
+            )
             filtered_df, applied_filters = _apply_targeted_filters(
                 analysis_df,
                 global_filters,
@@ -1413,7 +1449,6 @@ def generate_workbook_package(
                 )
             )
 
-    topline_config = topline_config or {}
     topline_variables = {
         normalize_text(value)
         for value in topline_config.get("variables", [])
