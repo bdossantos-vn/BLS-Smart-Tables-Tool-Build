@@ -68,7 +68,11 @@ def describe_generation_readiness(default_state: dict, current_state: dict) -> l
         messages.append("Question metadata is available.")
     banner_count = len(current_state.get("banner_config", {}).get("banners", []))
     if banner_count:
-        messages.append(f"{banner_count} banner sheet(s) are configured.")
+        export_style = normalize_text(current_state.get("banner_config", {}).get("export_style")) or "one_per_sheet"
+        if export_style == "single_sheet":
+            messages.append(f"{banner_count} banner table(s) are configured to export on 1 combined banner sheet.")
+        else:
+            messages.append(f"{banner_count} banner sheet(s) are configured.")
     else:
         messages.append("No banners configured. Export will use a single `All Tables` sheet.")
     adhoc_count = len(current_state.get("adhoc_crosstabs_config", {}).get("tables", []))
@@ -319,6 +323,61 @@ def _build_custom_variable_question_row(
             "answer_choices_list": answer_choices,
         }
     return None
+
+
+def _build_adhoc_multiselect_question_row(
+    question_row: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a question row that expands multi-select choices into binary rows."""
+    return {
+        **question_row,
+        "adhoc_multiselect_binary": True,
+    }
+
+
+def _build_adhoc_multiselect_groups(
+    df: pd.DataFrame,
+    variable: str,
+    include_total: bool,
+    question_lookup: dict[str, dict[str, Any]],
+    comparison_col: str | None,
+    comparison_group_labels: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Build selected/not-selected column groups for AdHoc multi-select crosstabs."""
+    groups: list[dict[str, Any]] = []
+    if include_total:
+        groups.append(
+            {
+                "label": "Total",
+                "mask": pd.Series(True, index=df.index),
+                "values": {},
+            }
+        )
+    question_row = question_lookup.get(variable, {})
+    answer_choices = list(question_row.get("answer_choices_list", []))
+    series = df[variable] if variable in df.columns else pd.Series([None] * len(df), index=df.index)
+    for choice in answer_choices:
+        normalized_choice = normalize_text(choice)
+        selected_label = comparison_group_labels.get(normalized_choice, choice) if variable == normalize_text(comparison_col) else choice
+        selected_mask = series.map(lambda value: _value_matches_selected_choices(value, [normalized_choice])).fillna(False)
+        not_selected_mask = (~selected_mask).fillna(False)
+        groups.append(
+            {
+                "label": f"{selected_label} - Selected",
+                "mask": selected_mask,
+                "values": {variable: normalized_choice, "__selected__": "Selected"},
+                "display_values": {variable: selected_label, "__selected__": "Selected"},
+            }
+        )
+        groups.append(
+            {
+                "label": f"{selected_label} - Not Selected",
+                "mask": not_selected_mask,
+                "values": {variable: normalized_choice, "__selected__": "Not Selected"},
+                "display_values": {variable: selected_label, "__selected__": "Not Selected"},
+            }
+        )
+    return groups
 
 
 def _sort_group_rows(
@@ -598,6 +657,27 @@ def _get_question_rows(
                         "kind": "net",
                     }
                 )
+    if bool(question_row.get("adhoc_multiselect_binary")) and question_type == "Multi-Select":
+        for choice in answer_choices:
+            rows.append(
+                {
+                    "label": f"{choice} - Selected",
+                    "source_label": choice,
+                    "choices": [choice],
+                    "kind": "choice",
+                    "match_mode": "selected",
+                }
+            )
+            rows.append(
+                {
+                    "label": f"{choice} - Not Selected",
+                    "source_label": choice,
+                    "choices": [choice],
+                    "kind": "choice",
+                    "match_mode": "not_selected",
+                }
+            )
+        return rows
     for choice in answer_choices:
         row_label = choice
         if normalize_text(variable) == comparison_variable:
@@ -716,12 +796,20 @@ def _build_question_table(
             counts_by_group: list[int] = []
             percentages_by_group: list[float | None] = []
             for group_mask, denominator in zip(base_masks, denominators):
-                matched_mask = question_series.map(
-                    lambda value: any(
-                        _value_matches_selected_choices(value, [choice])
-                        for choice in output_row["choices"]
-                    )
-                ).fillna(False)
+                if output_row.get("match_mode") == "not_selected":
+                    matched_mask = question_series.map(
+                        lambda value: not any(
+                            _value_matches_selected_choices(value, [choice])
+                            for choice in output_row["choices"]
+                        )
+                    ).fillna(False)
+                else:
+                    matched_mask = question_series.map(
+                        lambda value: any(
+                            _value_matches_selected_choices(value, [choice])
+                            for choice in output_row["choices"]
+                        )
+                    ).fillna(False)
                 numerator = int((group_mask & matched_mask).sum())
                 counts_by_group.append(numerator)
                 percentages_by_group.append((numerator / denominator) if denominator else None)
@@ -901,12 +989,14 @@ def _build_banner_note_lookup(
     note_lookup: dict[tuple[str, str], list[str]] = {}
     note_base_section_map = note_base_section_map or {}
     for sheet in sheets:
-        if not sheet.levels:
-            continue
-        comparison_pairs = _find_comparison_pair_indexes(sheet.groups, comparison_col)
-        if not comparison_pairs:
-            continue
         for table in sheet.tables:
+            table_groups = list(getattr(table, "groups", []) or sheet.groups)
+            table_levels = list(getattr(table, "levels", []) or sheet.levels)
+            if not table_levels or not table_groups:
+                continue
+            comparison_pairs = _find_comparison_pair_indexes(table_groups, comparison_col)
+            if not comparison_pairs:
+                continue
             normalized_variable = normalize_text(table.variable)
             section_label = note_base_section_map.get(normalized_variable, "Total Answering")
             if section_label == "Total Sample":
@@ -1266,26 +1356,39 @@ def generate_workbook_package(
             )
             if not row_variable or not column_variable or not question_row or column_variable not in analysis_df.columns:
                 continue
+            if normalize_text(question_row.get("detected_type")) == "Multi-Select":
+                question_row = _build_adhoc_multiselect_question_row(question_row)
             filtered_df, applied_filters = _apply_targeted_filters(
                 analysis_df,
                 global_filters,
                 ["All Tables", table_name],
                 question_lookup,
             )
-            banner_row = {
-                "name": table_name,
-                "levels": [column_variable],
-            }
-            groups = _build_banner_groups(
-                filtered_df,
-                banner_row,
-                include_total,
-                question_lookup,
-                custom_variables,
-                comparison_col,
-                comparison_group_order,
-                comparison_group_labels,
-            )
+            column_question_row = metadata_lookup.get(column_variable)
+            if normalize_text(column_question_row.get("detected_type") if column_question_row else "") == "Multi-Select":
+                groups = _build_adhoc_multiselect_groups(
+                    filtered_df,
+                    column_variable,
+                    include_total,
+                    question_lookup,
+                    comparison_col,
+                    comparison_group_labels,
+                )
+            else:
+                banner_row = {
+                    "name": table_name,
+                    "levels": [column_variable],
+                }
+                groups = _build_banner_groups(
+                    filtered_df,
+                    banner_row,
+                    include_total,
+                    question_lookup,
+                    custom_variables,
+                    comparison_col,
+                    comparison_group_order,
+                    comparison_group_labels,
+                )
             table = _build_question_table(
                 filtered_df,
                 question_row,
@@ -1364,8 +1467,7 @@ def generate_workbook_package(
         banner_sheets=topline_question_sheets,
         comparison_col=comparison_col,
         include_lift=effective_topline_lift,
-        include_significance_notes=bool(topline_config.get("include_significance_notes", True))
-        and effective_topline_lift,
+        include_significance_notes=bool(topline_config.get("include_significance_notes", True)),
         included_variables=topline_variables,
         response_selection_map=response_selection_map,
         note_base_section_map=note_base_section_map,

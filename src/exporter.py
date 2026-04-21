@@ -555,6 +555,7 @@ def _write_banner_sheet(
                 current_row += 1
         return current_row + 2
 
+    previous_banner_name = None
     if sheet.groups:
         for table in sheet.tables:
             current_row = _write_one_table(
@@ -567,12 +568,21 @@ def _write_banner_sheet(
             )
     else:
         for table in sheet.tables:
+            active_banner_name = getattr(table, "banner_name", sheet.banner_name)
+            active_groups = list(getattr(table, "groups", []))
+            table_end_column = max_end_column
+            if active_banner_name != previous_banner_name:
+                worksheet.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=table_end_column)
+                banner_section_cell = worksheet.cell(row=current_row, column=1, value=f"Banner: {active_banner_name}")
+                _apply_header_style(banner_section_cell, VN_BLACK)
+                current_row += 2
+                previous_banner_name = active_banner_name
             current_row = _write_one_table(
                 current_row,
                 table,
-                getattr(table, "banner_name", sheet.banner_name),
+                active_banner_name,
                 list(getattr(table, "levels", [])),
-                list(getattr(table, "groups", [])),
+                active_groups,
                 list(getattr(table, "footnotes", [])),
             )
 
