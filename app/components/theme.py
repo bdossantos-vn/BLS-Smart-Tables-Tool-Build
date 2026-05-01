@@ -102,16 +102,24 @@ def apply_theme() -> None:
                 fill: var(--vn-black) !important;
             }
 
-            [data-testid="stMain"] [data-testid="stFileUploader"] * {
-                color: var(--vn-white);
+            [data-testid="stMain"] [data-testid="stFileUploader"] section,
+            [data-testid="stMain"] [data-testid="stFileUploader"] section * {
+                color: var(--vn-black) !important;
+            }
+
+            [data-testid="stMain"] [data-testid="stFileUploader"] section {
+                background: var(--vn-white) !important;
+                border: 1px solid var(--vn-gray-200) !important;
             }
 
             [data-testid="stMain"] [data-testid="stFileUploader"] button,
             [data-testid="stMain"] [data-testid="stFileUploader"] button *,
             [data-testid="stMain"] [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"],
             [data-testid="stMain"] [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] * {
-                color: var(--vn-white) !important;
-                fill: var(--vn-white) !important;
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+                background: var(--vn-white) !important;
+                border-color: var(--vn-gray-200) !important;
             }
 
             .vn-brand-bar {
@@ -176,11 +184,19 @@ def apply_theme() -> None:
                 transform: translateY(-1px);
             }
 
-            div[data-baseweb="select"] > div,
-            div[data-baseweb="input"] > div,
-            textarea,
-            input {
+            [data-testid="stMain"] div[data-baseweb="select"] > div,
+            [data-testid="stMain"] div[data-baseweb="input"] > div,
+            [data-testid="stMain"] textarea,
+            [data-testid="stMain"] input {
                 border-radius: 14px !important;
+                background: var(--vn-white) !important;
+                color: var(--vn-black) !important;
+            }
+
+            [data-testid="stMain"] div[data-baseweb="select"] *,
+            [data-testid="stMain"] div[data-baseweb="input"] * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
             }
 
             [data-testid="stMetric"] {
