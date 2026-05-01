@@ -132,13 +132,38 @@ def _render_boolean_selector_grid(
             st.session_state[state_key].setdefault(label, selected)
 
     st.caption(help_text)
-    header_cols = st.columns([6, 1])
-    header_cols[0].markdown(f"**{title_left}**")
-    header_cols[1].markdown(f"**{title_right}**")
+    st.markdown(
+        """
+        <style>
+            .vn-selector-grid-header {
+                background: #F8F8FA;
+                border: 1px solid #E2E5EA;
+                border-bottom: none;
+                border-radius: 14px 14px 0 0;
+                padding: 0.75rem 1rem;
+                margin-top: 0.35rem;
+            }
+            .vn-selector-grid-body {
+                border: 1px solid #E2E5EA;
+                border-radius: 0 0 14px 14px;
+                padding: 0.2rem 1rem 0.35rem 1rem;
+                margin-bottom: 0.8rem;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    header_cols = st.columns([6, 1], vertical_alignment="center")
+    with st.container():
+        st.markdown('<div class="vn-selector-grid-header">', unsafe_allow_html=True)
+        header_cols[0].markdown(f"**{title_left}**")
+        header_cols[1].markdown(f"**{title_right}**")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     rendered_rows: list[dict[str, Any]] = []
+    st.markdown('<div class="vn-selector-grid-body">', unsafe_allow_html=True)
     for index, row in enumerate(rows):
-        row_cols = st.columns([6, 1])
+        row_cols = st.columns([6, 1], vertical_alignment="center")
         row_cols[0].write(row["label"])
         checked = row_cols[1].checkbox(
             f"{row['label']} selected",
@@ -148,6 +173,9 @@ def _render_boolean_selector_grid(
         )
         st.session_state[state_key][row["label"]] = checked
         rendered_rows.append({"label": row["label"], "selected": checked})
+        if index < len(rows) - 1:
+            st.divider()
+    st.markdown("</div>", unsafe_allow_html=True)
 
     return rendered_rows
 

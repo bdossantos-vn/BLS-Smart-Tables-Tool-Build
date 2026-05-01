@@ -247,8 +247,7 @@ def apply_theme() -> None:
             [data-testid="stMain"] [data-baseweb="button-group"] *,
             [data-testid="stMain"] [data-testid="stExpander"] summary,
             [data-testid="stMain"] [data-testid="stExpander"] summary *,
-            [data-testid="stMain"] details,
-            [data-testid="stMain"] details * {
+            [data-testid="stMain"] details {
                 color: var(--vn-black) !important;
                 fill: var(--vn-black) !important;
                 background: var(--vn-white) !important;
