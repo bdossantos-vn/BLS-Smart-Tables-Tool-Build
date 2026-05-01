@@ -949,7 +949,7 @@ def render_step_1() -> None:
                 help_text="Choose which columns stay in the working dataset.",
             )
 
-            include_left, include_right = st.columns(2)
+            include_spacer_left, include_left, include_right, include_spacer_right = st.columns([1, 1, 1, 1])
 
             with include_left:
                 if st.button("Update Columns", key="update_included_columns", use_container_width=True):
@@ -1019,7 +1019,7 @@ def render_step_1() -> None:
                     help_text="Choose which columns stay excluded from the cleaned dataset.",
                 )
 
-                btn_left, btn_right = st.columns(2)
+                btn_spacer_left, btn_left, btn_right, btn_spacer_right = st.columns([1, 1, 1, 1])
 
                 with btn_left:
                     if st.button("Update Columns", use_container_width=True):
