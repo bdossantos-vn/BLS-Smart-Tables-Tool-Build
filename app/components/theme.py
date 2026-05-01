@@ -286,6 +286,33 @@ def apply_theme() -> None:
                 border: 1px solid var(--vn-gray-200) !important;
             }
 
+            [data-testid="stMain"] [data-testid="stDataFrame"] {
+                --gdg-bg-cell: var(--vn-white);
+                --gdg-bg-cell-medium: var(--vn-white);
+                --gdg-bg-header: var(--vn-white);
+                --gdg-bg-header-has-focus: var(--vn-white);
+                --gdg-bg-header-hovered: var(--vn-gray-50);
+                --gdg-bg-search-result: #FFF4D6;
+                --gdg-border-color: var(--vn-gray-200);
+                --gdg-cell-horizontal-padding: 12px;
+                --gdg-color: var(--vn-black);
+                --gdg-header-font-style: 600 0.95rem "Proxima Nova", "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+                --gdg-base-font-style: 500 0.95rem "Proxima Nova", "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            }
+
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="gridcell"],
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="columnheader"],
+            [data-testid="stMain"] [data-testid="stDataFrame"] input,
+            [data-testid="stMain"] [data-testid="stDataFrame"] textarea {
+                color: var(--vn-black) !important;
+                background: transparent !important;
+                border-color: var(--vn-gray-200) !important;
+            }
+
+            [data-testid="stMain"] [data-testid="stDataFrame"] canvas {
+                background: transparent !important;
+            }
+
             [data-testid="stMain"] [data-testid="stTable"] *,
             [data-testid="stMain"] [data-testid="stTable"] table,
             [data-testid="stMain"] [data-testid="stTable"] table * {
@@ -293,22 +320,6 @@ def apply_theme() -> None:
                 fill: var(--vn-black) !important;
                 background: var(--vn-white) !important;
                 border-color: var(--vn-gray-200) !important;
-            }
-
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="gridcell"],
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="columnheader"],
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="gridcell"] *,
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="columnheader"] * {
-                color: var(--vn-black) !important;
-                border-color: var(--vn-gray-200) !important;
-            }
-
-            [data-testid="stMain"] [data-testid="stDataFrame"] canvas,
-            [data-testid="stMain"] [data-testid="stDataFrame"] svg,
-            [data-testid="stMain"] [data-testid="stDataFrame"] svg *,
-            [data-testid="stMain"] [data-testid="stVegaLiteChart"] svg text,
-            [data-testid="stMain"] [data-testid="stPlotlyChart"] svg text {
-                background: transparent !important;
             }
 
             [data-testid="stMain"] [data-testid="stVegaLiteChart"],
