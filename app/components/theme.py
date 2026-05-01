@@ -48,6 +48,7 @@ def apply_theme() -> None:
                     radial-gradient(circle at top left, rgba(255, 0, 92, 0.07), transparent 30%),
                     var(--vn-white);
                 color: var(--vn-black);
+                color-scheme: light;
             }
 
             [data-testid="stSidebar"] {
@@ -287,25 +288,37 @@ def apply_theme() -> None:
             }
 
             [data-testid="stMain"] [data-testid="stDataFrame"] {
+                color-scheme: light;
                 --gdg-bg-cell: var(--vn-white);
                 --gdg-bg-cell-medium: var(--vn-white);
                 --gdg-bg-header: var(--vn-white);
                 --gdg-bg-header-has-focus: var(--vn-white);
                 --gdg-bg-header-hovered: var(--vn-gray-50);
                 --gdg-bg-search-result: #FFF4D6;
+                --gdg-bg-icon-header: var(--vn-white);
+                --gdg-fg-icon-header: var(--vn-black);
                 --gdg-border-color: var(--vn-gray-200);
+                --gdg-text-dark: var(--vn-black);
+                --gdg-text-medium: #333333;
+                --gdg-text-light: #666666;
+                --gdg-text-header: var(--vn-black);
+                --gdg-text-group-header: var(--vn-black);
+                --gdg-accent-color: var(--vn-red);
+                --gdg-accent-fg: var(--vn-white);
+                --gdg-accent-light: rgba(255, 0, 92, 0.14);
+                --gdg-link-color: var(--vn-black);
                 --gdg-cell-horizontal-padding: 12px;
-                --gdg-color: var(--vn-black);
+                --gdg-font-family: "Proxima Nova", "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
                 --gdg-header-font-style: 600 0.95rem "Proxima Nova", "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
                 --gdg-base-font-style: 500 0.95rem "Proxima Nova", "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
             }
 
+            [data-testid="stMain"] [data-testid="stDataFrame"] *,
             [data-testid="stMain"] [data-testid="stDataFrame"] [role="gridcell"],
             [data-testid="stMain"] [data-testid="stDataFrame"] [role="columnheader"],
             [data-testid="stMain"] [data-testid="stDataFrame"] input,
             [data-testid="stMain"] [data-testid="stDataFrame"] textarea {
                 color: var(--vn-black) !important;
-                background: transparent !important;
                 border-color: var(--vn-gray-200) !important;
             }
 
