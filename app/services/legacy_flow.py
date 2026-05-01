@@ -906,7 +906,7 @@ def render_step_1() -> None:
             edited_included = st.data_editor(
                 st.session_state.included_editor,
                 key="included_editor_grid",
-                use_container_width=False,
+                use_container_width=True,
                 num_rows="fixed",
                 hide_index=True,
                 height=620,
@@ -983,7 +983,7 @@ def render_step_1() -> None:
                 edited_blacklist = st.data_editor(
                     st.session_state.blacklist_editor,
                     key="blacklist_editor_grid",
-                    use_container_width=False,
+                    use_container_width=True,
                     num_rows="fixed",
                     hide_index=True,
                     height=620,
