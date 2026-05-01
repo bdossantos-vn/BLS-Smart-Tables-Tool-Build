@@ -897,37 +897,24 @@ def render_step_1() -> None:
 
         with st.expander("Columns Included", expanded=True):
             available_columns = list(survey_df.columns)
-            if st.session_state.included_editor is None:
-                st.session_state.included_editor = _build_included_editor(
-                    available_columns,
-                    st.session_state.get("included_columns", available_columns),
-                )
-
-            edited_included = st.data_editor(
-                st.session_state.included_editor,
-                key="included_editor_grid",
-                use_container_width=True,
-                num_rows="fixed",
-                hide_index=True,
-                column_config={
-                    "Column": st.column_config.TextColumn(disabled=True),
-                    "Included": st.column_config.CheckboxColumn(
-                        help="Checked means the column stays in the working dataset."
-                    ),
-                },
+            current_included_columns = list(
+                st.session_state.get("included_columns", available_columns)
+            )
+            st.caption("Choose which columns stay in the working dataset.")
+            selected_included_columns = st.multiselect(
+                "Included Columns",
+                options=available_columns,
+                default=current_included_columns,
+                key="included_columns_selector",
+                help="Selected columns stay in the working dataset.",
             )
 
             include_left, include_right = st.columns(2)
-            include_rows = edited_included.to_dict(orient="records")
 
             with include_left:
                 if st.button("Update Columns", key="update_included_columns", use_container_width=True):
                     previous_included_columns = list(st.session_state.get("included_columns", available_columns))
-                    included_columns = [
-                        row["Column"]
-                        for row in include_rows
-                        if bool(row.get("Included", True))
-                    ]
+                    included_columns = list(selected_included_columns)
                     current_comparison = st.session_state.get("comparison_col")
                     if current_comparison and current_comparison not in included_columns:
                         included_columns = [current_comparison, *included_columns]
@@ -972,36 +959,29 @@ def render_step_1() -> None:
 
         with st.expander("Columns Excluded", expanded=True):
             if st.session_state.blacklist_catalog:
-                if st.session_state.blacklist_editor is None:
-                    st.session_state.blacklist_editor = _build_blacklist_editor(
-                        st.session_state.blacklist_catalog,
-                        st.session_state.get("restored_columns", []),
-                    )
-
-                edited_blacklist = st.data_editor(
-                    st.session_state.blacklist_editor,
-                    key="blacklist_editor_grid",
-                    use_container_width=True,
-                    num_rows="fixed",
-                    hide_index=True,
-                    column_config={
-                        "Column": st.column_config.TextColumn(disabled=True),
-                        "Excluded": st.column_config.CheckboxColumn(
-                            help="Checked means the column stays excluded from the cleaned dataset."
-                        ),
-                    },
+                current_excluded_columns = [
+                    column
+                    for column in st.session_state.blacklist_catalog
+                    if column not in st.session_state.get("restored_columns", [])
+                ]
+                st.caption("Choose which columns stay excluded from the cleaned dataset.")
+                selected_excluded_columns = st.multiselect(
+                    "Excluded Columns",
+                    options=st.session_state.blacklist_catalog,
+                    default=current_excluded_columns,
+                    key="excluded_columns_selector",
+                    help="Selected columns remain excluded from the cleaned dataset.",
                 )
 
                 btn_left, btn_right = st.columns(2)
-                blacklist_rows = edited_blacklist.to_dict(orient="records")
 
                 with btn_left:
                     if st.button("Update Columns", use_container_width=True):
                         previous_restored_columns = list(st.session_state.get("restored_columns", []))
                         restored_columns = [
-                            row["Column"]
-                            for row in blacklist_rows
-                            if not bool(row.get("Excluded", True))
+                            column
+                            for column in st.session_state.blacklist_catalog
+                            if column not in selected_excluded_columns
                         ]
                         refreshed = ingest_qualtrics_dataframe(
                             raw_df=st.session_state.raw_df,
@@ -1023,7 +1003,10 @@ def render_step_1() -> None:
                             list(st.session_state.survey_df.columns),
                             st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
                         )
-                        st.session_state.blacklist_editor = edited_blacklist.copy()
+                        st.session_state.blacklist_editor = _build_blacklist_editor(
+                            st.session_state.blacklist_catalog,
+                            restored_columns,
+                        )
                         added_back = [column for column in restored_columns if column not in previous_restored_columns]
                         re_excluded = [column for column in previous_restored_columns if column not in restored_columns]
                         summary_bits = []
