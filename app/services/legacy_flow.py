@@ -114,6 +114,44 @@ def _summarize_choice_change(old_choices: str, new_choices: str, max_len: int = 
     return f"{len(parse_answer_choices(old_choices))} choice(s) -> {len(parse_answer_choices(new_choices))} choice(s)"
 
 
+def _render_boolean_selector_grid(
+    *,
+    title_left: str,
+    title_right: str,
+    rows: list[dict[str, Any]],
+    state_key: str,
+    help_text: str,
+) -> list[dict[str, Any]]:
+    """Render a table-style checkbox selector without relying on data_editor."""
+    current_state = st.session_state.get(state_key)
+    expected_state = {row["label"]: bool(row["selected"]) for row in rows}
+    if not isinstance(current_state, dict) or set(current_state.keys()) != set(expected_state.keys()):
+        st.session_state[state_key] = expected_state
+    else:
+        for label, selected in expected_state.items():
+            st.session_state[state_key].setdefault(label, selected)
+
+    st.caption(help_text)
+    header_cols = st.columns([6, 1])
+    header_cols[0].markdown(f"**{title_left}**")
+    header_cols[1].markdown(f"**{title_right}**")
+
+    rendered_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        row_cols = st.columns([6, 1])
+        row_cols[0].write(row["label"])
+        checked = row_cols[1].checkbox(
+            f"{row['label']} selected",
+            value=bool(st.session_state[state_key].get(row["label"], row["selected"])),
+            key=f"{state_key}_{index}",
+            label_visibility="collapsed",
+        )
+        st.session_state[state_key][row["label"]] = checked
+        rendered_rows.append({"label": row["label"], "selected": checked})
+
+    return rendered_rows
+
+
 def _reset_custom_variable_builder_state() -> None:
     """Clear custom-variable builder inputs after a successful save."""
     for key in [
@@ -900,13 +938,15 @@ def render_step_1() -> None:
             current_included_columns = list(
                 st.session_state.get("included_columns", available_columns)
             )
-            st.caption("Choose which columns stay in the working dataset.")
-            selected_included_columns = st.multiselect(
-                "Included Columns",
-                options=available_columns,
-                default=current_included_columns,
-                key="included_columns_selector",
-                help="Selected columns stay in the working dataset.",
+            included_rows = _render_boolean_selector_grid(
+                title_left="Column",
+                title_right="Included",
+                rows=[
+                    {"label": column, "selected": column in current_included_columns}
+                    for column in available_columns
+                ],
+                state_key="included_columns_grid_state",
+                help_text="Choose which columns stay in the working dataset.",
             )
 
             include_left, include_right = st.columns(2)
@@ -914,7 +954,11 @@ def render_step_1() -> None:
             with include_left:
                 if st.button("Update Columns", key="update_included_columns", use_container_width=True):
                     previous_included_columns = list(st.session_state.get("included_columns", available_columns))
-                    included_columns = list(selected_included_columns)
+                    included_columns = [
+                        row["label"]
+                        for row in included_rows
+                        if row["selected"]
+                    ]
                     current_comparison = st.session_state.get("comparison_col")
                     if current_comparison and current_comparison not in included_columns:
                         included_columns = [current_comparison, *included_columns]
@@ -964,13 +1008,15 @@ def render_step_1() -> None:
                     for column in st.session_state.blacklist_catalog
                     if column not in st.session_state.get("restored_columns", [])
                 ]
-                st.caption("Choose which columns stay excluded from the cleaned dataset.")
-                selected_excluded_columns = st.multiselect(
-                    "Excluded Columns",
-                    options=st.session_state.blacklist_catalog,
-                    default=current_excluded_columns,
-                    key="excluded_columns_selector",
-                    help="Selected columns remain excluded from the cleaned dataset.",
+                excluded_rows = _render_boolean_selector_grid(
+                    title_left="Column",
+                    title_right="Excluded",
+                    rows=[
+                        {"label": column, "selected": column in current_excluded_columns}
+                        for column in st.session_state.blacklist_catalog
+                    ],
+                    state_key="excluded_columns_grid_state",
+                    help_text="Choose which columns stay excluded from the cleaned dataset.",
                 )
 
                 btn_left, btn_right = st.columns(2)
@@ -979,9 +1025,9 @@ def render_step_1() -> None:
                     if st.button("Update Columns", use_container_width=True):
                         previous_restored_columns = list(st.session_state.get("restored_columns", []))
                         restored_columns = [
-                            column
-                            for column in st.session_state.blacklist_catalog
-                            if column not in selected_excluded_columns
+                            row["label"]
+                            for row in excluded_rows
+                            if not row["selected"]
                         ]
                         refreshed = ingest_qualtrics_dataframe(
                             raw_df=st.session_state.raw_df,
