@@ -114,82 +114,6 @@ def _summarize_choice_change(old_choices: str, new_choices: str, max_len: int = 
     return f"{len(parse_answer_choices(old_choices))} choice(s) -> {len(parse_answer_choices(new_choices))} choice(s)"
 
 
-def _render_boolean_selector_grid(
-    *,
-    title_left: str,
-    title_right: str,
-    rows: list[dict[str, Any]],
-    state_key: str,
-    help_text: str,
-) -> list[dict[str, Any]]:
-    """Render a table-style checkbox selector without relying on data_editor."""
-    current_state = st.session_state.get(state_key)
-    expected_state = {row["label"]: bool(row["selected"]) for row in rows}
-    if not isinstance(current_state, dict) or set(current_state.keys()) != set(expected_state.keys()):
-        st.session_state[state_key] = expected_state
-    else:
-        for label, selected in expected_state.items():
-            st.session_state[state_key].setdefault(label, selected)
-
-    st.caption(help_text)
-    st.markdown(
-        """
-        <style>
-            .vn-selector-grid-header {
-                background: #F8F8FA;
-                border: 1px solid #E2E5EA;
-                border-bottom: none;
-                border-radius: 14px 14px 0 0;
-                padding: 0.55rem 1rem;
-                margin-top: 0.2rem;
-            }
-            .vn-selector-grid-body {
-                border: 1px solid #E2E5EA;
-                border-radius: 0 0 14px 14px;
-                padding: 0.1rem 1rem 0.1rem 1rem;
-                margin-bottom: 0.65rem;
-            }
-            .vn-selector-grid-row {
-                padding: 0.2rem 0;
-            }
-            .vn-selector-grid-divider {
-                height: 1px;
-                background: #E2E5EA;
-                margin: 0.15rem 0;
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    header_cols = st.columns([6, 1], vertical_alignment="center")
-    with st.container():
-        st.markdown('<div class="vn-selector-grid-header">', unsafe_allow_html=True)
-        header_cols[0].markdown(f"**{title_left}**")
-        header_cols[1].markdown(f"**{title_right}**")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    rendered_rows: list[dict[str, Any]] = []
-    st.markdown('<div class="vn-selector-grid-body">', unsafe_allow_html=True)
-    for index, row in enumerate(rows):
-        st.markdown('<div class="vn-selector-grid-row">', unsafe_allow_html=True)
-        row_cols = st.columns([6, 1], vertical_alignment="center")
-        row_cols[0].write(row["label"])
-        checked = row_cols[1].checkbox(
-            f"{row['label']} selected",
-            value=bool(st.session_state[state_key].get(row["label"], row["selected"])),
-            key=f"{state_key}_{index}",
-            label_visibility="collapsed",
-        )
-        st.session_state[state_key][row["label"]] = checked
-        rendered_rows.append({"label": row["label"], "selected": checked})
-        st.markdown("</div>", unsafe_allow_html=True)
-        if index < len(rows) - 1:
-            st.markdown('<div class="vn-selector-grid-divider"></div>', unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    return rendered_rows
-
-
 def _reset_custom_variable_builder_state() -> None:
     """Clear custom-variable builder inputs after a successful save."""
     for key in [
@@ -973,18 +897,27 @@ def render_step_1() -> None:
 
         with st.expander("Columns Included", expanded=True):
             available_columns = list(survey_df.columns)
-            current_included_columns = list(
-                st.session_state.get("included_columns", available_columns)
-            )
-            included_rows = _render_boolean_selector_grid(
-                title_left="Column",
-                title_right="Included",
-                rows=[
-                    {"label": column, "selected": column in current_included_columns}
-                    for column in available_columns
-                ],
-                state_key="included_columns_grid_state",
-                help_text="Choose which columns stay in the working dataset.",
+            if st.session_state.included_editor is None:
+                st.session_state.included_editor = _build_included_editor(
+                    available_columns,
+                    st.session_state.get("included_columns", available_columns),
+                )
+
+            edited_included = st.data_editor(
+                st.session_state.included_editor,
+                key="included_editor_grid",
+                use_container_width=False,
+                num_rows="fixed",
+                hide_index=True,
+                height=620,
+                column_config={
+                    "Column": st.column_config.TextColumn(disabled=True, width="large"),
+                    "Included": st.column_config.CheckboxColumn(
+                        "Included",
+                        help="Checked means the column stays in the working dataset.",
+                        width="small",
+                    ),
+                },
             )
 
             include_spacer_left, include_left, include_right, include_spacer_right = st.columns([1, 1, 1, 1])
@@ -993,9 +926,9 @@ def render_step_1() -> None:
                 if st.button("Update Columns", key="update_included_columns", use_container_width=True):
                     previous_included_columns = list(st.session_state.get("included_columns", available_columns))
                     included_columns = [
-                        row["label"]
-                        for row in included_rows
-                        if row["selected"]
+                        row["Column"]
+                        for row in edited_included.to_dict(orient="records")
+                        if bool(row.get("Included", True))
                     ]
                     current_comparison = st.session_state.get("comparison_col")
                     if current_comparison and current_comparison not in included_columns:
@@ -1041,20 +974,27 @@ def render_step_1() -> None:
 
         with st.expander("Columns Excluded", expanded=True):
             if st.session_state.blacklist_catalog:
-                current_excluded_columns = [
-                    column
-                    for column in st.session_state.blacklist_catalog
-                    if column not in st.session_state.get("restored_columns", [])
-                ]
-                excluded_rows = _render_boolean_selector_grid(
-                    title_left="Column",
-                    title_right="Excluded",
-                    rows=[
-                        {"label": column, "selected": column in current_excluded_columns}
-                        for column in st.session_state.blacklist_catalog
-                    ],
-                    state_key="excluded_columns_grid_state",
-                    help_text="Choose which columns stay excluded from the cleaned dataset.",
+                if st.session_state.blacklist_editor is None:
+                    st.session_state.blacklist_editor = _build_blacklist_editor(
+                        st.session_state.blacklist_catalog,
+                        st.session_state.get("restored_columns", []),
+                    )
+
+                edited_blacklist = st.data_editor(
+                    st.session_state.blacklist_editor,
+                    key="blacklist_editor_grid",
+                    use_container_width=False,
+                    num_rows="fixed",
+                    hide_index=True,
+                    height=620,
+                    column_config={
+                        "Column": st.column_config.TextColumn(disabled=True, width="large"),
+                        "Excluded": st.column_config.CheckboxColumn(
+                            "Excluded",
+                            help="Checked means the column stays excluded from the cleaned dataset.",
+                            width="small",
+                        ),
+                    },
                 )
 
                 btn_spacer_left, btn_left, btn_right, btn_spacer_right = st.columns([1, 1, 1, 1])
@@ -1063,9 +1003,9 @@ def render_step_1() -> None:
                     if st.button("Update Columns", use_container_width=True):
                         previous_restored_columns = list(st.session_state.get("restored_columns", []))
                         restored_columns = [
-                            row["label"]
-                            for row in excluded_rows
-                            if not row["selected"]
+                            row["Column"]
+                            for row in edited_blacklist.to_dict(orient="records")
+                            if not bool(row.get("Excluded", True))
                         ]
                         refreshed = ingest_qualtrics_dataframe(
                             raw_df=st.session_state.raw_df,
