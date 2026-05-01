@@ -86,6 +86,22 @@ def apply_theme() -> None:
                 letter-spacing: -0.02em;
             }
 
+            [data-testid="stMain"] label,
+            [data-testid="stMain"] legend,
+            [data-testid="stMain"] p,
+            [data-testid="stMain"] span,
+            [data-testid="stMain"] div[data-testid="stMarkdownContainer"] * {
+                color: var(--vn-black);
+            }
+
+            [data-testid="stMain"] [role="radiogroup"] label,
+            [data-testid="stMain"] [role="radiogroup"] label *,
+            [data-testid="stMain"] [data-baseweb="radio"] label,
+            [data-testid="stMain"] [data-baseweb="radio"] label * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+            }
+
             .vn-brand-bar {
                 display: flex;
                 align-items: center;
