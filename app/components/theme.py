@@ -254,6 +254,13 @@ def apply_theme() -> None:
                 border-color: var(--vn-gray-200) !important;
             }
 
+            [data-testid="stMain"] [data-testid="stExpander"] [role="button"],
+            [data-testid="stMain"] [data-testid="stExpander"] [role="button"] * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+                background: var(--vn-white) !important;
+            }
+
             [data-testid="stMetric"] {
                 background: var(--vn-white) !important;
                 border: 1px solid var(--vn-gray-200);
@@ -276,20 +283,46 @@ def apply_theme() -> None:
                 border-radius: 18px;
                 overflow: hidden;
                 background: var(--vn-white) !important;
+                border: 1px solid var(--vn-gray-200) !important;
             }
 
-            [data-testid="stMain"] [data-testid="stDataFrame"] *,
             [data-testid="stMain"] [data-testid="stTable"] *,
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="grid"],
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="grid"] *,
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="row"],
-            [data-testid="stMain"] [data-testid="stDataFrame"] [role="row"] *,
             [data-testid="stMain"] [data-testid="stTable"] table,
             [data-testid="stMain"] [data-testid="stTable"] table * {
                 color: var(--vn-black) !important;
                 fill: var(--vn-black) !important;
                 background: var(--vn-white) !important;
                 border-color: var(--vn-gray-200) !important;
+            }
+
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="gridcell"],
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="columnheader"],
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="gridcell"] *,
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="columnheader"] * {
+                color: var(--vn-black) !important;
+                border-color: var(--vn-gray-200) !important;
+            }
+
+            [data-testid="stMain"] [data-testid="stDataFrame"] canvas,
+            [data-testid="stMain"] [data-testid="stDataFrame"] svg,
+            [data-testid="stMain"] [data-testid="stDataFrame"] svg *,
+            [data-testid="stMain"] [data-testid="stVegaLiteChart"] svg text,
+            [data-testid="stMain"] [data-testid="stPlotlyChart"] svg text {
+                background: transparent !important;
+            }
+
+            [data-testid="stMain"] [data-testid="stVegaLiteChart"],
+            [data-testid="stMain"] [data-testid="stPlotlyChart"] {
+                background: var(--vn-white) !important;
+                border-radius: 18px;
+            }
+
+            [data-testid="stMain"] [data-testid="stVegaLiteChart"] svg text,
+            [data-testid="stMain"] [data-testid="stPlotlyChart"] svg text,
+            [data-testid="stMain"] [data-testid="stVegaLiteChart"] .gtitle,
+            [data-testid="stMain"] [data-testid="stPlotlyChart"] .gtitle {
+                fill: var(--vn-black) !important;
+                color: var(--vn-black) !important;
             }
 
             details {
