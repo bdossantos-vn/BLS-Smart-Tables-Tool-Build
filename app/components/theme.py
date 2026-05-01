@@ -94,6 +94,13 @@ def apply_theme() -> None:
                 color: var(--vn-black);
             }
 
+            [data-testid="stMain"] code,
+            [data-testid="stMain"] code * {
+                color: var(--vn-black) !important;
+                background: var(--vn-white) !important;
+                border-color: var(--vn-gray-200) !important;
+            }
+
             [data-testid="stMain"] [role="radiogroup"] label,
             [data-testid="stMain"] [role="radiogroup"] label *,
             [data-testid="stMain"] [data-baseweb="radio"] label,
@@ -112,6 +119,14 @@ def apply_theme() -> None:
                 border: 1px solid var(--vn-gray-200) !important;
             }
 
+            [data-testid="stMain"] [data-testid="stFileUploaderDropzone"],
+            [data-testid="stMain"] [data-testid="stFileUploaderDropzone"] * {
+                background: var(--vn-white) !important;
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+                border-color: var(--vn-gray-200) !important;
+            }
+
             [data-testid="stMain"] [data-testid="stFileUploader"] button,
             [data-testid="stMain"] [data-testid="stFileUploader"] button *,
             [data-testid="stMain"] [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"],
@@ -128,6 +143,14 @@ def apply_theme() -> None:
                 color: var(--vn-black) !important;
                 fill: var(--vn-black) !important;
                 background: var(--vn-white) !important;
+            }
+
+            [data-testid="stMain"] [data-testid="stFileUploader"] [data-baseweb="tag"],
+            [data-testid="stMain"] [data-testid="stFileUploader"] [data-baseweb="tag"] * {
+                background: var(--vn-white) !important;
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+                border-color: var(--vn-gray-200) !important;
             }
 
             .vn-brand-bar {
@@ -159,6 +182,17 @@ def apply_theme() -> None:
                 font-size: 1.2rem;
                 font-weight: 700;
                 line-height: 1.1;
+            }
+
+            .vn-brand-bar *,
+            .vn-brand-copy *,
+            .vn-brand-title {
+                color: var(--vn-white) !important;
+                fill: var(--vn-white) !important;
+            }
+
+            .vn-brand-kicker {
+                color: rgba(255, 255, 255, 0.72) !important;
             }
 
             .stButton > button,
@@ -207,6 +241,19 @@ def apply_theme() -> None:
                 fill: var(--vn-black) !important;
             }
 
+            [data-testid="stMain"] [data-baseweb="tag"],
+            [data-testid="stMain"] [data-baseweb="tag"] *,
+            [data-testid="stMain"] [data-baseweb="button-group"] *,
+            [data-testid="stMain"] [data-testid="stExpander"] summary,
+            [data-testid="stMain"] [data-testid="stExpander"] summary *,
+            [data-testid="stMain"] details,
+            [data-testid="stMain"] details * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+                background: var(--vn-white) !important;
+                border-color: var(--vn-gray-200) !important;
+            }
+
             [data-testid="stMetric"] {
                 background: var(--vn-white) !important;
                 border: 1px solid var(--vn-gray-200);
@@ -232,9 +279,17 @@ def apply_theme() -> None:
             }
 
             [data-testid="stMain"] [data-testid="stDataFrame"] *,
-            [data-testid="stMain"] [data-testid="stTable"] * {
+            [data-testid="stMain"] [data-testid="stTable"] *,
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="grid"],
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="grid"] *,
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="row"],
+            [data-testid="stMain"] [data-testid="stDataFrame"] [role="row"] *,
+            [data-testid="stMain"] [data-testid="stTable"] table,
+            [data-testid="stMain"] [data-testid="stTable"] table * {
                 color: var(--vn-black) !important;
                 fill: var(--vn-black) !important;
+                background: var(--vn-white) !important;
+                border-color: var(--vn-gray-200) !important;
             }
 
             details {
