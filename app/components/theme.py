@@ -122,6 +122,14 @@ def apply_theme() -> None:
                 border-color: var(--vn-gray-200) !important;
             }
 
+            [data-testid="stMain"] [data-testid="stFileUploader"] small,
+            [data-testid="stMain"] [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"],
+            [data-testid="stMain"] [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+                background: var(--vn-white) !important;
+            }
+
             .vn-brand-bar {
                 display: flex;
                 align-items: center;
@@ -200,11 +208,15 @@ def apply_theme() -> None:
             }
 
             [data-testid="stMetric"] {
-                background: rgba(255, 255, 255, 0.82);
+                background: var(--vn-white) !important;
                 border: 1px solid var(--vn-gray-200);
                 border-radius: 18px;
                 padding: 1rem 1rem 0.8rem 1rem;
                 box-shadow: 0 8px 20px rgba(0, 0, 0, 0.05);
+            }
+
+            [data-testid="stMetric"] * {
+                color: var(--vn-black) !important;
             }
 
             [data-testid="stAlert"] {
@@ -212,10 +224,17 @@ def apply_theme() -> None:
                 border-width: 1px;
             }
 
-            [data-testid="stDataFrame"],
-            [data-testid="stTable"] {
+            [data-testid="stMain"] [data-testid="stDataFrame"],
+            [data-testid="stMain"] [data-testid="stTable"] {
                 border-radius: 18px;
                 overflow: hidden;
+                background: var(--vn-white) !important;
+            }
+
+            [data-testid="stMain"] [data-testid="stDataFrame"] *,
+            [data-testid="stMain"] [data-testid="stTable"] * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
             }
 
             details {
