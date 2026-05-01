@@ -102,6 +102,18 @@ def apply_theme() -> None:
                 fill: var(--vn-black) !important;
             }
 
+            [data-testid="stMain"] [data-testid="stFileUploader"] * {
+                color: var(--vn-white);
+            }
+
+            [data-testid="stMain"] [data-testid="stFileUploader"] button,
+            [data-testid="stMain"] [data-testid="stFileUploader"] button *,
+            [data-testid="stMain"] [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"],
+            [data-testid="stMain"] [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] * {
+                color: var(--vn-white) !important;
+                fill: var(--vn-white) !important;
+            }
+
             .vn-brand-bar {
                 display: flex;
                 align-items: center;
