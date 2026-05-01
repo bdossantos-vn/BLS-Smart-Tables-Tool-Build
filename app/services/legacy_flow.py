@@ -140,14 +140,22 @@ def _render_boolean_selector_grid(
                 border: 1px solid #E2E5EA;
                 border-bottom: none;
                 border-radius: 14px 14px 0 0;
-                padding: 0.75rem 1rem;
-                margin-top: 0.35rem;
+                padding: 0.55rem 1rem;
+                margin-top: 0.2rem;
             }
             .vn-selector-grid-body {
                 border: 1px solid #E2E5EA;
                 border-radius: 0 0 14px 14px;
-                padding: 0.2rem 1rem 0.35rem 1rem;
-                margin-bottom: 0.8rem;
+                padding: 0.1rem 1rem 0.1rem 1rem;
+                margin-bottom: 0.65rem;
+            }
+            .vn-selector-grid-row {
+                padding: 0.2rem 0;
+            }
+            .vn-selector-grid-divider {
+                height: 1px;
+                background: #E2E5EA;
+                margin: 0.15rem 0;
             }
         </style>
         """,
@@ -163,6 +171,7 @@ def _render_boolean_selector_grid(
     rendered_rows: list[dict[str, Any]] = []
     st.markdown('<div class="vn-selector-grid-body">', unsafe_allow_html=True)
     for index, row in enumerate(rows):
+        st.markdown('<div class="vn-selector-grid-row">', unsafe_allow_html=True)
         row_cols = st.columns([6, 1], vertical_alignment="center")
         row_cols[0].write(row["label"])
         checked = row_cols[1].checkbox(
@@ -173,8 +182,9 @@ def _render_boolean_selector_grid(
         )
         st.session_state[state_key][row["label"]] = checked
         rendered_rows.append({"label": row["label"], "selected": checked})
+        st.markdown("</div>", unsafe_allow_html=True)
         if index < len(rows) - 1:
-            st.divider()
+            st.markdown('<div class="vn-selector-grid-divider"></div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     return rendered_rows
