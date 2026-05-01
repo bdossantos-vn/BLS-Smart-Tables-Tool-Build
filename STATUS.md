@@ -17,6 +17,43 @@ This status reflects the repository state as of 2026-05-01.
 - Some legacy code paths still exist behind the current modular app shell.
 - Template import/export exists in code, but should be treated as only partially verified until round-trip testing is completed.
 
+## Status Rubric
+
+This file uses the following status meanings:
+
+- `Working`
+  - implemented in code
+  - wired into the current visible app flow
+  - no known immediate blocker in the current build
+
+- `Working, lightly verified`
+  - implemented and visible
+  - appears operational from code review and/or limited validation
+  - not deeply regression-tested end to end
+
+- `Working, needs regression verification`
+  - implemented and visible
+  - recently changed, historically fragile, or broad enough that follow-up testing is still needed
+
+- `Implemented in legacy code, not exposed`
+  - present in code/config/state handling
+  - not currently exposed as part of the main visible workflow
+
+- `Partially verified`
+  - implemented, but only some expected behavior has been confirmed
+  - remaining branches, edge cases, or round-trip paths still need validation
+
+- `Untested`
+  - present in code, but not yet validated enough to claim working behavior confidently
+
+Status is determined from a mix of:
+
+- whether the feature is wired into the current page registry and navigation
+- whether the behavior exists only in legacy paths or hidden code paths
+- whether the feature is actively passed through generation/export layers
+- whether it has been recently changed
+- how much direct validation or regression checking has been done
+
 ## Visible Workflow Status
 
 ### 1. Project Setup
