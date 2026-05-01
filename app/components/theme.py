@@ -279,6 +279,50 @@ def apply_theme() -> None:
                 border-width: 1px;
             }
 
+            [data-testid="stDataFrame"],
+            [data-testid="stDataFrameGlideDataEditor"],
+            [data-testid="stDataEditor"],
+            [data-testid="stElementToolbar"] + div [data-testid*="GlideDataEditor"] {
+                --gdg-bg-cell: var(--vn-white) !important;
+                --gdg-bg-cell-medium: var(--vn-white) !important;
+                --gdg-bg-header: var(--vn-white) !important;
+                --gdg-bg-header-has-focus: var(--vn-white) !important;
+                --gdg-bg-header-hovered: var(--vn-gray-50) !important;
+                --gdg-bg-icon-header: var(--vn-white) !important;
+                --gdg-fg-icon-header: var(--vn-black) !important;
+                --gdg-text-dark: var(--vn-black) !important;
+                --gdg-text-medium: #333333 !important;
+                --gdg-text-light: #666666 !important;
+                --gdg-text-header: var(--vn-black) !important;
+                --gdg-text-group-header: var(--vn-black) !important;
+                --gdg-border-color: var(--vn-gray-200) !important;
+                --gdg-horizontal-border-color: var(--vn-gray-200) !important;
+                --gdg-drilldown-border: var(--vn-gray-200) !important;
+                --gdg-link-color: var(--vn-black) !important;
+                --gdg-accent-color: var(--vn-red) !important;
+                --gdg-accent-fg: var(--vn-white) !important;
+                --gdg-accent-light: rgba(255, 0, 92, 0.14) !important;
+                color-scheme: light !important;
+                background: var(--vn-white) !important;
+                color: var(--vn-black) !important;
+            }
+
+            [data-testid="stDataFrameGlideDataEditor"] canvas,
+            [data-testid="stDataEditor"] canvas,
+            [data-testid*="GlideDataEditor"] canvas {
+                background: var(--vn-white) !important;
+            }
+
+            [data-testid="stDataFrameGlideDataEditor"] input,
+            [data-testid="stDataEditor"] input,
+            [data-testid*="GlideDataEditor"] input,
+            [data-testid="stDataFrameGlideDataEditor"] textarea,
+            [data-testid="stDataEditor"] textarea,
+            [data-testid*="GlideDataEditor"] textarea {
+                color: var(--vn-black) !important;
+                background: var(--vn-white) !important;
+            }
+
             details {
                 border-radius: 18px;
                 border: 1px solid var(--vn-gray-200);
