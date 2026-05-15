@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import re
 
 import pandas as pd
@@ -32,17 +33,43 @@ def _build_custom_variable_choices(record: dict[str, object]) -> list[str]:
     return choices
 
 
-def _default_topline_choices(variable: str, question: dict[str, object]) -> list[str]:
-    """Return the default selected topline choices for one variable."""
-    available_choices = [
+def _raw_answer_choices(question: dict[str, object]) -> list[str]:
+    """Return the non-empty answer choices attached to one question."""
+    return [
         str(choice) for choice in question.get("answer_choices_list", []) if str(choice).strip()
     ]
+
+
+def _topline_available_choices(question: dict[str, object]) -> list[str]:
+    """Return the choices Step 11 should expose for one source question."""
     enabled_net_labels = [
         str(label) for label in question.get("choice_expansion_map", {}).keys() if str(label).strip()
     ]
     if enabled_net_labels:
+        # 2026-05-15 BD: When Step 5 NETs exist, Step 11 should expose only those NET labels
+        # as the initial topline choices, not the underlying raw scale responses.
         return enabled_net_labels
-    return available_choices
+    return _raw_answer_choices(question)
+
+
+def _default_topline_choices(variable: str, question: dict[str, object]) -> list[str]:
+    """Return the default selected topline choices for one variable."""
+    return _topline_available_choices(question)
+
+
+def _valid_or_default_topline_choices(
+    variable: str,
+    response_selections: dict[str, list[str]],
+    available_choices: list[str],
+) -> list[str]:
+    """Return saved choices when valid, otherwise the current default choices."""
+    if variable not in response_selections:
+        return available_choices
+    selected_choices = list(response_selections.get(variable, []))
+    valid_selected_choices = [choice for choice in selected_choices if choice in available_choices]
+    if selected_choices and not valid_selected_choices:
+        return available_choices
+    return valid_selected_choices
 
 
 def _build_topline_catalog() -> list[dict[str, object]]:
@@ -65,11 +92,11 @@ def _build_topline_catalog() -> list[dict[str, object]]:
     for variable in included_columns:
         question = question_lookup.get(variable, {})
         available_choices = _default_topline_choices(variable, question)
-        all_display_choices = [
-            str(choice) for choice in question.get("answer_choices_list", []) if str(choice).strip()
-        ]
-        selected_choices = response_selections.get(variable, available_choices)
-        valid_selected_choices = [choice for choice in selected_choices if choice in all_display_choices]
+        valid_selected_choices = _valid_or_default_topline_choices(
+            variable,
+            response_selections,
+            available_choices,
+        )
         if not saved_variables:
             include_in_topline = True
         else:
@@ -78,10 +105,10 @@ def _build_topline_catalog() -> list[dict[str, object]]:
             {
                 "Column": variable,
                 "Question Text": question.get("question_label", variable),
-                "Response Choices Count": len(all_display_choices),
-                "Available Response Choices": serialize_answer_choices(all_display_choices),
+                "Response Choices Count": len(available_choices),
+                "Available Response Choices": serialize_answer_choices(available_choices),
                 "Include in Topline": include_in_topline,
-                "_default_choices": all_display_choices,
+                "_default_choices": available_choices,
                 "_preferred_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
                 "_note_base_section": note_base_sections.get(variable, "Total Answering"),
@@ -94,8 +121,11 @@ def _build_topline_catalog() -> list[dict[str, object]]:
         if not variable_name:
             continue
         available_choices = _build_custom_variable_choices(record)
-        selected_choices = response_selections.get(variable_name, available_choices)
-        valid_selected_choices = [choice for choice in selected_choices if choice in available_choices]
+        valid_selected_choices = _valid_or_default_topline_choices(
+            variable_name,
+            response_selections,
+            available_choices,
+        )
         include_in_topline = variable_name in saved_variables if saved_variables else False
         rows.append(
             {
@@ -122,7 +152,10 @@ def _build_source_signature() -> list[str]:
         for item in st.session_state.get("custom_variables", [])
         if str(item.get("name", "")).strip()
     ]
-    return included_columns + ["__custom__"] + custom_names
+    # 2026-05-15 BD: Include NET and scale state so Step 11 rebuilds after Step 5 NET edits.
+    net_signature = json.dumps(st.session_state.get("net_definitions", {}), sort_keys=True, default=str)
+    scale_signature = json.dumps(st.session_state.get("scale_mappings", {}), sort_keys=True, default=str)
+    return included_columns + ["__custom__"] + custom_names + ["__nets__", net_signature, "__scales__", scale_signature]
 
 
 def _build_topline_editor_frame() -> pd.DataFrame:
