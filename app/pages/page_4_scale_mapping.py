@@ -10,7 +10,7 @@ import streamlit as st
 from src.mapping import (
     build_scale_change_log,
     build_scale_mapping_editor_frame,
-    build_scale_mapping_options,
+    build_scale_mapping_options_by_variable,
     ensure_scale_mappings,
     identify_scale_questions,
     save_scale_mapping_editor,
@@ -75,8 +75,74 @@ def _get_editor_key(scale_signature: str) -> str:
     existing_signature = st.session_state.get("scale_mapping_editor_signature", "")
     if existing_signature != scale_signature:
         st.session_state.scale_mapping_editor_signature = scale_signature
-        st.session_state.scale_mapping_editor_key = f"scale_mapping_grid_{scale_signature[:10]}"
-    return st.session_state.get("scale_mapping_editor_key", f"scale_mapping_grid_{scale_signature[:10]}")
+        st.session_state.scale_mapping_editor_revision = 0
+
+    revision = int(st.session_state.get("scale_mapping_editor_revision", 0))
+    return f"scale_mapping_grid_{scale_signature[:10]}_{revision}"
+
+
+def _selectbox_index(options: list[str], value: object) -> int:
+    """Return the option index for a saved value, defaulting to blank."""
+    normalized_value = normalize_text(value)
+    return options.index(normalized_value) if normalized_value in options else 0
+
+
+def _render_scale_mapping_controls(
+    editor_df: pd.DataFrame,
+    options_by_variable: dict[str, list[str]],
+    editor_key: str,
+) -> pd.DataFrame:
+    """Render row-level scale controls with question-specific dropdown options."""
+    point_columns = [column for column in editor_df.columns if column.startswith("scale_point_")]
+    edited_rows: list[dict[str, object]] = []
+
+    for row_index, row in enumerate(editor_df.to_dict(orient="records")):
+        variable = normalize_text(row.get("variable"))
+        display_name = normalize_text(row.get("display_variable_name")) or variable
+        question_label = normalize_text(row.get("question_label"))
+        row_options = options_by_variable.get(variable, [""])
+        if not row_options:
+            row_options = [""]
+
+        edited_row: dict[str, object] = {
+            "variable": variable,
+            "display_variable_name": display_name,
+            "question_label": question_label,
+        }
+
+        with st.container(border=True):
+            info_col, polarity_col = st.columns([4, 1])
+            with info_col:
+                st.markdown(f"**{display_name}**")
+                st.caption(f"Raw variable: `{variable}`")
+                if question_label:
+                    st.write(question_label)
+            with polarity_col:
+                polarity_options = ["standard", "flipped"]
+                polarity = normalize_text(row.get("polarity")) or "standard"
+                edited_row["polarity"] = st.selectbox(
+                    "Polarity",
+                    options=polarity_options,
+                    index=polarity_options.index(polarity) if polarity in polarity_options else 0,
+                    key=f"{editor_key}_{variable}_{row_index}_polarity",
+                    help="Use `flipped` when the lowest score should become the highest score.",
+                )
+
+            for chunk_start in range(0, len(point_columns), 5):
+                chunk = point_columns[chunk_start : chunk_start + 5]
+                scale_cols = st.columns(len(chunk))
+                for chunk_index, column in enumerate(chunk):
+                    scale_number = point_columns.index(column) + 1
+                    edited_row[column] = scale_cols[chunk_index].selectbox(
+                        f"Scale Point {scale_number}",
+                        options=row_options,
+                        index=_selectbox_index(row_options, row.get(column)),
+                        key=f"{editor_key}_{variable}_{row_index}_{column}",
+                    )
+
+        edited_rows.append(edited_row)
+
+    return pd.DataFrame(edited_rows, columns=list(editor_df.columns))
 
 
 def render() -> None:
@@ -100,8 +166,8 @@ def render() -> None:
         st.session_state.scale_save_message = ""
 
     st.write(
-        "Review scale questions in one table. Each row is a scale question and each column is a "
-        "scale point in order from 1 to n."
+        "Review scale questions and set the response order from scale point 1 to n. "
+        "Each question uses only its own response options."
     )
 
     if (
@@ -124,39 +190,20 @@ def render() -> None:
     )
     scale_signature = _build_scale_signature(scale_questions)
     editor_key = _get_editor_key(scale_signature)
-    scale_options = build_scale_mapping_options(st.session_state.scale_mappings)
+    scale_options_by_variable = build_scale_mapping_options_by_variable(
+        scale_questions,
+        cleaned_df,
+        st.session_state.scale_mappings,
+    )
 
     point_columns = [column for column in editor_df.columns if column.startswith("scale_point_")]
     ordered_columns = [*BASE_SCALE_COLUMNS, *point_columns]
     editor_df = editor_df[ordered_columns]
 
-    column_config = {
-        "variable": st.column_config.TextColumn("Raw Variable Name", disabled=True, width="medium"),
-        "display_variable_name": st.column_config.TextColumn("Displayed Variable Name", disabled=True, width="medium"),
-        "question_label": st.column_config.TextColumn("Question Text", disabled=True, width="large"),
-        "polarity": st.column_config.SelectboxColumn(
-            "Polarity",
-            options=["standard", "flipped"],
-            width="small",
-            help="Use `flipped` when the lowest score should become the highest score.",
-        ),
-    }
-    for index, column in enumerate(point_columns, start=1):
-        column_config[column] = st.column_config.SelectboxColumn(
-            f"Scale Point {index}",
-            options=scale_options,
-            width="medium",
-        )
-
-    edited = st.data_editor(
+    edited = _render_scale_mapping_controls(
         editor_df,
-        key=editor_key,
-        use_container_width=True,
-        num_rows="fixed",
-        hide_index=True,
-        height=560,
-        column_order=ordered_columns,
-        column_config=column_config,
+        options_by_variable=scale_options_by_variable,
+        editor_key=editor_key,
     )
 
     normalized_edited = _normalize_editor_frame(
@@ -166,7 +213,7 @@ def render() -> None:
     )
 
     if st.button("Save Mappings", type="primary", use_container_width=True):
-        issues = validate_scale_mapping_editor(normalized_edited)
+        issues = validate_scale_mapping_editor(normalized_edited, scale_options_by_variable)
         if issues:
             for issue in issues:
                 st.error(issue)
@@ -183,6 +230,9 @@ def render() -> None:
             for change in build_scale_change_log(previous_mappings, st.session_state.scale_mappings):
                 st.session_state.scale_change_log.append(f"[{timestamp}] {change}")
             st.session_state.scale_save_message = "Scale mappings saved."
+            st.session_state.scale_mapping_editor_revision = (
+                int(st.session_state.get("scale_mapping_editor_revision", 0)) + 1
+            )
             st.rerun()
 
     st.subheader("Change Log")

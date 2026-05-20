@@ -159,19 +159,69 @@ def build_scale_mapping_options(scale_mappings: dict[str, dict[str, Any]]) -> li
     return options
 
 
-def validate_scale_mapping_editor(editor_df: pd.DataFrame) -> list[str]:
+def build_scale_mapping_options_by_variable(
+    scale_questions: list[dict[str, Any]],
+    cleaned_df: pd.DataFrame,
+    scale_mappings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, list[str]]:
+    """Build question-specific response option lists for scale-point dropdowns."""
+    options_by_variable: dict[str, list[str]] = {}
+    scale_mappings = scale_mappings or {}
+
+    for question in scale_questions:
+        variable = normalize_text(question.get("variable"))
+        options: list[str] = [""]
+
+        for value in question.get("answer_choices_list", []):
+            text = normalize_text(value)
+            if text and text not in options:
+                options.append(text)
+
+        if isinstance(cleaned_df, pd.DataFrame) and variable in cleaned_df.columns:
+            for value in cleaned_df[variable].dropna().tolist():
+                text = normalize_text(value)
+                if text and text not in options:
+                    options.append(text)
+
+        if len(options) == 1:
+            for row in scale_mappings.get(variable, {}).get("rows", []):
+                text = normalize_text(row.get("response_value"))
+                if text and text not in options:
+                    options.append(text)
+
+        options_by_variable[variable] = options
+
+    return options_by_variable
+
+
+def validate_scale_mapping_editor(
+    editor_df: pd.DataFrame,
+    valid_options_by_variable: dict[str, list[str]] | None = None,
+) -> list[str]:
     """Validate that each row uses unique scale-point values."""
     issues: list[str] = []
+    valid_options_by_variable = valid_options_by_variable or {}
     for row in editor_df.to_dict(orient="records"):
         variable = normalize_text(row.get("variable"))
+        valid_options = {
+            normalize_text(value)
+            for value in valid_options_by_variable.get(variable, [])
+            if normalize_text(value)
+        }
         selected_values: list[str] = []
+        invalid_values: list[str] = []
         for key, value in row.items():
             if key.startswith("scale_point_"):
                 text = normalize_text(value)
                 if text:
                     selected_values.append(text)
+                    if valid_options and text not in valid_options:
+                        invalid_values.append(text)
         if len(selected_values) != len(set(selected_values)):
             issues.append(f"{variable}: Each scale point must use a unique response option.")
+        if invalid_values:
+            invalid_text = ", ".join(dict.fromkeys(invalid_values))
+            issues.append(f"{variable}: {invalid_text} is not a response option for this question.")
     return issues
 
 
