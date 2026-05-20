@@ -20,7 +20,7 @@ from src.utils import format_timestamp, normalize_text
 
 
 SCALE_SEED_VERSION = 1
-BASE_SCALE_COLUMNS = ["variable", "question_label", "polarity"]
+BASE_SCALE_COLUMNS = ["variable", "display_variable_name", "question_label", "polarity"]
 
 
 def _build_scale_signature(scale_questions: list[dict[str, object]]) -> str:
@@ -28,9 +28,10 @@ def _build_scale_signature(scale_questions: list[dict[str, object]]) -> str:
     parts: list[str] = []
     for row in scale_questions:
         variable = normalize_text(row.get("variable"))
+        display_name = normalize_text(row.get("display_variable_name"))
         label = normalize_text(row.get("question_label"))
         choices = [normalize_text(choice) for choice in row.get("answer_choices_list", []) if normalize_text(choice)]
-        parts.append(f"{variable}|{label}|{'~'.join(choices)}")
+        parts.append(f"{variable}|{display_name}|{label}|{'~'.join(choices)}")
     return hashlib.md5("||".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -130,7 +131,8 @@ def render() -> None:
     editor_df = editor_df[ordered_columns]
 
     column_config = {
-        "variable": st.column_config.TextColumn("Variable Name", disabled=True, width="medium"),
+        "variable": st.column_config.TextColumn("Raw Variable Name", disabled=True, width="medium"),
+        "display_variable_name": st.column_config.TextColumn("Displayed Variable Name", disabled=True, width="medium"),
         "question_label": st.column_config.TextColumn("Question Text", disabled=True, width="large"),
         "polarity": st.column_config.SelectboxColumn(
             "Polarity",

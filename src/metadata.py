@@ -21,6 +21,23 @@ QUESTION_TYPES = [
     "Ignore",
 ]
 
+
+def get_display_variable_name(metadata_row: dict[str, Any]) -> str:
+    """Return the analyst-facing variable name, falling back to the raw variable."""
+    # 2026-05-15 BD: Displayed variable names are a readability/export layer;
+    # raw variable names remain the internal keys for data joins and saved configs.
+    return normalize_text(metadata_row.get("display_variable_name")) or normalize_text(metadata_row.get("variable"))
+
+
+def build_display_variable_lookup(question_metadata: list[dict[str, Any]]) -> dict[str, str]:
+    """Build a raw-variable to display-variable lookup."""
+    return {
+        normalize_text(row.get("variable")): get_display_variable_name(row)
+        for row in question_metadata
+        if normalize_text(row.get("variable"))
+    }
+
+
 LIKERT_PATTERNS = [
     "strongly disagree",
     "disagree",
@@ -244,7 +261,12 @@ def get_metadata_editor_columns() -> dict[str, Any]:
     import streamlit as st
 
     return {
-        "variable": st.column_config.TextColumn("Variable Name", disabled=True, width=220),
+        "variable": st.column_config.TextColumn("Raw Variable Name", disabled=True, width=220),
+        "display_variable_name": st.column_config.TextColumn(
+            "Displayed Variable Name",
+            width=260,
+            help="Edit the name analysts should see in later setup pages and Excel exports.",
+        ),
         "question_label": st.column_config.TextColumn("Question Text", disabled=True, width=620),
         "detected_type": st.column_config.SelectboxColumn(
             "Question Type",
@@ -529,6 +551,7 @@ def build_question_metadata(
         metadata.append(
             {
                 "variable": column,
+                "display_variable_name": column,
                 "question_label": question_labels.get(column, column),
                 "detected_type": question_type,
                 "answer_choices": serialize_answer_choices(answer_choices),
@@ -547,6 +570,7 @@ def prepare_metadata_editor_frame(metadata_rows: list[dict[str, Any]]) -> pd.Dat
         editor_rows.append(
             {
                 "variable": row.get("variable", ""),
+                "display_variable_name": get_display_variable_name(row),
                 "question_label": row.get("question_label", ""),
                 "detected_type": row.get("detected_type", "Single-Select"),
                 "answer_choice_count": len(row.get("answer_choices_list", [])),
@@ -569,6 +593,8 @@ def sanitize_metadata_editor(editor_df: pd.DataFrame) -> list[dict[str, Any]]:
         sanitized.append(
             {
                 "variable": normalize_text(row.get("variable")),
+                "display_variable_name": normalize_text(row.get("display_variable_name"))
+                or normalize_text(row.get("variable")),
                 "question_label": normalize_text(row.get("question_label")),
                 "detected_type": detected_type,
                 "answer_choice_count": len(parse_answer_choices(answer_choices_text)),

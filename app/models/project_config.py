@@ -16,6 +16,14 @@ PROJECT_CONFIG_TEMPLATE: dict[str, Any] = {
         "setup_mode": "Start from scratch",
     },
     "data": {},
+    # 2026-05-19 BD: Save layered comparison rules in templates so they can be
+    # merged or replayed separately from respondent data.
+    "comparison_scheme": {
+        "enabled": False,
+        "mode": "exclusive",
+        "control_group_id": "",
+        "groups": [],
+    },
     "variables": {},
     "question_types": {},
     "scales": {},

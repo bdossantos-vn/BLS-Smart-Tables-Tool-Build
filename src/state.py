@@ -23,6 +23,14 @@ DEFAULT_STATE: dict[str, Any] = {
     "comparison_rows_removed": 0,
     "comparison_group_order": {},
     "comparison_group_labels": {},
+    # 2026-05-19 BD: Persist rule-defined layered comparison groups alongside
+    # the existing simple comparison-variable state.
+    "comparison_scheme": {
+        "enabled": False,
+        "mode": "exclusive",
+        "control_group_id": "",
+        "groups": [],
+    },
     "included_columns": [],
     "included_editor": None,
     "blacklist_used": [],

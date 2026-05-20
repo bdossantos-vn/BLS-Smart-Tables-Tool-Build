@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.metadata import get_display_variable_name
 from src.utils import normalize_text
 
 
@@ -135,6 +136,7 @@ def build_scale_mapping_editor_frame(
         ordered_rows = sorted(mapping.get("rows", []), key=lambda item: int(item.get("bucket", 0)))
         row: dict[str, Any] = {
             "variable": variable,
+            "display_variable_name": get_display_variable_name(question),
             "question_label": question.get("question_label", ""),
             "polarity": mapping.get("polarity", "standard"),
         }

@@ -14,6 +14,7 @@ import streamlit as st
 
 from app.models.project_config import build_default_project_config
 from src.config import build_default_adhoc_crosstab_config, build_default_stat_config
+from src.comparisons import build_default_comparison_scheme
 from src.state import init_session_state
 
 
@@ -35,6 +36,7 @@ EXTRA_DEFAULTS: dict[str, Any] = {
     "adhoc_crosstabs_config": build_default_adhoc_crosstab_config(),
     "banner_stat_config": build_default_stat_config(),
     "adhoc_stat_config": build_default_stat_config(),
+    "comparison_scheme": build_default_comparison_scheme(),
 }
 
 
@@ -70,6 +72,11 @@ def sync_project_config_from_session() -> None:
         "comparison_rows_removed": int(st.session_state.get("comparison_rows_removed", 0)),
         "comparison_group_labels": deepcopy(st.session_state.get("comparison_group_labels", {})),
     }
+    # 2026-05-19 BD: Keep the new layered comparison scheme in the exported
+    # project config without changing the legacy comparison-column payload.
+    project_config["comparison_scheme"] = deepcopy(
+        st.session_state.get("comparison_scheme", EXTRA_DEFAULTS["comparison_scheme"])
+    )
     project_config["variables"] = {
         "included_columns": list(st.session_state.get("included_columns", [])),
         "excluded_columns": list(st.session_state.get("removed_columns", [])),
@@ -77,6 +84,7 @@ def sync_project_config_from_session() -> None:
     }
     project_config["question_types"] = {
         row.get("variable"): {
+            "display_variable_name": row.get("display_variable_name", row.get("variable", "")),
             "question_text": row.get("question_label", ""),
             "question_type": row.get("detected_type", ""),
             "answer_choices": list(row.get("answer_choices_list", [])),
@@ -139,6 +147,10 @@ def load_project_template(template_payload: dict[str, Any]) -> None:
     st.session_state.net_definitions = deepcopy(project_config.get("nets", {}))
     st.session_state.custom_variables = list(project_config.get("custom_variables", {}).values())
     st.session_state.topline_config = deepcopy(project_config.get("topline", EXTRA_DEFAULTS["topline_config"]))
+    # 2026-05-19 BD: Restore layered comparison rules from saved templates.
+    st.session_state.comparison_scheme = deepcopy(
+        project_config.get("comparison_scheme", EXTRA_DEFAULTS["comparison_scheme"])
+    )
     st.session_state.comparison_group_labels = deepcopy(
         project_config.get("data", {}).get("comparison_group_labels", {})
     )

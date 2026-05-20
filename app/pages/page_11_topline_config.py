@@ -91,6 +91,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for variable in included_columns:
         question = question_lookup.get(variable, {})
+        display_variable_name = str(question.get("display_variable_name") or variable).strip() or variable
         available_choices = _default_topline_choices(variable, question)
         valid_selected_choices = _valid_or_default_topline_choices(
             variable,
@@ -103,11 +104,12 @@ def _build_topline_catalog() -> list[dict[str, object]]:
             include_in_topline = variable in saved_variables
         rows.append(
             {
-                "Column": variable,
+                "Column": display_variable_name,
                 "Question Text": question.get("question_label", variable),
                 "Response Choices Count": len(available_choices),
                 "Available Response Choices": serialize_answer_choices(available_choices),
                 "Include in Topline": include_in_topline,
+                "_variable": variable,
                 "_default_choices": available_choices,
                 "_preferred_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
@@ -134,6 +136,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
                 "Response Choices Count": len(available_choices),
                 "Available Response Choices": serialize_answer_choices(available_choices),
                 "Include in Topline": include_in_topline,
+                "_variable": variable_name,
                 "_default_choices": available_choices,
                 "_preferred_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
@@ -152,10 +155,21 @@ def _build_source_signature() -> list[str]:
         for item in st.session_state.get("custom_variables", [])
         if str(item.get("name", "")).strip()
     ]
+    # 2026-05-15 BD: Displayed variable-name edits should refresh Step 11 labels
+    # without changing the raw variables used in the saved topline config.
+    display_signature = json.dumps(
+        {
+            str(row.get("variable", "")).strip(): str(row.get("display_variable_name", "")).strip()
+            for row in st.session_state.get("question_metadata", [])
+            if str(row.get("variable", "")).strip()
+        },
+        sort_keys=True,
+        default=str,
+    )
     # 2026-05-15 BD: Include NET and scale state so Step 11 rebuilds after Step 5 NET edits.
     net_signature = json.dumps(st.session_state.get("net_definitions", {}), sort_keys=True, default=str)
     scale_signature = json.dumps(st.session_state.get("scale_mappings", {}), sort_keys=True, default=str)
-    return included_columns + ["__custom__"] + custom_names + ["__nets__", net_signature, "__scales__", scale_signature]
+    return included_columns + ["__custom__"] + custom_names + ["__display__", display_signature, "__nets__", net_signature, "__scales__", scale_signature]
 
 
 def _build_topline_editor_frame() -> pd.DataFrame:
@@ -208,7 +222,7 @@ def _topline_note_base_key(variable: str) -> str:
 def _set_all_selected_note_bases(rows: list[dict[str, object]], note_base: str) -> None:
     """Apply one note-base choice to every currently included topline row."""
     for row in rows:
-        variable = str(row.get("Column", "")).strip()
+        variable = str(row.get("_variable") or row.get("Column", "")).strip()
         if not variable:
             continue
         st.session_state[_topline_note_base_key(variable)] = note_base
@@ -232,14 +246,14 @@ def render() -> None:
 
     editor_source_df = st.session_state.topline_editor.copy()
     editor_df = st.data_editor(
-        editor_source_df.drop(columns=["_default_choices", "_preferred_default_choices", "_row_type"], errors="ignore"),
+        editor_source_df.drop(columns=["_variable", "_default_choices", "_preferred_default_choices", "_row_type"], errors="ignore"),
         key="topline_columns_editor",
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
         height=560,
         column_config={
-            "Column": st.column_config.TextColumn("Column", disabled=True, width="medium"),
+            "Column": st.column_config.TextColumn("Displayed Variable Name", disabled=True, width="medium"),
             "Question Text": st.column_config.TextColumn("Question Text", disabled=True, width="large"),
             "Response Choices Count": st.column_config.NumberColumn(
                 "Response Choices Count", disabled=True, width="small"
@@ -253,15 +267,13 @@ def render() -> None:
         },
     )
 
+    source_records = editor_source_df.to_dict(orient="records")
+    edited_records = editor_df.to_dict(orient="records")
     selected_editor_rows = [
-        row
-        for row in editor_df.to_dict(orient="records")
-        if bool(row.get("Include in Topline", False))
+        {**source_row, **edited_row}
+        for source_row, edited_row in zip(source_records, edited_records)
+        if bool(edited_row.get("Include in Topline", False))
     ]
-    source_lookup = {
-        str(row.get("Column", "")).strip(): row
-        for row in editor_source_df.to_dict(orient="records")
-    }
 
     if selected_editor_rows:
         st.subheader("Topline Response Selection")
@@ -281,8 +293,9 @@ def render() -> None:
                 st.success("All selected Banner Sig Comparisons set to Total Sample.")
                 st.rerun()
         for row in selected_editor_rows:
-            variable = str(row.get("Column", "")).strip()
-            source_row = source_lookup.get(variable, {})
+            variable = str(row.get("_variable") or row.get("Column", "")).strip()
+            source_row = row
+            display_variable_name = str(row.get("Column") or variable).strip() or variable
             default_choices = list(source_row.get("_default_choices", []))
             preferred_default_choices = list(source_row.get("_preferred_default_choices", default_choices))
             saved_choices = list(source_row.get("_selected_choices", preferred_default_choices))
@@ -299,7 +312,7 @@ def render() -> None:
             if st.session_state.get(note_base_key) not in {"Total Sample", "Total Answering"}:
                 st.session_state[note_base_key] = saved_note_base
 
-            with st.expander(f"{variable} Response Choices", expanded=False):
+            with st.expander(f"{display_variable_name} Response Choices", expanded=False):
                 st.multiselect(
                     "Select topline response choices",
                     options=default_choices,
@@ -330,11 +343,9 @@ def render() -> None:
             note_base_updates: list[str] = []
 
             updated_rows: list[dict[str, object]] = []
-            source_records = editor_source_df.to_dict(orient="records")
-            edited_records = editor_df.to_dict(orient="records")
-
             for source_row, edited_row in zip(source_records, edited_records):
-                variable = str(edited_row.get("Column", "")).strip()
+                variable = str(source_row.get("_variable") or edited_row.get("Column", "")).strip()
+                display_variable_name = str(source_row.get("Column") or variable).strip() or variable
                 default_choices = list(source_row.get("_default_choices", []))
                 preferred_default_choices = list(source_row.get("_preferred_default_choices", default_choices))
                 choice_key = _topline_choice_key(variable)
@@ -370,12 +381,12 @@ def render() -> None:
                 previous_choices = list(previous_response_selections.get(variable, preferred_default_choices))
                 if previous_choices != parsed_choices:
                     response_updates.append(
-                        f"{variable}: {serialize_answer_choices(previous_choices)} -> "
+                        f"{display_variable_name}: {serialize_answer_choices(previous_choices)} -> "
                         f"{serialize_answer_choices(parsed_choices)}"
                     )
                 previous_note_base = str(previous_note_base_sections.get(variable, "Total Answering")).strip() or "Total Answering"
                 if previous_note_base != selected_note_base:
-                    note_base_updates.append(f"{variable}: {previous_note_base} -> {selected_note_base}")
+                    note_base_updates.append(f"{display_variable_name}: {previous_note_base} -> {selected_note_base}")
 
             updated_config = deepcopy(previous_config)
             updated_config["variables"] = selected_variables
@@ -384,8 +395,12 @@ def render() -> None:
             st.session_state.topline_config = updated_config
             st.session_state.topline_editor = pd.DataFrame(updated_rows)
 
-            added = [value for value in selected_variables if value not in previous_variables]
-            removed = [value for value in previous_variables if value not in selected_variables]
+            display_lookup = {
+                str(row.get("_variable") or row.get("Column", "")).strip(): str(row.get("Column", "")).strip()
+                for row in updated_rows
+            }
+            added = [display_lookup.get(value, value) for value in selected_variables if value not in previous_variables]
+            removed = [display_lookup.get(value, value) for value in previous_variables if value not in selected_variables]
             if added:
                 _append_topline_change(f"Included topline rows: {', '.join(added)}")
             if removed:

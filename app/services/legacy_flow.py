@@ -23,6 +23,17 @@ from src.config import (
     build_weight_variable_options,
     validate_analysis_config,
 )
+from src.comparisons import (
+    COMPARISON_SCHEME_DISPLAY_NAME,
+    COMPARISON_SCHEME_LEVEL,
+    build_comparison_group_masks,
+    build_default_comparison_group,
+    build_default_comparison_scheme,
+    detect_group_overlaps,
+    materialize_comparison_variable,
+    sanitize_comparison_scheme,
+    summarize_comparison_groups,
+)
 from src.custom_vars import (
     BUILD_TYPES,
     build_complex_variable_record,
@@ -56,6 +67,7 @@ from src.metadata import (
     build_metadata_change_log_entry,
     build_question_metadata,
     get_metadata_editor_columns,
+    get_display_variable_name,
     merge_metadata_editor_with_source,
     parse_answer_choices,
     prepare_metadata_editor_frame,
@@ -525,6 +537,8 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
         raise ValueError("The selected comparison variable removed all rows. Choose a different option.")
 
     st.session_state.cleaned_df = filtered_df
+    previous_comparison_col = st.session_state.get("comparison_col")
+    previous_scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
     st.session_state.comparison_col = comparison_col
     st.session_state.cell_col = comparison_col
     st.session_state.comparison_rows_removed = rows_removed
@@ -547,6 +561,21 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
         comparison_col,
     )
     st.session_state.scale_mappings = {}
+    # 2026-05-19 BD: Comparison variable changes now seed the unified layered
+    # setup instead of requiring a separate "apply variable" then "layered" step.
+    if not comparison_col:
+        st.session_state.comparison_scheme = build_default_comparison_scheme()
+    elif (
+        previous_scheme.get("enabled")
+        and normalize_text(previous_comparison_col) == normalize_text(comparison_col)
+    ):
+        st.session_state.comparison_scheme = previous_scheme
+    else:
+        st.session_state.comparison_scheme = _build_default_layered_scheme_from_comparison(
+            filtered_df,
+            comparison_col,
+        )
+    _append_materialized_comparison_variable()
 
 
 def _build_comparison_summary_frame(cleaned_df: pd.DataFrame, comparison_col: str | None) -> pd.DataFrame:
@@ -579,6 +608,332 @@ def _build_comparison_order_editor(cleaned_df: pd.DataFrame, comparison_col: str
     order_map = st.session_state.get("comparison_group_order", {})
     summary["Sort Order"] = summary["Raw Value"].map(lambda value: order_map.get(value, 1)).astype(int)
     return summary[["Raw Value", "Display Label", "N", "Sort Order"]]
+
+
+def _coerce_layered_comparison_groups(existing_groups: list[dict[str, Any]], desired_count: int) -> list[dict[str, Any]]:
+    """Return a stable number of layered comparison group rows."""
+    groups = list(existing_groups[:desired_count])
+    while len(groups) < desired_count:
+        groups.append(build_default_comparison_group(len(groups) + 1))
+    return groups[:desired_count]
+
+
+def _build_default_layered_scheme_from_comparison(
+    cleaned_df: pd.DataFrame,
+    comparison_col: str | None,
+) -> dict[str, Any]:
+    """Build an exclusive layered scheme from one comparison variable."""
+    if not comparison_col or comparison_col not in cleaned_df.columns:
+        return build_default_comparison_scheme()
+
+    summary = _build_comparison_summary_frame(cleaned_df, comparison_col)
+    groups: list[dict[str, Any]] = []
+    control_group_id = ""
+    for index, row in enumerate(summary.to_dict(orient="records"), start=1):
+        raw_value = normalize_text(row.get("Raw Value"))
+        display_label = normalize_text(row.get("Display Label")) or raw_value
+        group_id = raw_value or f"group_{index}"
+        is_control = normalize_text(display_label).lower() == "control" or "control" in raw_value.lower()
+        if not control_group_id and (is_control or index == 1):
+            role = "control"
+            control_group_id = group_id
+        else:
+            role = "test"
+        groups.append(
+            {
+                "id": group_id,
+                "label": display_label,
+                "role": role,
+                "match_logic": "ALL",
+                "conditions": [
+                    {
+                        "variable": comparison_col,
+                        "operator": "Is exactly",
+                        "values": [raw_value],
+                    }
+                ],
+            }
+        )
+
+    # 2026-05-19 BD: The simple comparison-variable path now seeds the same
+    # layered scheme editor, so analysts have one Comparison Setup workflow.
+    return {
+        "enabled": bool(groups and control_group_id),
+        "mode": "exclusive",
+        "control_group_id": control_group_id,
+        "groups": groups,
+    }
+
+
+def _append_materialized_comparison_variable() -> None:
+    """Append the saved comparison setup as a visible data column."""
+    cleaned_df = st.session_state.get("cleaned_df")
+    scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
+    if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty or not scheme.get("enabled"):
+        return
+    question_lookup = build_question_lookup(
+        st.session_state.get("question_metadata", []),
+        st.session_state.get("net_definitions", {}),
+        st.session_state.get("scale_mappings", {}),
+    )
+    # 2026-05-19 BD: Append the finalized comparison setup as a visible
+    # `Comparison Variable` column for downstream setup screens.
+    updated_df = cleaned_df.copy()
+    updated_df[COMPARISON_SCHEME_DISPLAY_NAME] = materialize_comparison_variable(
+        updated_df,
+        scheme,
+        question_lookup,
+        COMPARISON_SCHEME_DISPLAY_NAME,
+    )
+    st.session_state.cleaned_df = updated_df
+
+
+def _render_layered_comparison_editor(cleaned_df: pd.DataFrame) -> None:
+    """Render the unified rule-based comparison setup in Data Intake."""
+    if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty:
+        return
+
+    saved_scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
+    if not saved_scheme.get("enabled") and st.session_state.get("comparison_col"):
+        saved_scheme = _build_default_layered_scheme_from_comparison(
+            cleaned_df,
+            st.session_state.get("comparison_col"),
+        )
+    if not saved_scheme.get("enabled"):
+        saved_scheme = {
+            "enabled": True,
+            "mode": "exclusive",
+            "control_group_id": "group_1",
+            "groups": [
+                {**build_default_comparison_group(1), "role": "control", "label": "Control"},
+                {**build_default_comparison_group(2), "role": "test", "label": "Test"},
+            ],
+        }
+
+    st.caption(
+        "Define the comparison groups used throughout reporting. Use exclusive mode when each respondent belongs to one group, "
+        "or overlapping mode when respondents may qualify for more than one group."
+    )
+    mode_options = ["exclusive", "overlap"]
+    mode = st.selectbox(
+        "Comparison Mode",
+        options=mode_options,
+        index=mode_options.index(saved_scheme.get("mode", "exclusive")) if saved_scheme.get("mode", "exclusive") in mode_options else 0,
+        format_func=lambda value: "Exclusive groups" if value == "exclusive" else "Overlapping groups",
+        key="layered_comparison_mode",
+    )
+    group_count = int(
+        st.number_input(
+            "Number of Comparison Groups",
+            min_value=2,
+            max_value=8,
+            value=max(2, len(saved_scheme.get("groups", [])) or 2),
+            step=1,
+            key="layered_comparison_group_count",
+        )
+    )
+    existing_groups = _coerce_layered_comparison_groups(list(saved_scheme.get("groups", [])), group_count)
+    variable_catalog = build_analysis_variable_catalog(
+        st.session_state.question_metadata,
+        st.session_state.custom_variables,
+        st.session_state.get("comparison_col"),
+        st.session_state.get("comparison_scheme", {}),
+    )
+    variable_options = [item["id"] for item in variable_catalog if item["id"] in cleaned_df.columns]
+    variable_labels = {item["id"]: item["label"] for item in variable_catalog}
+    variable_types = {item["id"]: item.get("question_type", "") for item in variable_catalog}
+    question_lookup = build_question_lookup(
+        st.session_state.question_metadata,
+        st.session_state.get("net_definitions", {}),
+        st.session_state.get("scale_mappings", {}),
+    )
+
+    rendered_groups: list[dict[str, Any]] = []
+    control_ids: list[str] = []
+    for group_index, group in enumerate(existing_groups):
+        group_id = normalize_text(group.get("id")) or f"group_{group_index + 1}"
+        with st.container(border=True):
+            st.markdown(f"**Group {group_index + 1}**")
+            label_col, role_col, logic_col = st.columns([2, 1, 1])
+            label = label_col.text_input(
+                "Display Label",
+                value=group.get("label", ""),
+                key=f"layered_group_label_{group_index}",
+                placeholder="Control" if group_index == 0 else f"Test Group {group_index}",
+            )
+            role_options = ["control", "test"]
+            current_role = normalize_text(group.get("role")).lower() or ("control" if group_index == 0 else "test")
+            if current_role not in role_options:
+                current_role = "test"
+            role = role_col.selectbox(
+                "Role",
+                options=role_options,
+                index=role_options.index(current_role),
+                format_func=lambda value: value.title(),
+                key=f"layered_group_role_{group_index}",
+            )
+            match_logic = logic_col.selectbox(
+                "Match Logic",
+                options=MATCH_LOGIC_OPTIONS,
+                index=MATCH_LOGIC_OPTIONS.index(group.get("match_logic", "ALL")) if group.get("match_logic", "ALL") in MATCH_LOGIC_OPTIONS else 0,
+                key=f"layered_group_match_logic_{group_index}",
+            )
+            if role == "control":
+                control_ids.append(group_id)
+
+            condition_count = int(
+                st.number_input(
+                    "Number of Conditions",
+                    min_value=1,
+                    max_value=6,
+                    value=max(1, len(group.get("conditions", [])) or 1),
+                    step=1,
+                    key=f"layered_group_condition_count_{group_index}",
+                )
+            )
+            conditions = list(group.get("conditions", []))
+            while len(conditions) < condition_count:
+                conditions.append(build_default_filter_condition())
+            rendered_conditions: list[dict[str, Any]] = []
+            for condition_index, condition in enumerate(conditions[:condition_count]):
+                cond_cols = st.columns([2, 1.4, 2])
+                current_variable = normalize_text(condition.get("variable"))
+                variable_choices = ["", *variable_options]
+                variable = cond_cols[0].selectbox(
+                    "Variable",
+                    options=variable_choices,
+                    index=variable_choices.index(current_variable) if current_variable in variable_choices else 0,
+                    format_func=lambda value: variable_labels.get(value, value) if value else "Select variable",
+                    key=f"layered_condition_variable_{group_index}_{condition_index}",
+                )
+                operator_options = ["", *build_filter_operator_options(variable_types.get(variable, ""))]
+                current_operator = normalize_text(condition.get("operator"))
+                operator = cond_cols[1].selectbox(
+                    "Operator",
+                    options=operator_options,
+                    index=operator_options.index(current_operator) if current_operator in operator_options else 0,
+                    key=f"layered_condition_operator_{group_index}_{condition_index}",
+                )
+                if variable_types.get(variable) == "Numeric Data":
+                    numeric_default = ", ".join(str(value) for value in condition.get("values", []))
+                    numeric_value = cond_cols[2].text_input(
+                        "Value",
+                        value=numeric_default,
+                        key=f"layered_condition_numeric_value_{group_index}_{condition_index}",
+                    )
+                    values = [normalize_text(numeric_value)] if normalize_text(numeric_value) else []
+                else:
+                    value_options = _build_filter_value_options(
+                        variable,
+                        question_lookup,
+                        st.session_state.custom_variables,
+                        comparison_col=st.session_state.get("comparison_col"),
+                        comparison_groups=st.session_state.get("comparison_group_order", {}),
+                    )
+                    default_values = [value for value in condition.get("values", []) if value in value_options]
+                    values = cond_cols[2].multiselect(
+                        "Values",
+                        options=value_options,
+                        default=default_values,
+                        key=f"layered_condition_values_{group_index}_{condition_index}",
+                    )
+                rendered_conditions.append(
+                    {
+                        "variable": variable,
+                        "operator": operator,
+                        "values": values,
+                    }
+                )
+            rendered_groups.append(
+                {
+                    "id": group_id,
+                    "label": normalize_text(label),
+                    "role": role,
+                    "match_logic": match_logic,
+                    "conditions": rendered_conditions,
+                }
+            )
+
+    rendered_scheme = {
+        "enabled": True,
+        "mode": mode,
+        "control_group_id": control_ids[0] if control_ids else "",
+        "groups": rendered_groups,
+    }
+    preview_groups = build_comparison_group_masks(
+        cleaned_df,
+        rendered_scheme,
+        question_lookup,
+        st.session_state.get("comparison_col"),
+        st.session_state.get("comparison_group_order", {}),
+        st.session_state.get("comparison_group_labels", {}),
+    )
+    if preview_groups:
+        st.write("Group bases")
+        st.dataframe(summarize_comparison_groups(preview_groups), hide_index=True, use_container_width=True)
+        overlaps = detect_group_overlaps(preview_groups)
+        if overlaps:
+            st.warning(
+                "Overlap detected: "
+                + "; ".join(
+                    f"{row['left_label']} + {row['right_label']} share {row['overlap_n']} respondent(s)"
+                    for row in overlaps
+                )
+            )
+        else:
+            st.success("No group overlap detected in the current cleaned data.")
+
+    validation_issues: list[str] = []
+    if len(control_ids) != 1:
+        validation_issues.append("Exactly one group must have the Control role.")
+    for group_index, group in enumerate(rendered_groups, start=1):
+        if not normalize_text(group.get("label")):
+            validation_issues.append(f"Group {group_index} needs a display label.")
+        valid_conditions = [
+            condition
+            for condition in group.get("conditions", [])
+            if normalize_text(condition.get("variable"))
+            and normalize_text(condition.get("operator"))
+            and condition.get("values")
+        ]
+        if not valid_conditions:
+            validation_issues.append(f"Group {group_index} needs at least one complete condition.")
+    if validation_issues:
+        for issue in validation_issues:
+            st.warning(issue)
+
+    save_col, reset_col = st.columns(2)
+    with save_col:
+        if st.button("Save Comparison Setup", type="primary", use_container_width=True, disabled=bool(validation_issues)):
+            # 2026-05-19 BD: Persist the single unified comparison setup, with
+            # exclusive and overlapping groups both stored as comparison_scheme.
+            st.session_state.comparison_scheme = sanitize_comparison_scheme(rendered_scheme)
+            _append_materialized_comparison_variable()
+            st.session_state.comparison_configured = True
+            _append_intake_change("Comparison setup saved.")
+            st.success("Comparison setup saved.")
+            st.rerun()
+    with reset_col:
+        if st.button("Reset Groups", use_container_width=True):
+            seeded_scheme = _build_default_layered_scheme_from_comparison(
+                cleaned_df,
+                st.session_state.get("comparison_col"),
+            )
+            if not seeded_scheme.get("enabled"):
+                seeded_scheme = {
+                    "enabled": True,
+                    "mode": "exclusive",
+                    "control_group_id": "group_1",
+                    "groups": [
+                        {**build_default_comparison_group(1), "role": "control", "label": "Control"},
+                        {**build_default_comparison_group(2), "role": "test", "label": "Test"},
+                    ],
+                }
+            st.session_state.comparison_scheme = seeded_scheme
+            _append_materialized_comparison_variable()
+            _append_intake_change("Comparison setup groups reset.")
+            st.success("Comparison setup reset.")
+            st.rerun()
 
 
 def _current_included_count() -> int:
@@ -635,6 +990,33 @@ def _move_comparison_group(group_name: str, direction: str) -> None:
             st.session_state.comparison_col,
         ).to_dict(orient="records")
     }
+
+
+def _move_comparison_scheme_group(group_id: str, direction: str) -> None:
+    """Move a saved unified comparison group in display/export order."""
+    scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
+    groups = list(scheme.get("groups", []))
+    group_ids = [normalize_text(group.get("id")) for group in groups]
+    normalized_group_id = normalize_text(group_id)
+    if normalized_group_id not in group_ids:
+        return
+
+    current_index = group_ids.index(normalized_group_id)
+    if direction == "up" and current_index > 0:
+        groups[current_index - 1], groups[current_index] = groups[current_index], groups[current_index - 1]
+    elif direction == "down" and current_index < len(groups) - 1:
+        groups[current_index + 1], groups[current_index] = groups[current_index], groups[current_index + 1]
+    else:
+        return
+
+    # 2026-05-19 BD: The Comparison Group Order panel now reorders the saved
+    # comparison_scheme groups directly, matching Intake Summary and export.
+    st.session_state.comparison_scheme = {
+        **scheme,
+        "groups": groups,
+    }
+    _append_materialized_comparison_variable()
+    _append_intake_change("Comparison group order updated.")
 
 
 def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[str]) -> pd.DataFrame:
@@ -714,6 +1096,7 @@ def _apply_intake_result(result) -> None:
         result.cell_column,
         st.session_state.get("comparison_group_labels", {}),
     )
+    st.session_state.comparison_scheme = build_default_comparison_scheme()
     st.session_state.locked_cell_bases = {}
     st.session_state.cell_sort_order = {}
     st.session_state.cell_letter_map = {}
@@ -791,31 +1174,11 @@ def render_step_1() -> None:
     survey_df = st.session_state.survey_df
     if isinstance(survey_df, pd.DataFrame) and not survey_df.empty:
         st.subheader("Comparison Setup")
-        comparison_options = ["None / Total only", *st.session_state.comparison_options]
-        default_option = st.session_state.get("comparison_col") or "None / Total only"
-        if default_option not in comparison_options:
-            default_option = "None / Total only"
-
-        selected_option = st.selectbox(
-            "Comparison Variable",
-            options=comparison_options,
-            index=comparison_options.index(default_option),
-            help="`cell` is auto-selected when present, but you can choose another variable or total-only analysis.",
-        )
-        if st.button("Apply Comparison Variable", use_container_width=False):
-            selected_comparison = None if selected_option == "None / Total only" else selected_option
-            try:
-                _apply_comparison_selection(selected_comparison)
-            except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
-                st.error(str(exc))
-            else:
-                label = selected_comparison or "Total only"
-                _append_intake_change(f"Comparison variable updated to {label}.")
-                if selected_comparison is None:
-                    st.success("Comparison variable updated. The project is now set to total-only analysis.")
-                else:
-                    st.success(f"Comparison variable updated to `{selected_comparison}`.")
-                st.rerun()
+        # 2026-05-19 BD: Remove the separate comparison-variable selector from
+        # the UI. The setup is driven by group rules, seeded from detected cell
+        # values when available.
+        if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty:
+            _render_layered_comparison_editor(cleaned_df)
 
     if isinstance(cleaned_df, pd.DataFrame) and not cleaned_df.empty and st.session_state.get("comparison_configured"):
         col1, col2 = st.columns(2)
@@ -828,57 +1191,111 @@ def render_step_1() -> None:
         st.subheader("Intake Summary")
         summary_left, summary_right = st.columns([1.2, 1])
         with summary_left:
-            comparison_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
-            edited_summary = st.data_editor(
-                comparison_summary,
-                key="comparison_summary_editor",
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                column_config={
-                    "Raw Value": st.column_config.TextColumn(disabled=True),
-                    "Display Label": st.column_config.TextColumn(help="Rename the visible group label used across the app and export."),
-                    "N": st.column_config.NumberColumn(disabled=True),
-                },
-            )
-            label_left, label_right = st.columns(2)
-            with label_left:
-                if st.button("Update Labels", key="update_comparison_labels", use_container_width=True):
-                    updated_labels = {
-                        normalize_text(row["Raw Value"]): normalize_text(row["Display Label"]) or normalize_text(row["Raw Value"])
-                        for row in edited_summary.to_dict(orient="records")
-                    }
-                    previous_labels = dict(st.session_state.get("comparison_group_labels", {}))
-                    st.session_state.comparison_group_labels = updated_labels
-                    changed_bits = []
-                    for raw_value, new_label in updated_labels.items():
-                        old_label = normalize_text(previous_labels.get(raw_value, raw_value)) or raw_value
-                        if old_label != new_label:
-                            changed_bits.append(f"{raw_value}: {old_label} -> {new_label}")
-                    if changed_bits:
-                        _append_intake_change("Comparison labels updated (" + "; ".join(changed_bits) + ").")
-                    else:
-                        _append_intake_change("Comparison labels updated (no label changes).")
-                    st.success("Comparison labels updated.")
-                    st.rerun()
-            with label_right:
-                if st.button("Reset Labels", key="reset_comparison_labels", use_container_width=True):
-                    st.session_state.comparison_group_labels = _default_comparison_group_labels(
-                        cleaned_df,
-                        st.session_state.comparison_col,
-                        {},
-                    )
-                    _append_intake_change("Comparison labels reset to default labels.")
-                    st.success("Comparison labels reset.")
-                    st.rerun()
+            active_scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
+            if active_scheme.get("enabled"):
+                question_lookup = build_question_lookup(
+                    st.session_state.question_metadata,
+                    st.session_state.get("net_definitions", {}),
+                    st.session_state.get("scale_mappings", {}),
+                )
+                scheme_groups = build_comparison_group_masks(
+                    cleaned_df,
+                    active_scheme,
+                    question_lookup,
+                    st.session_state.get("comparison_col"),
+                    st.session_state.get("comparison_group_order", {}),
+                    st.session_state.get("comparison_group_labels", {}),
+                )
+                # 2026-05-19 BD: With one unified setup, group labels are edited
+                # in Comparison Setup; Intake Summary is read-only confirmation.
+                st.dataframe(
+                    summarize_comparison_groups(scheme_groups),
+                    key="comparison_scheme_summary",
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                comparison_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
+                edited_summary = st.data_editor(
+                    comparison_summary,
+                    key="comparison_summary_editor",
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="fixed",
+                    column_config={
+                        "Raw Value": st.column_config.TextColumn(disabled=True),
+                        "Display Label": st.column_config.TextColumn(help="Rename the visible group label used across the app and export."),
+                        "N": st.column_config.NumberColumn(disabled=True),
+                    },
+                )
+                label_left, label_right = st.columns(2)
+                with label_left:
+                    if st.button("Update Labels", key="update_comparison_labels", use_container_width=True):
+                        updated_labels = {
+                            normalize_text(row["Raw Value"]): normalize_text(row["Display Label"]) or normalize_text(row["Raw Value"])
+                            for row in edited_summary.to_dict(orient="records")
+                        }
+                        previous_labels = dict(st.session_state.get("comparison_group_labels", {}))
+                        st.session_state.comparison_group_labels = updated_labels
+                        changed_bits = []
+                        for raw_value, new_label in updated_labels.items():
+                            old_label = normalize_text(previous_labels.get(raw_value, raw_value)) or raw_value
+                            if old_label != new_label:
+                                changed_bits.append(f"{raw_value}: {old_label} -> {new_label}")
+                        if changed_bits:
+                            _append_intake_change("Comparison labels updated (" + "; ".join(changed_bits) + ").")
+                        else:
+                            _append_intake_change("Comparison labels updated (no label changes).")
+                        st.success("Comparison labels updated.")
+                        st.rerun()
+                with label_right:
+                    if st.button("Reset Labels", key="reset_comparison_labels", use_container_width=True):
+                        st.session_state.comparison_group_labels = _default_comparison_group_labels(
+                            cleaned_df,
+                            st.session_state.comparison_col,
+                            {},
+                        )
+                        _append_intake_change("Comparison labels reset to default labels.")
+                        st.success("Comparison labels reset.")
+                        st.rerun()
         with summary_right:
             st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
             st.write(f"Columns Included: `{_current_included_count()}`")
             st.write(f"Columns Excluded: `{_current_excluded_count()}`")
-            current_comparison = st.session_state.comparison_col or "Total only"
-            st.write(f"Comparison Variable: `{current_comparison}`")
 
-        if st.session_state.comparison_col and len(st.session_state.comparison_group_order) > 1:
+        active_order_scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
+        if active_order_scheme.get("enabled") and len(active_order_scheme.get("groups", [])) > 1:
+            st.subheader("Comparison Group Order")
+            st.caption("Use the move buttons to control the display order for comparison groups.")
+            question_lookup = build_question_lookup(
+                st.session_state.question_metadata,
+                st.session_state.get("net_definitions", {}),
+                st.session_state.get("scale_mappings", {}),
+            )
+            ordered_scheme_groups = build_comparison_group_masks(
+                cleaned_df,
+                active_order_scheme,
+                question_lookup,
+                st.session_state.get("comparison_col"),
+                st.session_state.get("comparison_group_order", {}),
+                st.session_state.get("comparison_group_labels", {}),
+            )
+            for group_index, group in enumerate(ordered_scheme_groups):
+                group_id = normalize_text(group.get("comparison_group_id") or group.get("id"))
+                display_label = normalize_text(group.get("label")) or group_id
+                role_label = normalize_text(group.get("role")).title() or "Test"
+                base_n = int(group.get("mask", pd.Series(dtype=bool)).sum())
+                row_cols = st.columns([3, 1.3, 1, 0.8, 0.8])
+                row_cols[0].write(display_label)
+                row_cols[1].write(role_label)
+                row_cols[2].write(base_n)
+                if row_cols[3].button("↑", key=f"scheme_order_up_{group_id}_{group_index}", use_container_width=True):
+                    _move_comparison_scheme_group(group_id, "up")
+                    st.rerun()
+                if row_cols[4].button("↓", key=f"scheme_order_down_{group_id}_{group_index}", use_container_width=True):
+                    _move_comparison_scheme_group(group_id, "down")
+                    st.rerun()
+        elif st.session_state.comparison_col and len(st.session_state.comparison_group_order) > 1:
             st.subheader("Comparison Group Order")
             st.caption("Use the move buttons to control the display order for comparison groups.")
             ordered_summary = _build_comparison_summary_frame(cleaned_df, st.session_state.comparison_col)
@@ -1104,7 +1521,7 @@ def render_step_3() -> None:
     if not st.session_state.question_metadata:
         st.session_state.question_metadata = build_question_metadata(cleaned_df, question_labels, cell_col)
 
-    st.caption("Review question types and edit answer-choice labels where needed.")
+    st.caption("Review question types, displayed variable names, and answer-choice labels where needed.")
 
     editor_df = prepare_metadata_editor_frame(st.session_state.question_metadata)
     edited = st.data_editor(
@@ -1134,6 +1551,14 @@ def render_step_3() -> None:
                 if old_type != new_type:
                     st.session_state.metadata_change_log.append(
                         build_metadata_change_log_entry(variable, old_type, new_type)
+                    )
+                old_display_name = get_display_variable_name(previous_row)
+                new_display_name = get_display_variable_name(row)
+                if old_display_name != new_display_name:
+                    timestamp = format_timestamp()
+                    st.session_state.metadata_change_log.append(
+                        f"[{timestamp}] {variable}: Displayed variable name changed "
+                        f"from {old_display_name or variable} to {new_display_name or variable}"
                     )
                 old_choices = normalize_text(previous_row.get("answer_choices", ""))
                 new_choices = normalize_text(row.get("answer_choices", ""))
@@ -1209,7 +1634,8 @@ def render_step_4() -> None:
 
     point_columns = [column for column in editor_df.columns if column.startswith("scale_point_")]
     column_config = {
-        "variable": st.column_config.TextColumn("Variable Name", disabled=True, width=180),
+        "variable": st.column_config.TextColumn("Raw Variable Name", disabled=True, width=180),
+        "display_variable_name": st.column_config.TextColumn("Displayed Variable Name", disabled=True, width=220),
         "question_label": st.column_config.TextColumn("Question Text", disabled=True, width=420),
         "polarity": st.column_config.SelectboxColumn(
             "Polarity",
@@ -1297,6 +1723,7 @@ def render_step_5_nets() -> None:
     if (
         not isinstance(current_frame, pd.DataFrame)
         or list(current_frame.get("variable", [])) != list(base_frame.get("variable", []))
+        or list(current_frame.get("display_variable_name", [])) != list(base_frame.get("display_variable_name", []))
     ):
         st.session_state.net_editor_frame = base_frame.copy()
 
@@ -1317,7 +1744,8 @@ def render_step_5_nets() -> None:
         hide_index=True,
         num_rows="fixed",
         column_config={
-            "variable": st.column_config.TextColumn("Variable Name", disabled=True, width=220),
+            "variable": st.column_config.TextColumn("Raw Variable Name", disabled=True, width=220),
+            "display_variable_name": st.column_config.TextColumn("Displayed Variable Name", disabled=True, width=260),
             "question_label": st.column_config.TextColumn("Question Text", disabled=True, width=700),
             "T2B": st.column_config.CheckboxColumn("T2B"),
             "T3B": st.column_config.CheckboxColumn("T3B"),
@@ -1366,7 +1794,10 @@ def render_step_6() -> None:
     )
     question_options = list(question_lookup.keys())
     question_labels = {
-        variable: f"{variable} - {question_lookup[variable]['question_label']}"
+        variable: (
+            f"{question_lookup[variable].get('display_variable_name', variable)} - "
+            f"{question_lookup[variable]['question_label']}"
+        )
         for variable in question_options
     }
     if not question_options:
@@ -1738,6 +2169,7 @@ def render_step_7() -> None:
         st.session_state.question_metadata,
         st.session_state.custom_variables,
         st.session_state.get("comparison_col"),
+        st.session_state.get("comparison_scheme", {}),
     )
     variable_options = [item["id"] for item in variable_catalog]
     variable_labels = {item["id"]: item["label"] for item in variable_catalog}
@@ -2123,6 +2555,7 @@ def render_step_9() -> None:
             "Weighting Variables",
             options=weight_variable_options,
             default=[value for value in row.get("variables", []) if value in weight_variable_options],
+            format_func=lambda value: variable_labels.get(value, value),
             key=f"weight_variables_{index}",
             help="Select one or more variables to use in the weighting scheme.",
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from src.metadata import build_display_variable_lookup
 from src.config import (
     build_analysis_variable_catalog,
     build_default_adhoc_crosstab_config,
@@ -27,9 +28,11 @@ def render() -> None:
         st.session_state.get("question_metadata", []),
         st.session_state.get("custom_variables", []),
         st.session_state.get("comparison_col"),
+        st.session_state.get("comparison_scheme", {}),
     )
     variable_options = [item["id"] for item in variable_catalog]
     variable_labels = {item["id"]: item["label"] for item in variable_catalog}
+    display_variable_lookup = build_display_variable_lookup(st.session_state.get("question_metadata", []))
 
     existing_tables = list(st.session_state.adhoc_crosstabs_config.get("tables", []))
     table_count = int(
@@ -72,7 +75,10 @@ def render() -> None:
         )
         rendered_tables.append(
             {
-                "name": normalize_text(table_name) or normalize_text(row_variable),
+                # 2026-05-15 BD: Default AdHoc table names to the displayed variable name;
+                # raw variables still power the underlying table joins.
+                "name": normalize_text(table_name)
+                or display_variable_lookup.get(normalize_text(row_variable), normalize_text(row_variable)),
                 "row_variable": normalize_text(row_variable),
                 "column_variable": normalize_text(column_variable),
             }

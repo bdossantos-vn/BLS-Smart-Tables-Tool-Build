@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.comparisons import COMPARISON_SCHEME_DISPLAY_NAME, COMPARISON_SCHEME_LEVEL, is_layered_comparison_scheme
+from src.metadata import get_display_variable_name
 from src.utils import normalize_text
 
 
@@ -67,7 +69,9 @@ def build_stat_comparison_options(comparison_col: str | None = None) -> list[tup
     """Return UI options for statistical comparison behavior."""
     options = [("none", "None"), ("lowest_banner_level", "All lowest banner-level groups")]
     if normalize_text(comparison_col):
-        options.insert(1, ("control_vs_test", "Control vs test within each banner"))
+        # 2026-05-19 BD: Control-vs-test now covers layered Control-vs-each
+        # non-control group; the test type itself is selected automatically.
+        options.insert(1, ("control_vs_test", "Control vs each non-control group within each banner"))
     return options
 
 
@@ -84,17 +88,38 @@ def build_analysis_variable_catalog(
     question_metadata: list[dict[str, Any]],
     custom_variables: list[dict[str, Any]],
     comparison_col: str | None = None,
+    comparison_scheme: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """Build a catalog of variables available for banners and filters."""
     catalog: list[dict[str, str]] = []
     seen: set[str] = set()
+    # 2026-05-15 BD: Use displayed variable names in setup selectors while
+    # keeping catalog ids as raw variables for downstream calculations.
+    display_lookup = {
+        normalize_text(row.get("variable")): get_display_variable_name(row)
+        for row in question_metadata
+        if normalize_text(row.get("variable"))
+    }
 
     comparison_variable = normalize_text(comparison_col)
+    if is_layered_comparison_scheme(comparison_scheme):
+        # 2026-05-19 BD: Expose the finalized comparison setup as one reusable
+        # selector option for banners/AdHoc without duplicating Page 2 logic.
+        catalog.append(
+            {
+                "id": COMPARISON_SCHEME_LEVEL,
+                "label": COMPARISON_SCHEME_DISPLAY_NAME,
+                "kind": "Comparison Scheme",
+                "question_type": "Comparison Groups",
+            }
+        )
+        seen.add(COMPARISON_SCHEME_LEVEL)
+
     if comparison_variable:
         catalog.append(
             {
                 "id": comparison_variable,
-                "label": comparison_variable,
+                "label": display_lookup.get(comparison_variable, comparison_variable),
                 "kind": "Comparison Variable",
                 "question_type": "Single-Select",
             }
@@ -111,7 +136,7 @@ def build_analysis_variable_catalog(
         catalog.append(
             {
                 "id": variable,
-                "label": f"{variable} - {normalize_text(row.get('question_label'))}",
+                "label": f"{get_display_variable_name(row)} - {normalize_text(row.get('question_label'))}",
                 "kind": "Survey Question",
                 "question_type": question_type,
             }

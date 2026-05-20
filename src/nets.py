@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.metadata import get_display_variable_name
 from src.utils import normalize_text
 
 
@@ -31,6 +32,7 @@ def build_net_editor_frame(
         variable = normalize_text(question.get("variable"))
         row: dict[str, Any] = {
             "variable": variable,
+            "display_variable_name": get_display_variable_name(question),
             "question_label": normalize_text(question.get("question_label")),
         }
         mapping_rows = scale_mappings.get(variable, {}).get("rows", [])

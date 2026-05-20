@@ -8,6 +8,7 @@ import re
 
 import pandas as pd
 
+from src.metadata import get_display_variable_name
 from src.nets import build_enabled_net_choice_map
 from src.utils import normalize_text
 
@@ -52,6 +53,7 @@ def build_question_catalog(
         catalog.append(
             {
                 "variable": variable,
+                "display_variable_name": get_display_variable_name(row),
                 "question_label": normalize_text(row.get("question_label")),
                 "question_type": normalize_text(question_type),
                 "answer_choices_list": answer_choices_list,
