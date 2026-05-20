@@ -884,10 +884,12 @@ def _render_layered_comparison_editor(cleaned_df: pd.DataFrame) -> None:
             )
         else:
             st.success("No group overlap detected in the current cleaned data.")
+    if not control_ids:
+        st.info("No Control role selected. These will be treated as test cells; lift will be skipped.")
 
     validation_issues: list[str] = []
-    if len(control_ids) != 1:
-        validation_issues.append("Exactly one group must have the Control role.")
+    if len(control_ids) > 1:
+        validation_issues.append("Select no more than one Control group.")
     for group_index, group in enumerate(rendered_groups, start=1):
         if not normalize_text(group.get("label")):
             validation_issues.append(f"Group {group_index} needs a display label.")

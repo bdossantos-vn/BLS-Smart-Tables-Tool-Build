@@ -46,8 +46,7 @@ def is_layered_comparison_scheme(scheme: dict[str, Any] | None) -> bool:
     if not isinstance(scheme, dict) or not bool(scheme.get("enabled")):
         return False
     groups = [group for group in scheme.get("groups", []) if normalize_text(group.get("id"))]
-    control_group_id = normalize_text(scheme.get("control_group_id"))
-    return bool(groups and control_group_id)
+    return bool(groups)
 
 
 def sanitize_comparison_scheme(scheme: dict[str, Any] | None) -> dict[str, Any]:
@@ -343,10 +342,7 @@ def build_control_comparison_pairs(groups: list[dict[str, Any]]) -> list[dict[st
             None,
         )
     if control_index is None:
-        if len(non_total_indexes) == 2:
-            control_index = non_total_indexes[0]
-        else:
-            return []
+        return []
 
     pairs: list[dict[str, Any]] = []
     for right_index in non_total_indexes:

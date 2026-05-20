@@ -9,9 +9,16 @@ import re
 import pandas as pd
 import streamlit as st
 
+from src.comparisons import sanitize_comparison_scheme
 from src.custom_vars import build_question_lookup
 from src.metadata import serialize_answer_choices
-from src.utils import format_timestamp
+from src.utils import format_timestamp, normalize_text
+
+
+TOPLINE_COMPARISON_SCOPE_OPTIONS = {
+    "control_vs_test": "Control vs test sig testing",
+    "lowest_banner_level": "All cell sig testing",
+}
 
 
 def _append_topline_change(message: str) -> None:
@@ -217,6 +224,43 @@ def _topline_note_base_key(variable: str) -> str:
     """Build a safe session-state key for one topline note-base selector."""
     slug = re.sub(r"[^A-Za-z0-9_]+", "_", variable).strip("_") or "variable"
     return f"topline_note_base_selector_{slug}"
+
+
+def _comparison_role_summary() -> tuple[int, int, int]:
+    """Return control, test, and total comparison-cell counts."""
+    scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
+    groups = [
+        group
+        for group in scheme.get("groups", [])
+        if normalize_text(group.get("id"))
+    ]
+    if groups and scheme.get("enabled"):
+        control_group_id = normalize_text(scheme.get("control_group_id"))
+        control_count = sum(
+            1
+            for group in groups
+            if normalize_text(group.get("role")).lower() == "control"
+            or (control_group_id and normalize_text(group.get("id")) == control_group_id)
+        )
+        return control_count, max(len(groups) - control_count, 0), len(groups)
+
+    cleaned_df = st.session_state.get("cleaned_df")
+    comparison_col = normalize_text(st.session_state.get("comparison_col"))
+    if not isinstance(cleaned_df, pd.DataFrame) or not comparison_col or comparison_col not in cleaned_df.columns:
+        return 0, 0, 0
+    labels = st.session_state.get("comparison_group_labels", {})
+    values = [
+        normalize_text(value)
+        for value in cleaned_df[comparison_col].dropna().unique().tolist()
+        if normalize_text(value)
+    ]
+    control_count = sum(
+        1
+        for value in values
+        if normalize_text(labels.get(value, value)).casefold() == "control"
+        or "control" in value.casefold()
+    )
+    return control_count, max(len(values) - control_count, 0), len(values)
 
 
 def _set_all_selected_note_bases(rows: list[dict[str, object]], note_base: str) -> None:
@@ -425,18 +469,45 @@ def render() -> None:
             st.success("Topline columns reset.")
             st.rerun()
 
+    control_count, test_count, comparison_group_count = _comparison_role_summary()
+    lift_available = control_count == 1 and test_count >= 1
+    saved_topline_config = st.session_state.get("topline_config", {})
     include_lift = st.checkbox(
         "Include lift",
-        value=bool(st.session_state.get("topline_config", {}).get("include_lift", False)),
-        help="Lift is only meaningful for binary comparison splits.",
+        value=bool(saved_topline_config.get("include_lift", False)) and lift_available,
+        disabled=not lift_available,
+        help="Lift is calculated only when one Control cell is available.",
     )
+    if comparison_group_count and not lift_available:
+        st.caption("No Control cell is selected, so lift will be skipped for topline and group comparisons.")
+
+    comparison_scope = saved_topline_config.get(
+        "comparison_scope",
+        "control_vs_test" if lift_available else "lowest_banner_level",
+    )
+    if comparison_group_count >= 2:
+        scope_options = ["lowest_banner_level"]
+        if lift_available:
+            scope_options.insert(0, "control_vs_test")
+        if comparison_scope not in scope_options:
+            comparison_scope = scope_options[0]
+        comparison_scope = st.selectbox(
+            "Topline Sig Testing",
+            options=scope_options,
+            index=scope_options.index(comparison_scope),
+            format_func=lambda value: TOPLINE_COMPARISON_SCOPE_OPTIONS.get(value, value),
+            help="Choose whether topline significance compares only Control against each test cell or all visible cells against each other.",
+        )
+    else:
+        comparison_scope = "none"
     include_significance_notes = st.checkbox(
         "Include significance notes",
-        value=bool(st.session_state.get("topline_config", {}).get("include_significance_notes", True)),
+        value=bool(saved_topline_config.get("include_significance_notes", True)),
     )
 
     current_config = deepcopy(st.session_state.get("topline_config", {}))
     current_config["include_lift"] = include_lift
+    current_config["comparison_scope"] = comparison_scope
     current_config["include_significance_notes"] = include_significance_notes
     st.session_state.topline_config = current_config
 

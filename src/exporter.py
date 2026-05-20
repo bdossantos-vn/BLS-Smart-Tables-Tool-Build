@@ -109,11 +109,20 @@ def _build_banner_lift_pairs(sheet, visible_groups: list[dict]) -> tuple[list[di
             )
         return lift_pairs, ""
 
+    non_total_groups = [group for group in visible_groups if group.get("label") != "Total"]
+    has_explicit_comparison_roles = any(normalize_text(group.get("role")) for group in non_total_groups)
+    has_control_group = any(
+        normalize_text(group.get("role")).lower() == "control"
+        or normalize_text(group.get("label")).casefold() == "control"
+        for group in non_total_groups
+    )
+    if has_explicit_comparison_roles and not has_control_group:
+        return [], ""
+
     if not sheet.levels:
         return [], "Lift could not be performed since the comparison variable is not binary."
 
     lowest_level = sheet.levels[-1]
-    non_total_groups = [group for group in visible_groups if group.get("label") != "Total"]
     if not non_total_groups:
         return [], "Lift could not be performed since the comparison variable is not binary."
 
@@ -183,20 +192,26 @@ def _paint_separator_column(worksheet, column_index: int, start_row: int, end_ro
         cell.border = Border()
 
 
-def _set_topline_columns(worksheet, pair_count: int = 1) -> None:
+def _set_topline_columns(worksheet, group_count: int = 2, pair_count: int = 0) -> None:
     """Set practical column widths for the topline worksheet."""
     worksheet.column_dimensions["A"].width = 4
     worksheet.column_dimensions["B"].width = 42
     worksheet.column_dimensions["C"].width = 15
     current_column = 4
-    for _ in range(max(pair_count, 1)):
-        worksheet.column_dimensions[get_column_letter(current_column)].width = 15
-        worksheet.column_dimensions[get_column_letter(current_column + 1)].width = 18
-        current_column += 2
+    if pair_count:
+        for _ in range(pair_count):
+            worksheet.column_dimensions[get_column_letter(current_column)].width = 15
+            worksheet.column_dimensions[get_column_letter(current_column + 1)].width = 18
+            current_column += 2
+    else:
+        for _ in range(max(group_count - 1, 0)):
+            worksheet.column_dimensions[get_column_letter(current_column)].width = 15
+            current_column += 1
     worksheet.column_dimensions[get_column_letter(current_column)].width = 18
-    for column_index in range(current_column + 1, current_column + 1 + max(pair_count, 1)):
+    note_column_count = max(pair_count, 1)
+    for column_index in range(current_column + 1, current_column + 1 + note_column_count):
         worksheet.column_dimensions[get_column_letter(column_index)].width = 48
-    worksheet.column_dimensions[get_column_letter(current_column + max(pair_count, 1) + 1)].width = 8
+    worksheet.column_dimensions[get_column_letter(current_column + note_column_count + 1)].width = 8
 
 
 def _coerce_topline_index(value, fallback: int) -> int:
@@ -288,26 +303,21 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     if not group_results:
         group_results = _normalize_topline_groups(
             [
-                {"label": "Control", "base": None},
-                {"label": "Test", "base": None},
+                {"label": "Group 1", "base": None},
+                {"label": "Group 2", "base": None},
             ]
         )
     pair_results = _normalize_topline_pairs(list(first_row.get("Comparison Pairs", []) or []), group_results)
-    if not pair_results:
-        pair_results = _normalize_topline_pairs(
-            [
-                {
-                    "right_label": first_row.get("Right Label", group_results[1].get("label", "Test")),
-                    "left_label": first_row.get("Left Label", group_results[0].get("label", "Control")),
-                    "left_index": group_results[0].get("index", 0),
-                    "right_index": group_results[1].get("index", 1),
-                }
-            ],
-            group_results,
-        )
-
-    pair_count = max(len(pair_results), 1)
-    _set_topline_columns(worksheet, pair_count)
+    pair_count = len(pair_results)
+    group_count = max(len(group_results), 1)
+    _set_topline_columns(worksheet, group_count, pair_count)
+    group_columns = [
+        {
+            "group": group,
+            "column": 3 + position,
+        }
+        for position, group in enumerate(group_results)
+    ]
     control_column = 3
     paired_columns = [
         {
@@ -317,11 +327,12 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         }
         for position, pair in enumerate(pair_results)
     ]
-    note_base_column = 4 + (pair_count * 2)
+    note_base_column = (4 + (pair_count * 2)) if pair_count else 3 + group_count
     notes_start_column = note_base_column + 1
-    end_column = notes_start_column + pair_count - 1
+    note_column_count = max(pair_count, 1)
+    end_column = notes_start_column + note_column_count - 1
     group_lookup = {group.get("index"): group for group in group_results}
-    control_index = pair_results[0].get("left_index", group_results[0].get("index", 0))
+    control_index = pair_results[0].get("left_index", group_results[0].get("index", 0)) if pair_results else group_results[0].get("index", 0)
     control_group = group_lookup.get(control_index, group_results[0])
 
     current_row = 1
@@ -346,24 +357,31 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     if rows:
         comparison_variable_label = rows[0].get("Comparison Variable", comparison_variable_label)
 
-    # 2026-05-19 BD: Topline columns now interleave each test group with its
-    # Control lift, then split notes by Control-vs-group comparison.
     header_values = {
         (11, 2): comparison_variable_label,
         (12, 2): "Base Size",
-        (11, control_column): control_group.get("label") or "Control",
         (11, note_base_column): "Note Base",
     }
-    for position, paired_column in enumerate(paired_columns):
-        pair = paired_column["pair"]
-        right_label = pair.get("right_label", "Test")
-        left_label = pair.get("left_label", "Control")
-        header_values[(11, paired_column["group_column"])] = right_label
-        header_values[(11, paired_column["lift_column"])] = f"{right_label} vs {left_label} Lift"
-        header_values[(12, paired_column["lift_column"])] = "Lift"
-        note_column = notes_start_column + position
-        header_values[(11, note_column)] = f"{left_label} vs {right_label} Notes"
-        header_values[(12, note_column)] = "Notes"
+    if paired_columns:
+        # Topline columns interleave each test group with its Control lift,
+        # then split notes by Control-vs-group comparison.
+        header_values[(11, control_column)] = control_group.get("label") or "Control"
+        for position, paired_column in enumerate(paired_columns):
+            pair = paired_column["pair"]
+            right_label = pair.get("right_label", "Test")
+            left_label = pair.get("left_label", "Control")
+            header_values[(11, paired_column["group_column"])] = right_label
+            header_values[(11, paired_column["lift_column"])] = f"{right_label} vs {left_label} Lift"
+            header_values[(12, paired_column["lift_column"])] = "Lift"
+            note_column = notes_start_column + position
+            header_values[(11, note_column)] = f"{left_label} vs {right_label} Notes"
+            header_values[(12, note_column)] = "Notes"
+    else:
+        for group_column in group_columns:
+            group = group_column["group"]
+            header_values[(11, group_column["column"])] = group.get("label") or "Group"
+        header_values[(11, notes_start_column)] = "Notes"
+        header_values[(12, notes_start_column)] = "Notes"
 
     for (row_index, column_index), value in header_values.items():
         cell = worksheet.cell(row=row_index, column=column_index, value=value)
@@ -381,15 +399,22 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         worksheet.freeze_panes = "A4"
         return
 
-    base_cell = worksheet.cell(row=12, column=control_column, value=control_group.get("base"))
-    _apply_body_style(base_cell)
-    base_cell.alignment = Alignment(horizontal="center", vertical="top")
-    for paired_column in paired_columns:
-        pair = paired_column["pair"]
-        right_group = group_lookup.get(pair.get("right_index"), {})
-        base_cell = worksheet.cell(row=12, column=paired_column["group_column"], value=right_group.get("base"))
+    if paired_columns:
+        base_cell = worksheet.cell(row=12, column=control_column, value=control_group.get("base"))
         _apply_body_style(base_cell)
         base_cell.alignment = Alignment(horizontal="center", vertical="top")
+        for paired_column in paired_columns:
+            pair = paired_column["pair"]
+            right_group = group_lookup.get(pair.get("right_index"), {})
+            base_cell = worksheet.cell(row=12, column=paired_column["group_column"], value=right_group.get("base"))
+            _apply_body_style(base_cell)
+            base_cell.alignment = Alignment(horizontal="center", vertical="top")
+    else:
+        for group_column in group_columns:
+            group = group_column["group"]
+            base_cell = worksheet.cell(row=12, column=group_column["column"], value=group.get("base"))
+            _apply_body_style(base_cell)
+            base_cell.alignment = Alignment(horizontal="center", vertical="top")
     note_base_header = worksheet.cell(row=12, column=note_base_column, value="")
     _apply_body_style(note_base_header, fill_color=VN_LIGHT_GRAY)
 
@@ -415,55 +440,54 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
             list(row.get("Comparison Pairs", []) or []),
             active_group_results,
         )
-        if not active_pair_results:
-            active_pair_results = _normalize_topline_pairs(
-                [
-                    {
-                        "left_index": active_group_results[0].get("index", 0),
-                        "right_index": active_group_results[1].get("index", 1),
-                        "lift": row.get("Lift"),
-                        "sig_direction": row.get("Sig Test", ""),
-                    }
-                ],
-                active_group_results,
-            )
         active_pair_lookup = {pair.get("note_key"): pair for pair in active_pair_results}
 
-        active_control_group = active_group_lookup.get(control_index)
-        if active_control_group is None:
-            active_control_group = active_group_results[0] if active_group_results else {}
-        control_percentage = active_control_group.get("pct")
-        control_sig_text = str(active_control_group.get("sig", "") or "")
-        control_display = f"{control_percentage:.0%}{control_sig_text}" if control_percentage is not None else ""
-        pct_cell = worksheet.cell(row=current_row, column=control_column, value=control_display)
-        _apply_body_style(pct_cell)
-        pct_cell.alignment = Alignment(horizontal="center", vertical="top")
-
-        for position, paired_column in enumerate(paired_columns):
-            header_pair = paired_column["pair"]
-            pair = active_pair_lookup.get(header_pair.get("note_key"))
-            if pair is None and position < len(active_pair_results):
-                pair = active_pair_results[position]
-            pair = pair or header_pair
-            right_group = active_group_lookup.get(pair.get("right_index")) or active_group_lookup.get(
-                header_pair.get("right_index")
-            )
-            if right_group is None and position + 1 < len(active_group_results):
-                right_group = active_group_results[position + 1]
-            right_group = right_group or {}
-            percentage = right_group.get("pct", pair.get("right_pct"))
-            sig_text = str(right_group.get("sig", "") or "")
-            display_value = f"{percentage:.0%}{sig_text}" if percentage is not None else ""
-            pct_cell = worksheet.cell(row=current_row, column=paired_column["group_column"], value=display_value)
+        if paired_columns:
+            active_control_group = active_group_lookup.get(control_index)
+            if active_control_group is None:
+                active_control_group = active_group_results[0] if active_group_results else {}
+            control_percentage = active_control_group.get("pct")
+            control_sig_text = str(active_control_group.get("sig", "") or "")
+            control_display = f"{control_percentage:.0%}{control_sig_text}" if control_percentage is not None else ""
+            pct_cell = worksheet.cell(row=current_row, column=control_column, value=control_display)
             _apply_body_style(pct_cell)
             pct_cell.alignment = Alignment(horizontal="center", vertical="top")
 
-            lift_value = pair.get("lift")
-            lift_cell = worksheet.cell(row=current_row, column=paired_column["lift_column"], value=lift_value)
-            _apply_body_style(lift_cell, fill_color=VN_LIGHT_GRAY)
-            if lift_value is not None:
-                lift_cell.number_format = "0%"
-            _apply_topline_delta_style(lift_cell, str(pair.get("sig_direction", "") or ""))
+            for position, paired_column in enumerate(paired_columns):
+                header_pair = paired_column["pair"]
+                pair = active_pair_lookup.get(header_pair.get("note_key"))
+                if pair is None and position < len(active_pair_results):
+                    pair = active_pair_results[position]
+                pair = pair or header_pair
+                right_group = active_group_lookup.get(pair.get("right_index")) or active_group_lookup.get(
+                    header_pair.get("right_index")
+                )
+                if right_group is None and position + 1 < len(active_group_results):
+                    right_group = active_group_results[position + 1]
+                right_group = right_group or {}
+                percentage = right_group.get("pct", pair.get("right_pct"))
+                sig_text = str(right_group.get("sig", "") or "")
+                display_value = f"{percentage:.0%}{sig_text}" if percentage is not None else ""
+                pct_cell = worksheet.cell(row=current_row, column=paired_column["group_column"], value=display_value)
+                _apply_body_style(pct_cell)
+                pct_cell.alignment = Alignment(horizontal="center", vertical="top")
+
+                lift_value = pair.get("lift")
+                lift_cell = worksheet.cell(row=current_row, column=paired_column["lift_column"], value=lift_value)
+                _apply_body_style(lift_cell, fill_color=VN_LIGHT_GRAY)
+                if lift_value is not None:
+                    lift_cell.number_format = "0%"
+                _apply_topline_delta_style(lift_cell, str(pair.get("sig_direction", "") or ""))
+        else:
+            for group_column in group_columns:
+                group_index = group_column["group"].get("index")
+                active_group = active_group_lookup.get(group_index, {})
+                percentage = active_group.get("pct")
+                sig_text = str(active_group.get("sig", "") or "")
+                display_value = f"{percentage:.0%}{sig_text}" if percentage is not None else ""
+                pct_cell = worksheet.cell(row=current_row, column=group_column["column"], value=display_value)
+                _apply_body_style(pct_cell)
+                pct_cell.alignment = Alignment(horizontal="center", vertical="top")
 
         note_base_cell = worksheet.cell(
             row=current_row,
@@ -473,12 +497,16 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         _apply_body_style(note_base_cell, fill_color=VN_LIGHT_GRAY)
         note_base_cell.alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
         pair_notes = row.get("Pair Notes", {}) or {}
-        for position, paired_column in enumerate(paired_columns):
-            pair = paired_column["pair"]
-            note_value = pair_notes.get(pair.get("note_key"), "")
-            if not note_value and pair_count == 1:
-                note_value = row.get("Notes", "")
-            notes_cell = worksheet.cell(row=current_row, column=notes_start_column + position, value=note_value)
+        if paired_columns:
+            for position, paired_column in enumerate(paired_columns):
+                pair = paired_column["pair"]
+                note_value = pair_notes.get(pair.get("note_key"), "")
+                if not note_value and pair_count == 1:
+                    note_value = row.get("Notes", "")
+                notes_cell = worksheet.cell(row=current_row, column=notes_start_column + position, value=note_value)
+                _apply_body_style(notes_cell, wrap=True)
+        else:
+            notes_cell = worksheet.cell(row=current_row, column=notes_start_column, value=row.get("Notes", ""))
             _apply_body_style(notes_cell, wrap=True)
         current_row += 1
 

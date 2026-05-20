@@ -42,6 +42,7 @@ PROJECT_CONFIG_TEMPLATE: dict[str, Any] = {
         "response_selections": {},
         "note_base_sections": {},
         "include_lift": False,
+        "comparison_scope": "control_vs_test",
         "include_significance_notes": True,
     },
 }

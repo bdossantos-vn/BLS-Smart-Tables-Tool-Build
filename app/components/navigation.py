@@ -120,6 +120,7 @@ def render_sidebar() -> str:
                         "response_selections": {},
                         "note_base_sections": {},
                         "include_lift": False,
+                        "comparison_scope": "control_vs_test",
                         "include_significance_notes": True,
                     }
                     st.session_state.template_upload_message = ""
