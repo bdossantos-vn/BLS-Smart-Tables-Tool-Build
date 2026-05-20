@@ -43,6 +43,7 @@ def build_default_stat_config() -> dict:
         "alpha": 0.05,
         "enabled": True,
         "comparison_scope": "control_vs_test",
+        "include_percentage": True,
         "include_n_count": False,
         "include_lift": False,
         "notation_location": "appended_to_metric",

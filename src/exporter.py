@@ -485,10 +485,57 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
     worksheet.freeze_panes = "B11"
 
 
+def _get_metric_flag(source, fallback, name: str, default: bool) -> bool:
+    """Resolve one table metric flag with sheet-level fallback."""
+    if hasattr(source, name):
+        return bool(getattr(source, name))
+    if hasattr(fallback, name):
+        return bool(getattr(fallback, name))
+    return default
+
+
+def _build_metric_row_kinds(
+    include_percentage: bool,
+    include_stat_testing: bool,
+    include_n_count: bool,
+    notation_location: str,
+) -> list[str]:
+    """Return the per-response metric rows that should be written."""
+    row_kinds: list[str] = []
+    if include_percentage:
+        row_kinds.append("percentage")
+    if include_stat_testing and (notation_location == "below_metric" or not include_percentage):
+        row_kinds.append("sig")
+    if include_n_count:
+        row_kinds.append("n")
+    return row_kinds
+
+
+def _format_section_metric_title(
+    section_label: str,
+    base_label: str,
+    include_percentage: bool,
+    include_stat_testing: bool,
+    include_n_count: bool,
+    lift_enabled: bool,
+) -> str:
+    """Build the section header based on the selected output metrics."""
+    metric_labels: list[str] = []
+    if include_percentage:
+        metric_labels.append("%")
+    if lift_enabled:
+        metric_labels.append("Lift")
+    if include_stat_testing:
+        metric_labels.append("Stat testing")
+    if include_n_count:
+        metric_labels.append("N Count")
+    metric_text = " / ".join(metric_labels) if metric_labels else "No metrics"
+    return f"{section_label} {metric_text} (Base: {base_label})"
+
+
 def _write_banner_sheet(
     workbook,
     sheet,
-    include_n_count: bool = False,
     include_lift: bool = False,
 ) -> None:
     """Write one banner worksheet in an analyst-friendly table format."""
@@ -544,7 +591,19 @@ def _write_banner_sheet(
             },
         )
         lift_pairs, lift_footnote = _build_banner_lift_pairs(lift_source, active_groups) if include_lift else ([], "")
+        table_include_percentage = _get_metric_flag(table, sheet, "include_percentage", True)
+        table_include_n_count = _get_metric_flag(table, sheet, "include_n_count", False)
+        table_include_stat_testing = _get_metric_flag(table, sheet, "include_stat_testing", True)
+        table_notation_location = normalize_text(
+            getattr(table, "notation_location", getattr(sheet, "notation_location", "appended_to_metric"))
+        ) or "appended_to_metric"
         lift_enabled = bool(include_lift and lift_pairs)
+        metric_row_kinds = _build_metric_row_kinds(
+            table_include_percentage,
+            table_include_stat_testing,
+            table_include_n_count,
+            table_notation_location,
+        )
         section_group_count = max(len(active_groups), 1)
         left_data_start_column = 3
         left_lift_start_column = left_data_start_column + section_group_count
@@ -585,7 +644,14 @@ def _write_banner_sheet(
             left_title_cell = worksheet.cell(
                 row=section_header_row,
                 column=left_data_start_column,
-                value="Total Sample % / Lift (Base: Total Sample)" if lift_enabled else "Total Sample % (Base: Total Sample)",
+                value=_format_section_metric_title(
+                    "Total Sample",
+                    "Total Sample",
+                    table_include_percentage,
+                    table_include_stat_testing,
+                    table_include_n_count,
+                    lift_enabled,
+                ),
             )
             _apply_header_style(left_title_cell, VN_YELLOW, font_color=VN_BLACK)
             worksheet.merge_cells(
@@ -597,7 +663,14 @@ def _write_banner_sheet(
             right_title_cell = worksheet.cell(
                 row=section_header_row,
                 column=right_data_start_column,
-                value="Total Answering % / Lift (Base: Total Answering)" if lift_enabled else "Total Answering % (Base: Total Answering)",
+                value=_format_section_metric_title(
+                    "Total Answering",
+                    "Total Answering",
+                    table_include_percentage,
+                    table_include_stat_testing,
+                    table_include_n_count,
+                    lift_enabled,
+                ),
             )
             _apply_header_style(right_title_cell, VN_YELLOW, font_color=VN_BLACK)
         current_row += 1
@@ -664,15 +737,18 @@ def _write_banner_sheet(
         _write_group_header_block(left_data_columns)
         _write_group_header_block(right_data_columns)
 
-        sig_row = current_row + level_rows
-        for data_columns in [left_data_columns, right_data_columns]:
-            for index, group in enumerate(active_groups):
-                column_index = data_columns[index]
-                if group["label"] != "Total":
-                    sig_letter = chr(64 + index) if index < 27 else ""
-                    sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
-                    _apply_body_style(sig_cell)
-                    sig_cell.alignment = Alignment(horizontal="center", vertical="center")
+        header_end_row = current_row + level_rows - 1
+        sig_row = header_end_row
+        if table_include_stat_testing:
+            sig_row = header_end_row + 1
+            for data_columns in [left_data_columns, right_data_columns]:
+                for index, group in enumerate(active_groups):
+                    column_index = data_columns[index]
+                    if group["label"] != "Total":
+                        sig_letter = chr(64 + index) if index < 27 else ""
+                        sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
+                        _apply_body_style(sig_cell)
+                        sig_cell.alignment = Alignment(horizontal="center", vertical="center")
         if lift_enabled:
             for column_index, pair in zip(left_lift_columns, lift_pairs):
                 worksheet.merge_cells(start_row=current_row, start_column=column_index, end_row=sig_row, end_column=column_index)
@@ -691,8 +767,7 @@ def _write_banner_sheet(
         if not total_base_section or not answering_section:
             return current_row
 
-        notation_location = getattr(sheet, "notation_location", "appended_to_metric")
-        response_block_height = len(total_base_section["rows"]) * (1 + (1 if notation_location == "below_metric" else 0) + (1 if include_n_count else 0))
+        response_block_height = len(total_base_section["rows"]) * len(metric_row_kinds)
         question_label_row = current_row + 2
         question_end_row = question_label_row + max(response_block_height - 1, 0)
         if response_block_height > 1:
@@ -731,52 +806,62 @@ def _write_banner_sheet(
 
         for total_row, answering_row in zip(total_base_section["rows"], answering_section["rows"]):
             label_fill = VN_LIGHT_GRAY if total_row.get("kind") == "net" else None
-            response_cell = worksheet.cell(row=current_row, column=2, value=total_row["label"])
-            _apply_body_style(response_cell, bold=bool(total_row.get("kind") == "net"), wrap=True)
-            response_cell.alignment = Alignment(vertical="center", wrap_text=True)
-            for data_columns, section_row in [(left_data_columns, total_row), (right_data_columns, answering_row)]:
-                for column_index, percentage, sig_text in zip(data_columns, section_row["percentages"], section_row["sig_letters"]):
-                    display_value = ""
-                    if percentage is not None:
-                        display_value = f"{percentage:.0%}{normalize_text(sig_text)}" if notation_location != "below_metric" else f"{percentage:.0%}"
-                    percent_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
-                    _apply_body_style(percent_cell, fill_color=label_fill)
-                    percent_cell.alignment = Alignment(horizontal="center", vertical="center")
-            if lift_enabled:
-                for column_index, pair in zip(left_lift_columns, lift_pairs):
-                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=_format_lift_display(total_row["percentages"][pair["left_index"]], total_row["percentages"][pair["right_index"]]))
-                    _apply_body_style(lift_cell, fill_color=label_fill)
-                    lift_cell.alignment = Alignment(horizontal="center", vertical="center")
-                for column_index, pair in zip(right_lift_columns, lift_pairs):
-                    lift_cell = worksheet.cell(row=current_row, column=column_index, value=_format_lift_display(answering_row["percentages"][pair["left_index"]], answering_row["percentages"][pair["right_index"]]))
-                    _apply_body_style(lift_cell, fill_color=label_fill)
-                    lift_cell.alignment = Alignment(horizontal="center", vertical="center")
-            current_row += 1
+            for metric_index, row_kind in enumerate(metric_row_kinds):
+                response_cell = worksheet.cell(
+                    row=current_row,
+                    column=2,
+                    value=total_row["label"] if metric_index == 0 else "",
+                )
+                _apply_body_style(
+                    response_cell,
+                    bold=bool(total_row.get("kind") == "net") and metric_index == 0,
+                    fill_color=label_fill if metric_index else None,
+                    wrap=True,
+                )
+                response_cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-            if notation_location == "below_metric":
-                sig_label_cell = worksheet.cell(row=current_row, column=2, value="")
-                _apply_body_style(sig_label_cell, fill_color=label_fill)
                 for data_columns, section_row in [(left_data_columns, total_row), (right_data_columns, answering_row)]:
-                    for column_index, sig_text in zip(data_columns, section_row["sig_letters"]):
-                        sig_cell = worksheet.cell(row=current_row, column=column_index, value=normalize_text(sig_text))
-                        _apply_body_style(sig_cell, fill_color=label_fill)
-                        sig_cell.alignment = Alignment(horizontal="center", vertical="center")
-                for column_index in [*left_lift_columns, *right_lift_columns]:
-                    blank_cell = worksheet.cell(row=current_row, column=column_index, value="")
-                    _apply_body_style(blank_cell, fill_color=label_fill)
-                current_row += 1
+                    if row_kind == "percentage":
+                        for column_index, percentage, sig_text in zip(data_columns, section_row["percentages"], section_row["sig_letters"]):
+                            display_value = ""
+                            if percentage is not None:
+                                sig_suffix = normalize_text(sig_text) if table_include_stat_testing and table_notation_location != "below_metric" else ""
+                                display_value = f"{percentage:.0%}{sig_suffix}"
+                            metric_cell = worksheet.cell(row=current_row, column=column_index, value=display_value)
+                            _apply_body_style(metric_cell, fill_color=label_fill)
+                            metric_cell.alignment = Alignment(horizontal="center", vertical="center")
+                    elif row_kind == "sig":
+                        for column_index, sig_text in zip(data_columns, section_row["sig_letters"]):
+                            metric_cell = worksheet.cell(row=current_row, column=column_index, value=normalize_text(sig_text))
+                            _apply_body_style(metric_cell, fill_color=label_fill)
+                            metric_cell.alignment = Alignment(horizontal="center", vertical="center")
+                    elif row_kind == "n":
+                        for column_index, count in zip(data_columns, section_row["counts"]):
+                            metric_cell = worksheet.cell(row=current_row, column=column_index, value=count)
+                            _apply_body_style(metric_cell, fill_color=label_fill)
+                            metric_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-            if include_n_count:
-                count_label_cell = worksheet.cell(row=current_row, column=2, value="")
-                _apply_body_style(count_label_cell, fill_color=label_fill)
-                for data_columns, section_row in [(left_data_columns, total_row), (right_data_columns, answering_row)]:
-                    for column_index, count in zip(data_columns, section_row["counts"]):
-                        count_cell = worksheet.cell(row=current_row, column=column_index, value=count)
-                        _apply_body_style(count_cell, fill_color=label_fill)
-                        count_cell.alignment = Alignment(horizontal="center", vertical="center")
-                for column_index in [*left_lift_columns, *right_lift_columns]:
-                    count_cell = worksheet.cell(row=current_row, column=column_index, value="")
-                    _apply_body_style(count_cell, fill_color=label_fill)
+                if lift_enabled:
+                    write_lift_values = row_kind == "percentage" or (not table_include_percentage and metric_index == 0)
+                    for column_index, pair in zip(left_lift_columns, lift_pairs):
+                        lift_value = (
+                            _format_lift_display(total_row["percentages"][pair["left_index"]], total_row["percentages"][pair["right_index"]])
+                            if write_lift_values
+                            else ""
+                        )
+                        lift_cell = worksheet.cell(row=current_row, column=column_index, value=lift_value)
+                        _apply_body_style(lift_cell, fill_color=label_fill)
+                        lift_cell.alignment = Alignment(horizontal="center", vertical="center")
+                    for column_index, pair in zip(right_lift_columns, lift_pairs):
+                        lift_value = (
+                            _format_lift_display(answering_row["percentages"][pair["left_index"]], answering_row["percentages"][pair["right_index"]])
+                            if write_lift_values
+                            else ""
+                        )
+                        lift_cell = worksheet.cell(row=current_row, column=column_index, value=lift_value)
+                        _apply_body_style(lift_cell, fill_color=label_fill)
+                        lift_cell.alignment = Alignment(horizontal="center", vertical="center")
+
                 current_row += 1
 
         if include_lift and not lift_enabled and lift_footnote:
@@ -854,7 +939,6 @@ def export_workbook_to_excel_bytes(
         _write_banner_sheet(
             workbook,
             sheet,
-            include_n_count=bool(workbook_package.get("include_n_count", False)),
             include_lift=bool(workbook_package.get("include_lift", False)),
         )
 

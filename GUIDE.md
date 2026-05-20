@@ -324,6 +324,7 @@ Each contains fields like:
 - `alpha`
 - `enabled`
 - `comparison_scope`
+- `include_percentage`
 - `include_n_count`
 - `include_lift`
 - `notation_location`
@@ -331,6 +332,7 @@ Each contains fields like:
 Important:
 
 - banner stats and AdHoc stats are intentionally separate
+- `%`, statistical testing, and N counts are independent export metrics; `%` defaults on for new and older configs
 
 ## Topline Shape
 

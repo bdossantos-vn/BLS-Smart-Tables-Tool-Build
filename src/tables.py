@@ -38,6 +38,10 @@ class SheetTable:
     groups: list[dict[str, Any]] = field(default_factory=list)
     comparison_pairs: list[dict[str, Any]] = field(default_factory=list)
     footnotes: list[str] = field(default_factory=list)
+    include_percentage: bool = True
+    include_n_count: bool = False
+    include_stat_testing: bool = True
+    notation_location: str = "appended_to_metric"
 
 
 @dataclass
@@ -52,6 +56,9 @@ class WorkbookSheet:
     level_labels: dict[str, str] = field(default_factory=dict)
     comparison_pairs: list[dict[str, Any]] = field(default_factory=list)
     footnotes: list[str] = field(default_factory=list)
+    include_percentage: bool = True
+    include_n_count: bool = False
+    include_stat_testing: bool = True
     notation_location: str = "appended_to_metric"
 
 
@@ -94,6 +101,30 @@ def describe_generation_readiness(default_state: dict, current_state: dict) -> l
     if adhoc_count:
         messages.append(f"{adhoc_count} AdHoc Crosstab(s) are configured.")
     return messages
+
+
+def _include_percentage(stat_config: dict[str, Any]) -> bool:
+    """Return whether percent rows should be exported for this table family."""
+    return bool(stat_config.get("include_percentage", True))
+
+
+def _include_stat_testing(stat_config: dict[str, Any]) -> bool:
+    """Return whether significance letters should be calculated and exported."""
+    comparison_scope = normalize_text(stat_config.get("comparison_scope"))
+    return bool(stat_config.get("enabled", True)) and comparison_scope != "none"
+
+
+def _effective_comparison_scope(stat_config: dict[str, Any], fallback: str = "lowest_banner_level") -> str:
+    """Return the comparison scope that should be used by table calculations."""
+    if not _include_stat_testing(stat_config):
+        return "none"
+    return normalize_text(stat_config.get("comparison_scope")) or fallback
+
+
+def _notation_location(stat_config: dict[str, Any]) -> str:
+    """Return a supported significance notation placement."""
+    value = normalize_text(stat_config.get("notation_location"))
+    return value if value in {"appended_to_metric", "below_metric"} else "appended_to_metric"
 
 
 def _normalize_banner_rows(
@@ -1081,6 +1112,10 @@ def _build_question_table(
     comparison_col: str | None = None,
     comparison_group_labels: dict[str, str] | None = None,
     comparison_pairs: list[dict[str, Any]] | None = None,
+    include_percentage: bool = True,
+    include_n_count: bool = False,
+    include_stat_testing: bool = True,
+    notation_location: str = "appended_to_metric",
 ) -> SheetTable:
     """Build one question table for all visible groups on a banner sheet."""
     variable = normalize_text(question_row.get("variable"))
@@ -1164,6 +1199,10 @@ def _build_question_table(
         sections=sections,
         groups=groups,
         comparison_pairs=comparison_pairs,
+        include_percentage=include_percentage,
+        include_n_count=include_n_count,
+        include_stat_testing=include_stat_testing and comparison_scope != "none",
+        notation_location=notation_location,
     )
 
 
@@ -1731,7 +1770,11 @@ def generate_workbook_package(
     include_total = bool(banner_config.get("include_total", True))
     banner_confidence_intervals = normalize_confidence_intervals(banner_stat_config.get("confidence_intervals", [95]))
     banner_alpha = (100 - banner_confidence_intervals[0]) / 100 if banner_confidence_intervals else 0.05
-    banner_comparison_scope = normalize_text(banner_stat_config.get("comparison_scope")) or "lowest_banner_level"
+    banner_include_percentage = _include_percentage(banner_stat_config)
+    banner_include_n_count = bool(banner_stat_config.get("include_n_count", False))
+    banner_include_stat_testing = _include_stat_testing(banner_stat_config)
+    banner_notation_location = _notation_location(banner_stat_config)
+    banner_comparison_scope = _effective_comparison_scope(banner_stat_config)
 
     sheet_specs: list[WorkbookSheet] = []
     total_comparison_sheet: WorkbookSheet | None = None
@@ -1749,7 +1792,7 @@ def generate_workbook_package(
             )
             sheet_levels = [effective_comparison_col]
             comparison_pairs = _build_comparison_pair_metadata(groups, effective_comparison_col)
-            table_comparison_scope = "control_vs_test"
+            table_comparison_scope = "control_vs_test" if banner_include_stat_testing else "none"
         else:
             groups = _build_banner_groups(
                 analysis_df,
@@ -1776,6 +1819,10 @@ def generate_workbook_package(
                 effective_comparison_col if layered_scheme_active else comparison_col,
                 comparison_group_labels,
                 comparison_pairs,
+                include_percentage=banner_include_percentage,
+                include_n_count=banner_include_n_count,
+                include_stat_testing=banner_include_stat_testing,
+                notation_location=banner_notation_location,
             )
             for question_row in enabled_questions
         ]
@@ -1793,7 +1840,10 @@ def generate_workbook_package(
                 layered_scheme_active,
                 project_has_overlaps,
             ),
-            notation_location=normalize_text(banner_stat_config.get("notation_location")) or "appended_to_metric",
+            include_percentage=banner_include_percentage,
+            include_n_count=banner_include_n_count,
+            include_stat_testing=banner_include_stat_testing,
+            notation_location=banner_notation_location,
         )
         sheet_specs.append(only_sheet)
         total_comparison_sheet = only_sheet
@@ -1809,10 +1859,14 @@ def generate_workbook_package(
                     net_definitions,
                     scale_mappings,
                     banner_alpha,
-                    "control_vs_test",
+                    "control_vs_test" if banner_include_stat_testing else "none",
                     effective_comparison_col,
                     comparison_group_labels,
                     total_pairs,
+                    include_percentage=banner_include_percentage,
+                    include_n_count=banner_include_n_count,
+                    include_stat_testing=banner_include_stat_testing,
+                    notation_location=banner_notation_location,
                 )
                 for question_row in enabled_questions
             ]
@@ -1830,6 +1884,10 @@ def generate_workbook_package(
                     layered_scheme_active,
                     project_has_overlaps,
                 ),
+                include_percentage=banner_include_percentage,
+                include_n_count=banner_include_n_count,
+                include_stat_testing=banner_include_stat_testing,
+                notation_location=banner_notation_location,
             )
         elif comparison_col and normalize_text(comparison_col) in analysis_df.columns:
             total_groups = _build_total_comparison_groups(
@@ -1847,10 +1905,14 @@ def generate_workbook_package(
                     net_definitions,
                     scale_mappings,
                     banner_alpha,
-                    "control_vs_test",
+                    "control_vs_test" if banner_include_stat_testing else "none",
                     comparison_col,
                     comparison_group_labels,
                     total_pairs,
+                    include_percentage=banner_include_percentage,
+                    include_n_count=banner_include_n_count,
+                    include_stat_testing=banner_include_stat_testing,
+                    notation_location=banner_notation_location,
                 )
                 for question_row in enabled_questions
             ]
@@ -1861,6 +1923,10 @@ def generate_workbook_package(
                 groups=total_groups,
                 tables=total_tables,
                 comparison_pairs=total_pairs,
+                include_percentage=banner_include_percentage,
+                include_n_count=banner_include_n_count,
+                include_stat_testing=banner_include_stat_testing,
+                notation_location=banner_notation_location,
             )
         for banner_row in banner_rows:
             banner_name = banner_row["name"]
@@ -1891,7 +1957,7 @@ def generate_workbook_package(
                 )
                 active_levels = _layered_banner_levels(banner_row, comparison_col)
                 comparison_pairs = _build_comparison_pair_metadata(groups, effective_comparison_col)
-                table_comparison_scope = "control_vs_test"
+                table_comparison_scope = "control_vs_test" if banner_include_stat_testing else "none"
                 sheet_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups))
             else:
                 groups = _build_banner_groups(
@@ -1920,6 +1986,10 @@ def generate_workbook_package(
                     effective_comparison_col if layered_scheme_active else comparison_col,
                     comparison_group_labels,
                     comparison_pairs,
+                    include_percentage=banner_include_percentage,
+                    include_n_count=banner_include_n_count,
+                    include_stat_testing=banner_include_stat_testing,
+                    notation_location=banner_notation_location,
                 )
                 for question_row in enabled_questions
             ]
@@ -1940,7 +2010,10 @@ def generate_workbook_package(
                             groups=[],
                             tables=[],
                             footnotes=[],
-                            notation_location=normalize_text(banner_stat_config.get("notation_location")) or "appended_to_metric",
+                            include_percentage=banner_include_percentage,
+                            include_n_count=banner_include_n_count,
+                            include_stat_testing=banner_include_stat_testing,
+                            notation_location=banner_notation_location,
                         )
                     )
                 for table in tables:
@@ -1968,7 +2041,10 @@ def generate_workbook_package(
                         tables=tables,
                         comparison_pairs=comparison_pairs,
                         footnotes=banner_footnotes,
-                        notation_location=normalize_text(banner_stat_config.get("notation_location")) or "appended_to_metric",
+                        include_percentage=banner_include_percentage,
+                        include_n_count=banner_include_n_count,
+                        include_stat_testing=banner_include_stat_testing,
+                        notation_location=banner_notation_location,
                     )
                 )
 
@@ -1977,7 +2053,11 @@ def generate_workbook_package(
     if adhoc_config_rows:
         adhoc_ci = normalize_confidence_intervals(adhoc_stat_config.get("confidence_intervals", [95]))
         adhoc_alpha = (100 - adhoc_ci[0]) / 100 if adhoc_ci else 0.05
-        adhoc_scope = normalize_text(adhoc_stat_config.get("comparison_scope")) or "lowest_banner_level"
+        adhoc_include_percentage = _include_percentage(adhoc_stat_config)
+        adhoc_include_n_count = bool(adhoc_stat_config.get("include_n_count", False))
+        adhoc_include_stat_testing = _include_stat_testing(adhoc_stat_config)
+        adhoc_notation_location = _notation_location(adhoc_stat_config)
+        adhoc_scope = _effective_comparison_scope(adhoc_stat_config)
         metadata_lookup = {
             normalize_text(row.get("variable")): row for row in enabled_questions
         }
@@ -2029,7 +2109,7 @@ def generate_workbook_package(
                 )
                 column_levels = [effective_comparison_col]
                 comparison_pairs = _build_comparison_pair_metadata(groups, effective_comparison_col)
-                adhoc_scope_for_table = "control_vs_test"
+                adhoc_scope_for_table = "control_vs_test" if adhoc_include_stat_testing else "none"
                 adhoc_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups))
             elif normalize_text(column_question_row.get("detected_type") if column_question_row else "") == "Multi-Select":
                 groups = _build_adhoc_multiselect_groups(
@@ -2074,6 +2154,10 @@ def generate_workbook_package(
                 effective_comparison_col if layered_scheme_active and normalize_text(column_variable) in {normalize_text(comparison_col), COMPARISON_SCHEME_LEVEL} else comparison_col,
                 comparison_group_labels,
                 comparison_pairs,
+                include_percentage=adhoc_include_percentage,
+                include_n_count=adhoc_include_n_count,
+                include_stat_testing=adhoc_include_stat_testing,
+                notation_location=adhoc_notation_location,
             )
             table.banner_name = table_name
             table.levels = column_levels
@@ -2101,7 +2185,10 @@ def generate_workbook_package(
                     groups=[],
                     tables=adhoc_tables,
                     footnotes=[],
-                    notation_location=normalize_text(adhoc_stat_config.get("notation_location")) or "appended_to_metric",
+                    include_percentage=adhoc_include_percentage,
+                    include_n_count=adhoc_include_n_count,
+                    include_stat_testing=adhoc_include_stat_testing,
+                    notation_location=adhoc_notation_location,
                 )
             )
 
@@ -2168,7 +2255,8 @@ def generate_workbook_package(
         "confidence_intervals": banner_confidence_intervals,
         "comparison_scope": banner_comparison_scope,
         "include_lift": bool(banner_stat_config.get("include_lift", False)),
-        "include_n_count": bool(banner_stat_config.get("include_n_count", False)),
+        "include_percentage": banner_include_percentage,
+        "include_n_count": banner_include_n_count,
         "question_count": len(enabled_questions),
         "sheet_count": len(sheet_specs),
         "comparison_scheme_active": layered_scheme_active,

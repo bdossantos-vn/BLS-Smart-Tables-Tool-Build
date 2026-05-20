@@ -105,6 +105,8 @@ NAV_STEPS = [
     "10. Table Generator & Excel Export",
 ]
 
+MAX_COMPARISON_GROUPS = 20
+
 
 def _append_log(message: str) -> None:
     """Append a timestamped log message to the session log."""
@@ -726,8 +728,8 @@ def _render_layered_comparison_editor(cleaned_df: pd.DataFrame) -> None:
         st.number_input(
             "Number of Comparison Groups",
             min_value=2,
-            max_value=8,
-            value=max(2, len(saved_scheme.get("groups", [])) or 2),
+            max_value=MAX_COMPARISON_GROUPS,
+            value=min(MAX_COMPARISON_GROUPS, max(2, len(saved_scheme.get("groups", [])) or 2)),
             step=1,
             key="layered_comparison_group_count",
         )

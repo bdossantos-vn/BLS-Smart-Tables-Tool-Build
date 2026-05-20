@@ -39,6 +39,11 @@ def normalize_confidence_intervals(confidence_intervals: list[int] | None) -> li
 def validate_statistical_setup(stat_config: dict) -> list[str]:
     """Validate the statistical configuration scaffold."""
     issues: list[str] = []
+    include_percentage = bool(stat_config.get("include_percentage", True))
+    include_stat_testing = bool(stat_config.get("enabled", True)) and stat_config.get("comparison_scope") != "none"
+    include_n_count = bool(stat_config.get("include_n_count", False))
+    if not any([include_percentage, include_stat_testing, include_n_count]):
+        issues.append("Select at least one output metric: %, statistical testing, or N count.")
     confidence_intervals = normalize_confidence_intervals(
         stat_config.get("confidence_intervals", [95])
     )
@@ -72,6 +77,7 @@ def build_statistical_setup_summary(stat_config: dict) -> dict:
         "confidence_intervals": confidence_intervals,
         "alpha_values": [CONFIDENCE_TO_ALPHA.get(value, DEFAULT_ALPHA) for value in confidence_intervals],
         "enabled": bool(stat_config.get("enabled", True)),
+        "include_percentage": bool(stat_config.get("include_percentage", True)),
         "include_lift": bool(stat_config.get("include_lift", False)),
         "include_n_count": bool(stat_config.get("include_n_count", False)),
         "comparison_scope": comparison_scope_label,

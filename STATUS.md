@@ -204,8 +204,10 @@ Implemented:
 - separate AdHoc settings
 - primary and optional secondary CI
 - lift toggle
+- % export toggle, defaulted on
 - N count toggle
 - statistical comparison mode, including `None`
+- independent %, stat-testing, and N-count combinations for banners and AdHoc crosstabs
 - notation location:
   - appended to metric
   - below metric
