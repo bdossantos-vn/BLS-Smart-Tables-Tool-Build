@@ -51,11 +51,18 @@ LIKERT_PATTERNS = [
 ]
 
 SCALE_LABEL_HINTS = [
+    "on a scale",
+    "scale of",
+    "where 1 is",
+    "where 1 =",
     "agree or disagree",
     "how likely",
+    "how familiar",
     "to what extent",
     "feel about",
     "how interested",
+    "familiar are you",
+    "familiarity",
     "brand affinity",
     "brand sentiment",
     "sentiment",
@@ -66,6 +73,14 @@ SCALE_LABEL_HINTS = [
 
 SCALE_VALUE_HINTS = [
     "very interested",
+    "extremely familiar",
+    "very familiar",
+    "somewhat familiar",
+    "moderately familiar",
+    "slightly familiar",
+    "not very familiar",
+    "not at all familiar",
+    "unfamiliar",
     "somewhat interested",
     "moderately interested",
     "not that interested",
@@ -102,6 +117,40 @@ SCALE_VALUE_HINTS = [
     "much worse",
     "somewhat better",
     "much better",
+]
+
+SCALE_POSITIVE_TERMS = [
+    "authentic",
+    "trustworthy",
+    "informative",
+    "familiar",
+    "credible",
+    "believable",
+    "clear",
+    "relevant",
+    "useful",
+    "appealing",
+    "positive",
+]
+
+SCALE_NEGATIVE_TERMS = [
+    "inauthentic",
+    "untrustworthy",
+    "uninformative",
+    "unfamiliar",
+    "not familiar",
+    "not at all familiar",
+    "not very familiar",
+    "not trustworthy",
+    "not informative",
+    "not authentic",
+    "not credible",
+    "not believable",
+    "unclear",
+    "irrelevant",
+    "not useful",
+    "unappealing",
+    "negative",
 ]
 
 SCALE_ORDER_PATTERNS = [
@@ -170,12 +219,7 @@ def _count_pattern_hits(values: list[str], patterns: list[str]) -> int:
 
 def _count_scored_scale_hits(choices: list[str]) -> int:
     """Count how many choices match one of the known ordered scale patterns."""
-    hits = 0
-    for choice in choices:
-        normalized = choice.lower()
-        if any(pattern in normalized for pattern, _ in SCALE_ORDER_PATTERNS):
-            hits += 1
-    return hits
+    return sum(1 for choice in choices if _scale_choice_score(choice) is not None)
 
 
 def _count_hp_interest_hits(choices: list[str]) -> int:
@@ -186,6 +230,49 @@ def _count_hp_interest_hits(choices: list[str]) -> int:
         if any(pattern in normalized for pattern, _ in HP_INTEREST_ORDER_PATTERNS):
             hits += 1
     return hits
+
+
+def _clean_scale_anchor_label(label: str) -> str:
+    """Trim punctuation and leftover survey wording from a numeric scale anchor."""
+    cleaned = normalize_text(label)
+    cleaned = re.split(r"\s+(?:how|when|if|for|would|did|does|do|are|were|was)\b", cleaned, maxsplit=1)[0]
+    return cleaned.strip(" ,.;:?!()[]{}\"'")
+
+
+def _extract_numeric_scale_anchors(question_label: str) -> tuple[int, str, int, str] | None:
+    """Parse labels such as `where 1 is Poor and 5 is Excellent` from question text."""
+    label = normalize_text(question_label)
+    label_lower = label.lower()
+    if "scale" not in label_lower and "where" not in label_lower:
+        return None
+
+    pattern = re.compile(
+        r"\b(?P<first_num>\d{1,2})\s*(?:=|is|means|indicates|represents|being)\s*"
+        r"(?P<first_label>.+?)"
+        r"(?:,?\s+(?:and|to|through)\s+|,\s*|/\s*)"
+        r"(?P<second_num>\d{1,2})\s*(?:=|is|means|indicates|represents|being)\s*"
+        r"(?P<second_label>.+?)(?:[,.?;]|$)",
+        re.IGNORECASE,
+    )
+    match = pattern.search(label)
+    if not match:
+        return None
+
+    first_num = int(match.group("first_num"))
+    second_num = int(match.group("second_num"))
+    if first_num == second_num:
+        return None
+
+    first_label = _clean_scale_anchor_label(match.group("first_label"))
+    second_label = _clean_scale_anchor_label(match.group("second_label"))
+    if not first_label or not second_label:
+        return None
+    return first_num, first_label, second_num, second_label
+
+
+def _has_numeric_scale_anchor(question_label: str) -> bool:
+    """Return whether question text names the two ends of a numeric scale."""
+    return _extract_numeric_scale_anchors(question_label) is not None
 
 
 def _is_multi_select(series: pd.Series) -> bool:
@@ -204,6 +291,8 @@ def _is_scale(series: pd.Series, question_label: str = "") -> bool:
     if len(unique_values) > 11:
         return False
     label_lower = question_label.lower()
+    if _has_numeric_scale_anchor(question_label) and len(unique_values) <= 11:
+        return True
     if any(token in label_lower for token in SCALE_LABEL_HINTS):
         if len(unique_values) <= 7:
             return True
@@ -327,8 +416,16 @@ def _age_bucket_key(choice: str) -> tuple[int, int] | None:
     return None
 
 
-def _sort_scale_choices(choices: list[str]) -> list[str]:
+def _sort_scale_choices(choices: list[str], question_label: str = "") -> list[str]:
     """Sort common scale labels from most positive to most negative."""
+    anchored_choices = _sort_numeric_anchor_scale_choices(choices, question_label)
+    if anchored_choices is not None:
+        return anchored_choices
+
+    numeric_choices = _sort_numeric_scale_choices(choices)
+    if numeric_choices is not None:
+        return numeric_choices
+
     scored: list[tuple[tuple[int, int], int, str]] = []
     unmatched: list[tuple[int, str]] = []
     for index, choice in enumerate(choices):
@@ -347,6 +444,115 @@ def _sort_scale_choices(choices: list[str]) -> list[str]:
 def _contains_phrase(normalized: str, phrase: str) -> bool:
     """Return whether a normalized choice contains a phrase on token boundaries."""
     return re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", normalized) is not None
+
+
+def _simple_numeric_choice_value(choice: str) -> float | None:
+    """Parse simple numeric scale labels while ignoring ranges and mixed labels."""
+    text = normalize_text(choice)
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return float(text)
+    return None
+
+
+def _sort_numeric_scale_choices(choices: list[str]) -> list[str] | None:
+    """Sort plain numeric scale choices from highest to lowest by default."""
+    scored: list[tuple[float, int, str]] = []
+    unmatched: list[tuple[int, str]] = []
+    for index, choice in enumerate(choices):
+        value = _simple_numeric_choice_value(choice)
+        if value is None:
+            unmatched.append((index, choice))
+        else:
+            scored.append((value, index, choice))
+
+    if len(scored) < max(2, len(choices) - 1):
+        return None
+
+    ordered = [choice for _, _, choice in sorted(scored, key=lambda item: (-item[0], item[1]))]
+    ordered.extend(choice for _, choice in unmatched)
+    return ordered
+
+
+def _scale_anchor_positive_number(anchors: tuple[int, str, int, str]) -> int:
+    """Infer which endpoint number represents the more positive side."""
+    first_num, first_label, second_num, second_label = anchors
+    first_score = _scale_choice_score(first_label)
+    second_score = _scale_choice_score(second_label)
+
+    if first_score is not None and second_score is not None:
+        if first_score[0] < second_score[0]:
+            return first_num
+        if second_score[0] < first_score[0]:
+            return second_num
+
+    if first_score is not None and second_score is None:
+        return first_num if first_score[0] <= 2 else second_num
+    if second_score is not None and first_score is None:
+        return second_num if second_score[0] <= 2 else first_num
+
+    return max(first_num, second_num)
+
+
+def _choice_matches_anchor_label(choice: str, anchor_label: str) -> bool:
+    """Return whether a response choice represents a named endpoint label."""
+    normalized_choice = choice.lower().strip()
+    normalized_label = anchor_label.lower().strip()
+    if not normalized_choice or not normalized_label:
+        return False
+    return normalized_choice == normalized_label or _contains_phrase(normalized_choice, normalized_label)
+
+
+def _choice_scale_number(choice: str, anchors: tuple[int, str, int, str]) -> int | None:
+    """Resolve a response choice to a numeric scale point using label anchors."""
+    first_num, first_label, second_num, second_label = anchors
+    low = min(first_num, second_num)
+    high = max(first_num, second_num)
+    normalized = choice.lower().strip()
+
+    leading_match = re.match(r"^\s*(\d{1,2})(?:\b|[\s).:\-])", normalized)
+    if leading_match:
+        value = int(leading_match.group(1))
+        if low <= value <= high:
+            return value
+
+    number_matches = [int(match.group(0)) for match in re.finditer(r"\b\d{1,2}\b", normalized)]
+    in_range_matches = [value for value in number_matches if low <= value <= high]
+    if len(in_range_matches) == 1:
+        return in_range_matches[0]
+
+    if _choice_matches_anchor_label(normalized, first_label):
+        return first_num
+    if _choice_matches_anchor_label(normalized, second_label):
+        return second_num
+    return None
+
+
+def _sort_numeric_anchor_scale_choices(choices: list[str], question_label: str) -> list[str] | None:
+    """Sort choices using explicit numeric endpoint labels in the question text."""
+    anchors = _extract_numeric_scale_anchors(question_label)
+    if anchors is None:
+        return None
+
+    positive_num = _scale_anchor_positive_number(anchors)
+    descending = positive_num == max(anchors[0], anchors[2])
+    scored: list[tuple[int, int, str]] = []
+    unmatched: list[tuple[int, str]] = []
+
+    for index, choice in enumerate(choices):
+        scale_number = _choice_scale_number(choice, anchors)
+        if scale_number is None:
+            unmatched.append((index, choice))
+            continue
+        sort_value = -scale_number if descending else scale_number
+        scored.append((sort_value, index, choice))
+
+    required_matches = max(2, len(choices) - 1)
+    if len(scored) < required_matches:
+        return None
+
+    ordered = [choice for _, _, choice in sorted(scored, key=lambda item: (item[0], item[1]))]
+    ordered.extend(choice for _, choice in unmatched)
+    return ordered
 
 
 def _scale_choice_score(choice: str) -> tuple[int, int] | None:
@@ -407,24 +613,44 @@ def _scale_choice_score(choice: str) -> tuple[int, int] | None:
         return (3, 0)
     if _contains_phrase(normalized, "strongly disagree"):
         return (4, 0)
+    if _contains_phrase(normalized, "agree"):
+        return (1, 0)
+    if _contains_phrase(normalized, "disagree"):
+        return (3, 0)
+
+    if _contains_phrase(normalized, "very satisfied"):
+        return (0, 0)
+    if _contains_phrase(normalized, "satisfied"):
+        return (1, 0)
+    if _contains_phrase(normalized, "very dissatisfied"):
+        return (4, 0)
+    if _contains_phrase(normalized, "dissatisfied"):
+        return (3, 0)
 
     positive_weight = None
-    if "very " in normalized:
-        positive_weight = 0
-    elif "quite " in normalized:
-        positive_weight = 1
-    elif "somewhat " in normalized:
-        positive_weight = 1
-    elif "moderately " in normalized:
-        positive_weight = 2
+    if "not at all " in normalized or "very unlikely" in normalized or "not familiar" in normalized:
+        positive_weight = 4
     elif "not that " in normalized or "not very " in normalized or "not likely" in normalized:
         positive_weight = 3
-    elif "not at all " in normalized or "very unlikely" in normalized:
-        positive_weight = 4
+    elif "slightly " in normalized or "a little " in normalized:
+        positive_weight = 3
+    elif "moderately " in normalized:
+        positive_weight = 2
+    elif "quite " in normalized or "somewhat " in normalized:
+        positive_weight = 1
+    elif "extremely " in normalized or "very " in normalized:
+        positive_weight = 0
 
     if positive_weight is not None:
-        if any(token in normalized for token in ["interested", "likely"]):
+        if any(_contains_phrase(normalized, token) for token in ["interested", "likely", "unlikely", "familiar"]):
             return (positive_weight, 1)
+
+    for term in SCALE_NEGATIVE_TERMS:
+        if _contains_phrase(normalized, term):
+            return (4, 2)
+    for term in SCALE_POSITIVE_TERMS:
+        if _contains_phrase(normalized, term):
+            return (0, 2)
 
     for pattern, score in SCALE_ORDER_PATTERNS:
         if pattern in normalized:
@@ -482,7 +708,7 @@ def sort_answer_choices(answer_choices: list[str], question_type: str, question_
     ):
         return _anchor_exclusive_choices_last(_sort_pattern_list(answer_choices, HP_INTEREST_ORDER_PATTERNS))
     if question_type == "Scale / Likert":
-        return _anchor_exclusive_choices_last(_sort_scale_choices(answer_choices))
+        return _anchor_exclusive_choices_last(_sort_scale_choices(answer_choices, question_label))
     return _anchor_exclusive_choices_last(answer_choices)
 
 
