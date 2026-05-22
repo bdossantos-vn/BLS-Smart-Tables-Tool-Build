@@ -73,6 +73,10 @@ DEFAULT_STATE: dict[str, Any] = {
     "banner_stat_config": {},
     "adhoc_stat_config": {},
     "generated_tables": {},
+    "generated_tables_signature": "",
+    "generated_excel_bytes": None,
+    "generated_excel_filename": "",
+    "generated_excel_signature": "",
 }
 
 

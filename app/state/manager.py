@@ -21,6 +21,7 @@ from src.state import init_session_state
 EXTRA_DEFAULTS: dict[str, Any] = {
     "project_config": build_default_project_config(),
     "topline_config": {
+        "configured": False,
         "variables": [],
         "response_selections": {},
         "note_base_sections": {},

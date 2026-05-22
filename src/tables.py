@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 from scipy.stats import norm
@@ -24,6 +24,18 @@ from src.stats import normalize_confidence_intervals
 from src.utils import alpha_letter_sequence, normalize_text
 
 
+ProgressCallback = Callable[[str, int, int, str | None], None]
+SIGNIFICANCE_WORKLOAD_THRESHOLD = 50_000
+PERFORMANCE_SIG_TEST_NOTE = (
+    "Performance note: large significance workload detected; optimized scoped significance "
+    "processing was used. Comparisons remain limited to the configured banner context."
+)
+TOPLINE_NOTES_UNAVAILABLE_NOTE = (
+    "Topline significance notes could not be completed because none of the selected "
+    "banners use the comparison variable as the lowest banner level."
+)
+
+
 @dataclass
 class SheetTable:
     """One rendered question table destined for a workbook sheet."""
@@ -42,6 +54,8 @@ class SheetTable:
     include_n_count: bool = False
     include_stat_testing: bool = True
     notation_location: str = "appended_to_metric"
+    estimated_sig_tests: int = 0
+    optimized_significance: bool = False
 
 
 @dataclass
@@ -60,6 +74,8 @@ class WorkbookSheet:
     include_n_count: bool = False
     include_stat_testing: bool = True
     notation_location: str = "appended_to_metric"
+    estimated_sig_tests: int = 0
+    optimized_significance: bool = False
 
 
 @dataclass
@@ -73,6 +89,22 @@ class ToplineSheet:
 
     rows: list[dict[str, Any]]
     footnotes: list[str] = field(default_factory=list)
+
+
+def _emit_progress(
+    callback: ProgressCallback | None,
+    stage: str,
+    completed: int,
+    total: int,
+    detail: str | None = None,
+) -> None:
+    """Send a best-effort progress update to the caller."""
+    if callback is None:
+        return
+    try:
+        callback(stage, max(int(completed), 0), max(int(total), 1), detail)
+    except Exception:
+        return
 
 
 def describe_generation_readiness(default_state: dict, current_state: dict) -> list[str]:
@@ -135,6 +167,21 @@ def _comparison_scope_for_groups(requested_scope: str, groups: list[dict[str, An
         if group.get("label") != "Total"
     )
     return "control_vs_test" if has_control else "lowest_banner_level"
+
+
+def _comparison_level_markers(comparison_col: str | None) -> set[str]:
+    """Return the banner level tokens that mean the comparison scheme."""
+    markers = {COMPARISON_SCHEME_LEVEL}
+    comparison_variable = normalize_text(comparison_col)
+    if comparison_variable:
+        markers.add(comparison_variable)
+    return markers
+
+
+def _banner_uses_comparison_level(banner_row: dict[str, Any] | None, comparison_col: str | None) -> bool:
+    """Return whether a banner explicitly includes the comparison level."""
+    markers = _comparison_level_markers(comparison_col)
+    return any(normalize_text(level) in markers for level in list((banner_row or {}).get("levels", [])))
 
 
 def _topline_comparison_scope(
@@ -576,26 +623,24 @@ def _build_banner_groups(
         for level in levels:
             mask = mask & (df[level].map(normalize_text) == normalize_text(values[level]))
         label_parts: list[str] = []
+        display_values: dict[str, str] = {}
         for level in levels:
             raw_value = normalize_text(values[level])
             if normalize_text(level) == normalize_text(comparison_col):
-                label_parts.append(comparison_group_labels.get(raw_value, raw_value))
+                display_value = comparison_group_labels.get(raw_value, raw_value)
             else:
-                label_parts.append(raw_value)
+                display_value = raw_value
+            label_parts.append(display_value)
+            display_values[level] = display_value
         label = " | ".join(label_parts)
+        parent_key = tuple((level, display_values.get(level, "")) for level in levels[:-1])
         groups.append(
             {
                 "label": label,
                 "mask": mask.fillna(False),
                 "values": values,
-                "display_values": {
-                    level: (
-                        comparison_group_labels.get(normalize_text(values[level]), normalize_text(values[level]))
-                        if normalize_text(level) == normalize_text(comparison_col)
-                        else normalize_text(values[level])
-                    )
-                    for level in levels
-                },
+                "display_values": display_values,
+                "parent_key": parent_key,
             }
         )
     return groups
@@ -1035,24 +1080,11 @@ def _infer_comparison_pairs_for_sig(
     """Return comparison pairs for one significance row."""
     if comparison_scope == "none":
         return []
+    if comparison_pairs is not None:
+        return comparison_pairs
     if comparison_scope == "control_vs_test":
-        return comparison_pairs or build_control_comparison_pairs(groups)
-    active_indexes = [index for index, group in enumerate(groups) if group.get("label") != "Total"]
-    return [
-        {
-            "left_index": left_index,
-            "right_index": right_index,
-            "left_label": normalize_text(groups[left_index].get("label")),
-            "right_label": normalize_text(groups[right_index].get("label")),
-            "subgroup_label": "Total",
-            "overlap": bool((groups[left_index]["mask"] & groups[right_index]["mask"]).sum()),
-            "test_type": "paired_overlap"
-            if bool((groups[left_index]["mask"] & groups[right_index]["mask"]).sum())
-            else "independent",
-        }
-        for position, left_index in enumerate(active_indexes)
-        for right_index in active_indexes[position + 1 :]
-    ]
+        return build_control_comparison_pairs(groups)
+    return _build_all_cell_comparison_pairs(groups)
 
 
 def _build_sig_letters(
@@ -1065,6 +1097,7 @@ def _build_sig_letters(
     base_masks: list[pd.Series] | None = None,
     outcome_mask: pd.Series | None = None,
     comparison_pairs: list[dict[str, Any]] | None = None,
+    sig_cache: dict[tuple[Any, ...], list[str]] | None = None,
 ) -> list[str]:
     """Build significance letters for one row across the visible banner groups."""
     if len(group_labels) <= 1 or comparison_scope == "none":
@@ -1087,6 +1120,19 @@ def _build_sig_letters(
     }
 
     pairs = _infer_comparison_pairs_for_sig(groups, comparison_scope, comparison_pairs)
+    independent_cache_key: tuple[Any, ...] | None = None
+    if sig_cache is not None and pairs and not any(bool(pair.get("overlap")) for pair in pairs):
+        independent_cache_key = (
+            tuple(counts_by_group),
+            tuple(denominators_by_group),
+            tuple((int(pair.get("left_index", -1)), int(pair.get("right_index", -1))) for pair in pairs),
+            round(alpha, 8),
+            normalize_text(comparison_scope),
+        )
+        cached_letters = sig_cache.get(independent_cache_key)
+        if cached_letters is not None:
+            return list(cached_letters)
+
     p_values: list[float | None] = []
     normalized_pairs: list[dict[str, Any]] = []
     for pair in pairs:
@@ -1096,7 +1142,10 @@ def _build_sig_letters(
             continue
         if groups[index_a].get("label") == "Total" or groups[index_b].get("label") == "Total":
             continue
-        overlaps = bool((groups[index_a]["mask"] & groups[index_b]["mask"]).sum()) if "mask" in groups[index_a] and "mask" in groups[index_b] else False
+        if "overlap" in pair:
+            overlaps = bool(pair.get("overlap"))
+        else:
+            overlaps = _pair_overlap(groups[index_a], groups[index_b])
         p_value = None
         # 2026-05-19 BD: Automatic significance testing switches to an
         # overlap-aware paired proportion test whenever the group masks overlap.
@@ -1128,6 +1177,8 @@ def _build_sig_letters(
             output[index_a] += index_to_letter[index_b]
         elif pct_b > pct_a and index_to_letter.get(index_a):
             output[index_b] += index_to_letter[index_a]
+    if sig_cache is not None and independent_cache_key is not None:
+        sig_cache[independent_cache_key] = list(output)
     return output
 
 
@@ -1146,6 +1197,8 @@ def _build_question_table(
     include_n_count: bool = False,
     include_stat_testing: bool = True,
     notation_location: str = "appended_to_metric",
+    optimize_significance: bool = False,
+    sig_cache: dict[tuple[Any, ...], list[str]] | None = None,
 ) -> SheetTable:
     """Build one question table for all visible groups on a banner sheet."""
     variable = normalize_text(question_row.get("variable"))
@@ -1164,7 +1217,9 @@ def _build_question_table(
     total_base_denominators = [int(group["mask"].sum()) for group in groups]
     answering_masks = question_series.map(lambda value: normalize_text(value) != "").fillna(False)
     total_answering_denominators = [int((group["mask"] & answering_masks).sum()) for group in groups]
-    comparison_pairs = comparison_pairs or _build_comparison_pair_metadata(groups, comparison_col)
+    if comparison_pairs is None:
+        comparison_pairs = _build_pair_metadata_for_scope(groups, comparison_col, comparison_scope)
+    active_sig_cache = sig_cache if optimize_significance else None
 
     sections: list[dict[str, Any]] = []
     for section_label, denominators, base_masks in [
@@ -1203,6 +1258,7 @@ def _build_question_table(
                 base_masks=base_masks,
                 outcome_mask=matched_mask,
                 comparison_pairs=comparison_pairs,
+                sig_cache=active_sig_cache,
             )
             rows.append(
                 {
@@ -1233,7 +1289,134 @@ def _build_question_table(
         include_n_count=include_n_count,
         include_stat_testing=include_stat_testing and comparison_scope != "none",
         notation_location=notation_location,
+        estimated_sig_tests=len(output_rows) * 2 * len(comparison_pairs),
+        optimized_significance=optimize_significance,
     )
+
+
+def _estimate_significance_workload(
+    question_rows: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
+    net_definitions: dict[str, dict[str, bool]],
+    scale_mappings: dict[str, dict[str, Any]],
+    comparison_col: str | None,
+    comparison_group_labels: dict[str, str] | None,
+    comparison_pairs: list[dict[str, Any]],
+    comparison_scope: str,
+) -> int:
+    """Estimate p-value tests for one exported sheet/table group."""
+    if normalize_text(comparison_scope) == "none" or not comparison_pairs:
+        return 0
+    output_row_count = 0
+    for question_row in question_rows:
+        output_row_count += len(
+            _get_question_rows(
+                normalize_text(question_row.get("variable")),
+                question_row,
+                net_definitions,
+                scale_mappings,
+                comparison_col=comparison_col,
+                comparison_group_labels=comparison_group_labels,
+            )
+        )
+    return output_row_count * 2 * len(comparison_pairs)
+
+
+def _apply_significance_workload_metadata(
+    export_summary: dict[str, Any],
+    sheet_name: str,
+    estimated_sig_tests: int,
+    footnotes: list[str],
+) -> bool:
+    """Record workload totals and add a sheet caveat when the optimized path is active."""
+    export_summary["estimated_sig_tests"] = int(export_summary.get("estimated_sig_tests", 0)) + int(estimated_sig_tests)
+    optimize_significance = estimated_sig_tests >= SIGNIFICANCE_WORKLOAD_THRESHOLD
+    if optimize_significance:
+        export_summary.setdefault("optimized_sig_sheets", []).append(sheet_name)
+        if PERFORMANCE_SIG_TEST_NOTE not in footnotes:
+            footnotes.append(PERFORMANCE_SIG_TEST_NOTE)
+    return optimize_significance
+
+
+def _enabled_net_labels_for_question(
+    question_row: dict[str, Any],
+    net_definitions: dict[str, dict[str, bool]],
+    scale_mappings: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Return enabled net labels for one scale question."""
+    variable = normalize_text(question_row.get("variable"))
+    if normalize_text(question_row.get("detected_type")) != "Scale / Likert":
+        return []
+    return list(build_enabled_net_choice_map(variable, net_definitions, scale_mappings).keys())
+
+
+def _default_topline_net_variables(
+    question_rows: list[dict[str, Any]],
+    net_definitions: dict[str, dict[str, bool]],
+    scale_mappings: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Return scale variables that have enabled nets and should seed a new Topline."""
+    return {
+        normalize_text(question_row.get("variable"))
+        for question_row in question_rows
+        if _enabled_net_labels_for_question(question_row, net_definitions, scale_mappings)
+    }
+
+
+def _build_question_tables(
+    df: pd.DataFrame,
+    question_rows: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
+    net_definitions: dict[str, dict[str, bool]],
+    scale_mappings: dict[str, dict[str, Any]],
+    alpha: float,
+    comparison_scope: str,
+    comparison_col: str | None,
+    comparison_group_labels: dict[str, str] | None,
+    comparison_pairs: list[dict[str, Any]],
+    include_percentage: bool,
+    include_n_count: bool,
+    include_stat_testing: bool,
+    notation_location: str,
+    optimize_significance: bool,
+    progress_callback: ProgressCallback | None = None,
+    progress_state: dict[str, int] | None = None,
+    progress_detail: str = "",
+) -> list[SheetTable]:
+    """Build question tables and emit generation progress per question."""
+    tables: list[SheetTable] = []
+    sig_cache: dict[tuple[Any, ...], list[str]] | None = {} if optimize_significance else None
+    for question_row in question_rows:
+        tables.append(
+            _build_question_table(
+                df,
+                question_row,
+                groups,
+                net_definitions,
+                scale_mappings,
+                alpha,
+                comparison_scope,
+                comparison_col,
+                comparison_group_labels,
+                comparison_pairs,
+                include_percentage=include_percentage,
+                include_n_count=include_n_count,
+                include_stat_testing=include_stat_testing,
+                notation_location=notation_location,
+                optimize_significance=optimize_significance,
+                sig_cache=sig_cache,
+            )
+        )
+        if progress_state is not None:
+            progress_state["completed"] = int(progress_state.get("completed", 0)) + 1
+            _emit_progress(
+                progress_callback,
+                "Calculating tables and significance",
+                progress_state["completed"],
+                progress_state.get("total", 1),
+                progress_detail or normalize_text(question_row.get("variable")),
+            )
+    return tables
 
 
 def _find_comparison_pair_indexes(
@@ -1262,6 +1445,56 @@ def _find_comparison_pair_indexes(
         )
         for pair in _build_comparison_pair_metadata(groups, comparison_col)
     ]
+
+
+def _pair_overlap(left_group: dict[str, Any], right_group: dict[str, Any]) -> bool:
+    """Return whether two group masks overlap."""
+    left_mask = left_group.get("mask")
+    right_mask = right_group.get("mask")
+    if left_mask is None or right_mask is None:
+        return False
+    return bool((left_mask & right_mask).sum())
+
+
+def _subgroup_label_from_parent_key(parent_key: tuple[tuple[str, str], ...]) -> str:
+    """Return a human-readable label for one parent banner context."""
+    if not parent_key:
+        return "Total"
+    return " | ".join(value for _, value in parent_key if normalize_text(value)) or "Total"
+
+
+def _build_all_cell_comparison_pairs(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build all-cell comparison pairs within each shared parent banner context."""
+    grouped_indexes: dict[tuple[tuple[str, str], ...], list[int]] = {}
+    for index, group in enumerate(groups):
+        if group.get("label") == "Total":
+            continue
+        parent_key = tuple(group.get("parent_key") or ())
+        grouped_indexes.setdefault(parent_key, []).append(index)
+
+    pairs: list[dict[str, Any]] = []
+    for parent_key, indexes in grouped_indexes.items():
+        if len(indexes) < 2:
+            continue
+        subgroup_label = _subgroup_label_from_parent_key(parent_key)
+        for position, left_index in enumerate(indexes):
+            for right_index in indexes[position + 1 :]:
+                left_group = groups[left_index]
+                right_group = groups[right_index]
+                overlap = _pair_overlap(left_group, right_group)
+                pairs.append(
+                    {
+                        "left_index": left_index,
+                        "right_index": right_index,
+                        "subgroup_label": subgroup_label,
+                        "left_label": normalize_text(left_group.get("label")),
+                        "right_label": normalize_text(right_group.get("label")),
+                        "overlap": overlap,
+                        "test_type": "paired_overlap" if overlap else "independent",
+                        "parent_key": parent_key,
+                    }
+                )
+    return pairs
 
 
 def _build_comparison_pair_metadata(
@@ -1328,7 +1561,7 @@ def _build_comparison_pair_metadata(
                 if value == control_key:
                     continue
                 right_record = indexed_values[value]
-                overlap = bool((left_record["mask"] & right_record["mask"]).sum()) if left_record.get("mask") is not None and right_record.get("mask") is not None else False
+                overlap = _pair_overlap(left_record, right_record)
                 pairs.append(
                     {
                         "left_index": left_record["index"],
@@ -1343,6 +1576,21 @@ def _build_comparison_pair_metadata(
                 )
             continue
     return pairs
+
+
+def _build_pair_metadata_for_scope(
+    groups: list[dict[str, Any]],
+    comparison_col: str | None,
+    comparison_scope: str,
+) -> list[dict[str, Any]]:
+    """Build pair metadata once for the active significance scope."""
+    scope = normalize_text(comparison_scope)
+    if scope == "none":
+        return []
+    if scope == "control_vs_test":
+        comparison_pairs = _build_comparison_pair_metadata(groups, comparison_col)
+        return comparison_pairs or build_control_comparison_pairs(groups)
+    return _build_all_cell_comparison_pairs(groups)
 
 
 def _build_significance_direction(
@@ -1520,6 +1768,22 @@ def _build_banner_note_lookup(
     return note_lookup
 
 
+def _has_topline_note_source_banner(sheets: list[WorkbookSheet], comparison_col: str | None) -> bool:
+    """Return whether any selected banner can produce subgroup sig notes."""
+    normalized_comparison = normalize_text(comparison_col)
+    if not normalized_comparison:
+        return False
+    for sheet in sheets:
+        sheet_levels = list(getattr(sheet, "levels", []) or [])
+        if len(sheet_levels) >= 2 and normalize_text(sheet_levels[-1]) == normalized_comparison:
+            return True
+        for table in list(getattr(sheet, "tables", []) or []):
+            table_levels = list(getattr(table, "levels", []) or [])
+            if len(table_levels) >= 2 and normalize_text(table_levels[-1]) == normalized_comparison:
+                return True
+    return False
+
+
 def _build_topline_rows(
     total_comparison_sheet: WorkbookSheet | None,
     banner_sheets: list[WorkbookSheet],
@@ -1551,7 +1815,6 @@ def _build_topline_rows(
     if not total_comparison_sheet:
         return rows
 
-    included_variables = included_variables or set()
     response_selection_map = response_selection_map or {}
     note_base_section_map = note_base_section_map or {}
     variable_display_names = variable_display_names or {}
@@ -1574,7 +1837,7 @@ def _build_topline_rows(
     right_group_label = normalize_text(total_comparison_sheet.groups[right_index].get("label")) or "Group 2"
     for table in total_comparison_sheet.tables:
         normalized_variable = normalize_text(table.variable)
-        if included_variables and normalized_variable not in included_variables:
+        if included_variables is not None and normalized_variable not in included_variables:
             continue
         selected_note_base = note_base_section_map.get(normalized_variable) or "Total Answering"
         metric_section_label = "Total Base" if selected_note_base == "Total Sample" else "Total Answering"
@@ -1732,6 +1995,7 @@ def generate_workbook_package(
     global_filters: dict[str, Any] | None = None,
     weighting_config: dict[str, Any] | None = None,
     topline_config: dict[str, Any] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Build the full workbook package used by the export layer.
 
@@ -1753,6 +2017,7 @@ def generate_workbook_package(
     global_filters = global_filters or {"rows": []}
     weighting_config = weighting_config or {"weights": []}
     topline_config = topline_config or {}
+    _emit_progress(progress_callback, "Preparing data", 1, 4, "Resolved questions and custom variables")
     # 2026-05-19 BD: A saved comparison_scheme replaces the old binary
     # comparison assumption with rule-defined layered groups.
     comparison_scheme = sanitize_comparison_scheme(comparison_scheme)
@@ -1786,6 +2051,19 @@ def generate_workbook_package(
     ]
 
     banner_rows = _normalize_banner_rows(banner_config, variable_display_names)
+    generation_units = max(len(enabled_questions), 1) * max(len(banner_rows), 1)
+    if banner_rows and (layered_scheme_active or comparison_col):
+        generation_units += len(enabled_questions)
+    generation_units += len((adhoc_crosstabs_config or {}).get("tables", []))
+    progress_state = {"completed": 0, "total": max(generation_units, 1)}
+    export_summary: dict[str, Any] = {
+        "sheet_count": 0,
+        "question_count": len(enabled_questions),
+        "estimated_sig_tests": 0,
+        "optimized_sig_sheets": [],
+        "topline_notes_warning": "",
+    }
+    _emit_progress(progress_callback, "Preparing data", 4, 4, "Prepared banner and significance settings")
     include_total = bool(banner_config.get("include_total", True))
     banner_confidence_intervals = normalize_confidence_intervals(banner_stat_config.get("confidence_intervals", [95]))
     banner_alpha = (100 - banner_confidence_intervals[0]) / 100 if banner_confidence_intervals else 0.05
@@ -1815,8 +2093,8 @@ def generate_workbook_package(
                 comparison_group_order,
             )
             sheet_levels = [effective_comparison_col]
-            comparison_pairs = _build_comparison_pair_metadata(groups, effective_comparison_col)
             table_comparison_scope = _comparison_scope_for_groups(banner_comparison_scope, groups) if banner_include_stat_testing else "none"
+            table_comparison_col = effective_comparison_col
         else:
             groups = _build_banner_groups(
                 analysis_df,
@@ -1829,27 +2107,53 @@ def generate_workbook_package(
                 comparison_group_labels,
             )
             sheet_levels = []
-            comparison_pairs = _build_comparison_pair_metadata(groups, comparison_col)
             table_comparison_scope = _comparison_scope_for_groups(banner_comparison_scope, groups)
-        tables = [
-            _build_question_table(
-                analysis_df,
-                question_row,
-                groups,
-                net_definitions,
-                scale_mappings,
-                banner_alpha,
-                table_comparison_scope,
-                effective_comparison_col if layered_scheme_active else comparison_col,
-                comparison_group_labels,
-                comparison_pairs,
-                include_percentage=banner_include_percentage,
-                include_n_count=banner_include_n_count,
-                include_stat_testing=banner_include_stat_testing,
-                notation_location=banner_notation_location,
-            )
-            for question_row in enabled_questions
-        ]
+            table_comparison_col = comparison_col
+        comparison_pairs = _build_pair_metadata_for_scope(groups, table_comparison_col, table_comparison_scope)
+        sheet_footnotes = _build_table_footnotes(
+            banner_stat_config,
+            [],
+            _resolve_weighting_footnotes(weighting_config, ["All Tables"]),
+            layered_scheme_active,
+            project_has_overlaps,
+            comparison_scope_override=table_comparison_scope,
+        )
+        estimated_sig_tests = _estimate_significance_workload(
+            enabled_questions,
+            groups,
+            net_definitions,
+            scale_mappings,
+            table_comparison_col,
+            comparison_group_labels,
+            comparison_pairs,
+            table_comparison_scope,
+        )
+        optimize_significance = _apply_significance_workload_metadata(
+            export_summary,
+            "All Tables",
+            estimated_sig_tests,
+            sheet_footnotes,
+        )
+        tables = _build_question_tables(
+            analysis_df,
+            enabled_questions,
+            groups,
+            net_definitions,
+            scale_mappings,
+            banner_alpha,
+            table_comparison_scope,
+            table_comparison_col,
+            comparison_group_labels,
+            comparison_pairs,
+            banner_include_percentage,
+            banner_include_n_count,
+            banner_include_stat_testing,
+            banner_notation_location,
+            optimize_significance,
+            progress_callback,
+            progress_state,
+            "All Tables",
+        )
         only_sheet = WorkbookSheet(
             name="All Tables",
             banner_name="All Tables",
@@ -1857,86 +2161,127 @@ def generate_workbook_package(
             groups=groups,
             tables=tables,
             comparison_pairs=comparison_pairs,
-            footnotes=_build_table_footnotes(
-                banner_stat_config,
-                [],
-                _resolve_weighting_footnotes(weighting_config, ["All Tables"]),
-                layered_scheme_active,
-                project_has_overlaps,
-                comparison_scope_override=table_comparison_scope,
-            ),
+            footnotes=sheet_footnotes,
             include_percentage=banner_include_percentage,
             include_n_count=banner_include_n_count,
             include_stat_testing=banner_include_stat_testing,
             notation_location=banner_notation_location,
+            estimated_sig_tests=estimated_sig_tests,
+            optimized_significance=optimize_significance,
         )
         sheet_specs.append(only_sheet)
         total_comparison_sheet = only_sheet
         topline_table_scope = _comparison_scope_for_groups(topline_scope, groups) if banner_include_stat_testing else "none"
         if topline_table_scope != table_comparison_scope:
-            total_tables = [
-                _build_question_table(
-                    analysis_df,
-                    question_row,
-                    groups,
-                    net_definitions,
-                    scale_mappings,
-                    banner_alpha,
-                    topline_table_scope,
-                    effective_comparison_col if layered_scheme_active else comparison_col,
-                    comparison_group_labels,
-                    comparison_pairs,
-                    include_percentage=banner_include_percentage,
-                    include_n_count=banner_include_n_count,
-                    include_stat_testing=banner_include_stat_testing,
-                    notation_location=banner_notation_location,
-                )
-                for question_row in enabled_questions
-            ]
+            total_pairs = _build_pair_metadata_for_scope(groups, table_comparison_col, topline_table_scope)
+            total_footnotes = _build_table_footnotes(
+                banner_stat_config,
+                [],
+                [],
+                layered_scheme_active,
+                project_has_overlaps,
+                comparison_scope_override=topline_table_scope,
+            )
+            total_estimated_sig_tests = _estimate_significance_workload(
+                enabled_questions,
+                groups,
+                net_definitions,
+                scale_mappings,
+                table_comparison_col,
+                comparison_group_labels,
+                total_pairs,
+                topline_table_scope,
+            )
+            total_optimize_significance = _apply_significance_workload_metadata(
+                export_summary,
+                "Topline Comparison",
+                total_estimated_sig_tests,
+                total_footnotes,
+            )
+            total_tables = _build_question_tables(
+                analysis_df,
+                enabled_questions,
+                groups,
+                net_definitions,
+                scale_mappings,
+                banner_alpha,
+                topline_table_scope,
+                table_comparison_col,
+                comparison_group_labels,
+                total_pairs,
+                banner_include_percentage,
+                banner_include_n_count,
+                banner_include_stat_testing,
+                banner_notation_location,
+                total_optimize_significance,
+                progress_callback,
+                progress_state,
+                "Topline Comparison",
+            )
             total_comparison_sheet = WorkbookSheet(
                 name="Topline Comparison",
                 banner_name="Topline Comparison",
                 levels=sheet_levels,
                 groups=groups,
                 tables=total_tables,
-                comparison_pairs=comparison_pairs,
-                footnotes=_build_table_footnotes(
-                    banner_stat_config,
-                    [],
-                    [],
-                    layered_scheme_active,
-                    project_has_overlaps,
-                    comparison_scope_override=topline_table_scope,
-                ),
+                comparison_pairs=total_pairs,
+                footnotes=total_footnotes,
                 include_percentage=banner_include_percentage,
                 include_n_count=banner_include_n_count,
                 include_stat_testing=banner_include_stat_testing,
                 notation_location=banner_notation_location,
+                estimated_sig_tests=total_estimated_sig_tests,
+                optimized_significance=total_optimize_significance,
             )
     else:
         if layered_scheme_active and project_comparison_groups:
             total_groups = project_comparison_groups
-            total_pairs = build_control_comparison_pairs(total_groups)
             total_scope = _comparison_scope_for_groups(topline_scope, total_groups) if banner_include_stat_testing else "none"
-            total_tables = [
-                _build_question_table(
-                    analysis_df,
-                    question_row,
-                    total_groups,
-                    net_definitions,
-                    scale_mappings,
-                    banner_alpha,
-                    total_scope,
-                    effective_comparison_col,
-                    comparison_group_labels,
-                    total_pairs,
-                    include_percentage=banner_include_percentage,
-                    include_n_count=banner_include_n_count,
-                    include_stat_testing=banner_include_stat_testing,
-                    notation_location=banner_notation_location,
-                )
-                for question_row in enabled_questions
-            ]
+            total_pairs = _build_pair_metadata_for_scope(total_groups, effective_comparison_col, total_scope)
+            total_footnotes = _build_table_footnotes(
+                banner_stat_config,
+                [],
+                [],
+                layered_scheme_active,
+                project_has_overlaps,
+                comparison_scope_override=total_scope,
+            )
+            total_estimated_sig_tests = _estimate_significance_workload(
+                enabled_questions,
+                total_groups,
+                net_definitions,
+                scale_mappings,
+                effective_comparison_col,
+                comparison_group_labels,
+                total_pairs,
+                total_scope,
+            )
+            total_optimize_significance = _apply_significance_workload_metadata(
+                export_summary,
+                "Topline Comparison",
+                total_estimated_sig_tests,
+                total_footnotes,
+            )
+            total_tables = _build_question_tables(
+                analysis_df,
+                enabled_questions,
+                total_groups,
+                net_definitions,
+                scale_mappings,
+                banner_alpha,
+                total_scope,
+                effective_comparison_col,
+                comparison_group_labels,
+                total_pairs,
+                banner_include_percentage,
+                banner_include_n_count,
+                banner_include_stat_testing,
+                banner_notation_location,
+                total_optimize_significance,
+                progress_callback,
+                progress_state,
+                "Topline Comparison",
+            )
             total_comparison_sheet = WorkbookSheet(
                 name="Topline Comparison",
                 banner_name="Topline Comparison",
@@ -1944,18 +2289,13 @@ def generate_workbook_package(
                 groups=total_groups,
                 tables=total_tables,
                 comparison_pairs=total_pairs,
-                footnotes=_build_table_footnotes(
-                    banner_stat_config,
-                    [],
-                    [],
-                    layered_scheme_active,
-                    project_has_overlaps,
-                    comparison_scope_override=total_scope,
-                ),
+                footnotes=total_footnotes,
                 include_percentage=banner_include_percentage,
                 include_n_count=banner_include_n_count,
                 include_stat_testing=banner_include_stat_testing,
                 notation_location=banner_notation_location,
+                estimated_sig_tests=total_estimated_sig_tests,
+                optimized_significance=total_optimize_significance,
             )
         elif comparison_col and normalize_text(comparison_col) in analysis_df.columns:
             total_groups = _build_total_comparison_groups(
@@ -1964,27 +2304,52 @@ def generate_workbook_package(
                 comparison_group_order,
                 comparison_group_labels,
             )
-            total_pairs = _build_comparison_pair_metadata(total_groups, comparison_col)
             total_scope = _comparison_scope_for_groups(topline_scope, total_groups) if banner_include_stat_testing else "none"
-            total_tables = [
-                _build_question_table(
-                    analysis_df,
-                    question_row,
-                    total_groups,
-                    net_definitions,
-                    scale_mappings,
-                    banner_alpha,
-                    total_scope,
-                    comparison_col,
-                    comparison_group_labels,
-                    total_pairs,
-                    include_percentage=banner_include_percentage,
-                    include_n_count=banner_include_n_count,
-                    include_stat_testing=banner_include_stat_testing,
-                    notation_location=banner_notation_location,
-                )
-                for question_row in enabled_questions
-            ]
+            total_pairs = _build_pair_metadata_for_scope(total_groups, comparison_col, total_scope)
+            total_footnotes = _build_table_footnotes(
+                banner_stat_config,
+                [],
+                [],
+                False,
+                False,
+                comparison_scope_override=total_scope,
+            )
+            total_estimated_sig_tests = _estimate_significance_workload(
+                enabled_questions,
+                total_groups,
+                net_definitions,
+                scale_mappings,
+                comparison_col,
+                comparison_group_labels,
+                total_pairs,
+                total_scope,
+            )
+            total_optimize_significance = _apply_significance_workload_metadata(
+                export_summary,
+                "Topline Comparison",
+                total_estimated_sig_tests,
+                total_footnotes,
+            )
+            total_tables = _build_question_tables(
+                analysis_df,
+                enabled_questions,
+                total_groups,
+                net_definitions,
+                scale_mappings,
+                banner_alpha,
+                total_scope,
+                comparison_col,
+                comparison_group_labels,
+                total_pairs,
+                banner_include_percentage,
+                banner_include_n_count,
+                banner_include_stat_testing,
+                banner_notation_location,
+                total_optimize_significance,
+                progress_callback,
+                progress_state,
+                "Topline Comparison",
+            )
             total_comparison_sheet = WorkbookSheet(
                 name="Topline Comparison",
                 banner_name="Topline Comparison",
@@ -1992,10 +2357,13 @@ def generate_workbook_package(
                 groups=total_groups,
                 tables=total_tables,
                 comparison_pairs=total_pairs,
+                footnotes=total_footnotes,
                 include_percentage=banner_include_percentage,
                 include_n_count=banner_include_n_count,
                 include_stat_testing=banner_include_stat_testing,
                 notation_location=banner_notation_location,
+                estimated_sig_tests=total_estimated_sig_tests,
+                optimized_significance=total_optimize_significance,
             )
         for banner_row in banner_rows:
             banner_name = banner_row["name"]
@@ -2005,7 +2373,8 @@ def generate_workbook_package(
                 ["All Tables", banner_name],
                 question_lookup,
             )
-            if layered_scheme_active:
+            banner_uses_comparison_level = layered_scheme_active and _banner_uses_comparison_level(banner_row, comparison_col)
+            if banner_uses_comparison_level:
                 filtered_comparison_groups = build_comparison_group_masks(
                     filtered_banner_df,
                     comparison_scheme,
@@ -2025,9 +2394,9 @@ def generate_workbook_package(
                     comparison_group_order,
                 )
                 active_levels = _layered_banner_levels(banner_row, comparison_col)
-                comparison_pairs = _build_comparison_pair_metadata(groups, effective_comparison_col)
                 table_comparison_scope = _comparison_scope_for_groups(banner_comparison_scope, groups) if banner_include_stat_testing else "none"
                 sheet_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups))
+                table_comparison_col = effective_comparison_col
             else:
                 groups = _build_banner_groups(
                     filtered_banner_df,
@@ -2040,35 +2409,53 @@ def generate_workbook_package(
                     comparison_group_labels,
                 )
                 active_levels = banner_row["levels"]
-                comparison_pairs = _build_comparison_pair_metadata(groups, comparison_col)
                 table_comparison_scope = _comparison_scope_for_groups(banner_comparison_scope, groups)
                 sheet_has_overlaps = False
-            tables = [
-                _build_question_table(
-                    filtered_banner_df,
-                    question_row,
-                    groups,
-                    net_definitions,
-                    scale_mappings,
-                    banner_alpha,
-                    table_comparison_scope,
-                    effective_comparison_col if layered_scheme_active else comparison_col,
-                    comparison_group_labels,
-                    comparison_pairs,
-                    include_percentage=banner_include_percentage,
-                    include_n_count=banner_include_n_count,
-                    include_stat_testing=banner_include_stat_testing,
-                    notation_location=banner_notation_location,
-                )
-                for question_row in enabled_questions
-            ]
+                table_comparison_col = comparison_col
+            comparison_pairs = _build_pair_metadata_for_scope(groups, table_comparison_col, table_comparison_scope)
             banner_footnotes = _build_table_footnotes(
                 banner_stat_config,
                 applied_filters,
                 _resolve_weighting_footnotes(weighting_config, ["All Tables", banner_name]),
-                layered_scheme_active,
+                banner_uses_comparison_level,
                 sheet_has_overlaps,
                 comparison_scope_override=table_comparison_scope,
+            )
+            estimated_sig_tests = _estimate_significance_workload(
+                enabled_questions,
+                groups,
+                net_definitions,
+                scale_mappings,
+                table_comparison_col,
+                comparison_group_labels,
+                comparison_pairs,
+                table_comparison_scope,
+            )
+            optimize_significance = _apply_significance_workload_metadata(
+                export_summary,
+                banner_name,
+                estimated_sig_tests,
+                banner_footnotes,
+            )
+            tables = _build_question_tables(
+                filtered_banner_df,
+                enabled_questions,
+                groups,
+                net_definitions,
+                scale_mappings,
+                banner_alpha,
+                table_comparison_scope,
+                table_comparison_col,
+                comparison_group_labels,
+                comparison_pairs,
+                banner_include_percentage,
+                banner_include_n_count,
+                banner_include_stat_testing,
+                banner_notation_location,
+                optimize_significance,
+                progress_callback,
+                progress_state,
+                banner_name,
             )
             if banner_config.get("export_style") == "single_sheet":
                 if not sheet_specs or sheet_specs[-1].name != "All Banners":
@@ -2096,6 +2483,8 @@ def generate_workbook_package(
                     table.groups = groups
                     table.comparison_pairs = comparison_pairs
                     table.footnotes = banner_footnotes
+                    table.estimated_sig_tests = estimated_sig_tests
+                    table.optimized_significance = optimize_significance
                 sheet_specs[-1].tables.extend(tables)
             else:
                 sheet_specs.append(
@@ -2115,6 +2504,8 @@ def generate_workbook_package(
                         include_n_count=banner_include_n_count,
                         include_stat_testing=banner_include_stat_testing,
                         notation_location=banner_notation_location,
+                        estimated_sig_tests=estimated_sig_tests,
+                        optimized_significance=optimize_significance,
                     )
                 )
 
@@ -2139,7 +2530,7 @@ def generate_workbook_package(
                 row_variable,
                 custom_variables,
             )
-            column_uses_comparison_scheme = layered_scheme_active and normalize_text(column_variable) == COMPARISON_SCHEME_LEVEL
+            column_uses_comparison_scheme = layered_scheme_active and normalize_text(column_variable) in _comparison_level_markers(comparison_col)
             if (
                 not row_variable
                 or not column_variable
@@ -2158,7 +2549,7 @@ def generate_workbook_package(
                 question_lookup,
             )
             column_question_row = metadata_lookup.get(column_variable)
-            if layered_scheme_active and normalize_text(column_variable) in {normalize_text(comparison_col), COMPARISON_SCHEME_LEVEL}:
+            if column_uses_comparison_scheme:
                 filtered_comparison_groups = build_comparison_group_masks(
                     filtered_df,
                     comparison_scheme,
@@ -2178,9 +2569,9 @@ def generate_workbook_package(
                     comparison_group_order,
                 )
                 column_levels = [effective_comparison_col]
-                comparison_pairs = _build_comparison_pair_metadata(groups, effective_comparison_col)
                 adhoc_scope_for_table = _comparison_scope_for_groups(adhoc_scope, groups) if adhoc_include_stat_testing else "none"
                 adhoc_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups))
+                adhoc_comparison_col = effective_comparison_col
             elif normalize_text(column_question_row.get("detected_type") if column_question_row else "") == "Multi-Select":
                 groups = _build_adhoc_multiselect_groups(
                     filtered_df,
@@ -2191,9 +2582,9 @@ def generate_workbook_package(
                     comparison_group_labels,
                 )
                 column_levels = [column_variable, "__selection_status__"]
-                comparison_pairs = _build_comparison_pair_metadata(groups, comparison_col)
                 adhoc_scope_for_table = _comparison_scope_for_groups(adhoc_scope, groups)
                 adhoc_has_overlaps = False
+                adhoc_comparison_col = comparison_col
             else:
                 banner_row = {
                     "name": table_name,
@@ -2210,9 +2601,34 @@ def generate_workbook_package(
                     comparison_group_labels,
                 )
                 column_levels = [column_variable]
-                comparison_pairs = _build_comparison_pair_metadata(groups, comparison_col)
                 adhoc_scope_for_table = _comparison_scope_for_groups(adhoc_scope, groups)
                 adhoc_has_overlaps = False
+                adhoc_comparison_col = comparison_col
+            comparison_pairs = _build_pair_metadata_for_scope(groups, adhoc_comparison_col, adhoc_scope_for_table)
+            table_footnotes = _build_table_footnotes(
+                adhoc_stat_config,
+                applied_filters,
+                _resolve_weighting_footnotes(weighting_config, ["All Tables", table_name]),
+                column_uses_comparison_scheme,
+                adhoc_has_overlaps,
+                comparison_scope_override=adhoc_scope_for_table,
+            )
+            estimated_sig_tests = _estimate_significance_workload(
+                [question_row],
+                groups,
+                net_definitions,
+                scale_mappings,
+                adhoc_comparison_col,
+                comparison_group_labels,
+                comparison_pairs,
+                adhoc_scope_for_table,
+            )
+            optimize_significance = _apply_significance_workload_metadata(
+                export_summary,
+                table_name,
+                estimated_sig_tests,
+                table_footnotes,
+            )
             table = _build_question_table(
                 filtered_df,
                 question_row,
@@ -2221,13 +2637,23 @@ def generate_workbook_package(
                 scale_mappings,
                 adhoc_alpha,
                 adhoc_scope_for_table,
-                effective_comparison_col if layered_scheme_active and normalize_text(column_variable) in {normalize_text(comparison_col), COMPARISON_SCHEME_LEVEL} else comparison_col,
+                adhoc_comparison_col,
                 comparison_group_labels,
                 comparison_pairs,
                 include_percentage=adhoc_include_percentage,
                 include_n_count=adhoc_include_n_count,
                 include_stat_testing=adhoc_include_stat_testing,
                 notation_location=adhoc_notation_location,
+                optimize_significance=optimize_significance,
+                sig_cache={} if optimize_significance else None,
+            )
+            progress_state["completed"] = int(progress_state.get("completed", 0)) + 1
+            _emit_progress(
+                progress_callback,
+                "Calculating tables and significance",
+                progress_state["completed"],
+                progress_state.get("total", 1),
+                table_name,
             )
             table.banner_name = table_name
             table.levels = column_levels
@@ -2238,14 +2664,9 @@ def generate_workbook_package(
             }
             table.groups = groups
             table.comparison_pairs = comparison_pairs
-            table.footnotes = _build_table_footnotes(
-                adhoc_stat_config,
-                applied_filters,
-                _resolve_weighting_footnotes(weighting_config, ["All Tables", table_name]),
-                layered_scheme_active and normalize_text(column_variable) in {normalize_text(comparison_col), COMPARISON_SCHEME_LEVEL},
-                adhoc_has_overlaps,
-                comparison_scope_override=adhoc_scope_for_table,
-            )
+            table.footnotes = table_footnotes
+            table.estimated_sig_tests = estimated_sig_tests
+            table.optimized_significance = optimize_significance
             adhoc_tables.append(table)
         if adhoc_tables:
             sheet_specs.append(
@@ -2263,11 +2684,25 @@ def generate_workbook_package(
                 )
             )
 
-    topline_variables = {
+    saved_topline_variables = {
         normalize_text(value)
         for value in topline_config.get("variables", [])
         if normalize_text(value)
     }
+    default_topline_variables = _default_topline_net_variables(
+        enabled_questions,
+        net_definitions,
+        scale_mappings,
+    )
+    topline_configured = bool(topline_config.get("configured", False))
+    if topline_configured:
+        topline_variables: set[str] | None = saved_topline_variables
+    elif saved_topline_variables:
+        topline_variables = saved_topline_variables
+    elif default_topline_variables:
+        topline_variables = default_topline_variables
+    else:
+        topline_variables = None
     response_selection_map = {
         normalize_text(variable): [
             normalize_text(choice)
@@ -2277,6 +2712,18 @@ def generate_workbook_package(
         for variable, choices in topline_config.get("response_selections", {}).items()
         if normalize_text(variable)
     }
+    topline_candidate_variables = (
+        {normalize_text(question.get("variable")) for question in enabled_questions}
+        if topline_variables is None
+        else set(topline_variables)
+    )
+    for question_row in enabled_questions:
+        variable = normalize_text(question_row.get("variable"))
+        if variable not in topline_candidate_variables or variable in response_selection_map:
+            continue
+        enabled_net_labels = _enabled_net_labels_for_question(question_row, net_definitions, scale_mappings)
+        if enabled_net_labels:
+            response_selection_map[variable] = enabled_net_labels
     note_base_section_map = {
         normalize_text(variable): (
             "Total Sample"
@@ -2296,7 +2743,7 @@ def generate_workbook_package(
             comparison_pairs=list(getattr(sheet, "comparison_pairs", []) or []),
             tables=[
                 table for table in sheet.tables
-                if not topline_variables or normalize_text(table.variable) in topline_variables
+                if topline_variables is None or normalize_text(table.variable) in topline_variables
             ],
             footnotes=list(getattr(sheet, "footnotes", []) or []),
         )
@@ -2305,23 +2752,37 @@ def generate_workbook_package(
     effective_topline_lift = bool(topline_config.get("include_lift", False)) and bool(
         banner_stat_config.get("include_lift", False)
     )
+    _emit_progress(progress_callback, "Building topline", 0, 2, "Checking note eligibility")
+    topline_notes_requested = bool(topline_config.get("include_significance_notes", True))
+    topline_notes_warning = ""
+    if topline_notes_requested and not _has_topline_note_source_banner(
+        topline_question_sheets,
+        effective_comparison_col if layered_scheme_active else comparison_col,
+    ):
+        topline_notes_warning = TOPLINE_NOTES_UNAVAILABLE_NOTE
+        export_summary["topline_notes_warning"] = topline_notes_warning
     topline_rows = _build_topline_rows(
         total_comparison_sheet=total_comparison_sheet,
         banner_sheets=topline_question_sheets,
         comparison_col=effective_comparison_col if layered_scheme_active else comparison_col,
         include_lift=effective_topline_lift,
-        include_significance_notes=bool(topline_config.get("include_significance_notes", True)),
+        include_significance_notes=topline_notes_requested,
         included_variables=topline_variables,
         response_selection_map=response_selection_map,
         note_base_section_map=note_base_section_map,
         variable_display_names=variable_display_names,
     )
+    _emit_progress(progress_callback, "Building topline", 2, 2, "Topline ready")
+    topline_footnotes = list(getattr(total_comparison_sheet, "footnotes", []) or []) if total_comparison_sheet else []
+    if topline_notes_warning and topline_notes_warning not in topline_footnotes:
+        topline_footnotes.append(topline_notes_warning)
+    export_summary["sheet_count"] = len(sheet_specs) + 1
 
     return {
         "sheets": sheet_specs,
         "topline_sheet": ToplineSheet(
             rows=topline_rows,
-            footnotes=list(getattr(total_comparison_sheet, "footnotes", []) or []) if total_comparison_sheet else [],
+            footnotes=topline_footnotes,
         ),
         "confidence_intervals": banner_confidence_intervals,
         "comparison_scope": banner_comparison_scope,
@@ -2332,6 +2793,7 @@ def generate_workbook_package(
         "sheet_count": len(sheet_specs),
         "comparison_scheme_active": layered_scheme_active,
         "comparison_scheme_has_overlaps": project_has_overlaps,
+        "export_summary": export_summary,
     }
 
 

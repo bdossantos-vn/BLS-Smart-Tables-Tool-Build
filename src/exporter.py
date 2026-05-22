@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from typing import Callable
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import MergedCell
@@ -23,6 +24,23 @@ VN_GREEN = "FF1F8F4E"
 VN_LIGHT_GREEN = "FFE6F4EA"
 VN_LIGHT_RED = "FFFDE8EC"
 EXPORT_LAYOUT_VERSION = "Layout v2026.05.19.1"
+ProgressCallback = Callable[[str, int, int, str | None], None]
+
+
+def _emit_progress(
+    callback: ProgressCallback | None,
+    stage: str,
+    completed: int,
+    total: int,
+    detail: str | None = None,
+) -> None:
+    """Send a best-effort progress update to the caller."""
+    if callback is None:
+        return
+    try:
+        callback(stage, max(int(completed), 0), max(int(total), 1), detail)
+    except Exception:
+        return
 
 
 def _excel_rgb(color: str) -> str:
@@ -307,7 +325,16 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
                 {"label": "Group 2", "base": None},
             ]
         )
-    pair_results = _normalize_topline_pairs(list(first_row.get("Comparison Pairs", []) or []), group_results)
+    lift_columns_enabled = any(
+        pair.get("lift") is not None
+        for row in rows
+        for pair in list(row.get("Comparison Pairs", []) or [])
+    )
+    pair_results = (
+        _normalize_topline_pairs(list(first_row.get("Comparison Pairs", []) or []), group_results)
+        if lift_columns_enabled
+        else []
+    )
     pair_count = len(pair_results)
     group_count = max(len(group_results), 1)
     _set_topline_columns(worksheet, group_count, pair_count)
@@ -943,6 +970,7 @@ def _write_banner_sheet(
 def export_workbook_to_excel_bytes(
     workbook_package: dict,
     uploaded_filename: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> bytes:
     """Convert the generated workbook package into branded Excel bytes.
 
@@ -960,18 +988,28 @@ def export_workbook_to_excel_bytes(
     workbook.remove(default_sheet)
 
     topline_sheet = workbook_package.get("topline_sheet")
+    workbook_sheets = list(workbook_package.get("sheets", []))
+    write_total = max(len(workbook_sheets) + (1 if topline_sheet is not None else 0), 1)
+    write_completed = 0
+    _emit_progress(progress_callback, "Writing Excel workbook", write_completed, write_total, "Creating workbook")
     if topline_sheet is not None:
         _write_topline_sheet(workbook, topline_sheet)
+        write_completed += 1
+        _emit_progress(progress_callback, "Writing Excel workbook", write_completed, write_total, "Topline")
 
-    for sheet in workbook_package.get("sheets", []):
+    for sheet in workbook_sheets:
         _write_banner_sheet(
             workbook,
             sheet,
             include_lift=bool(workbook_package.get("include_lift", False)),
         )
+        write_completed += 1
+        _emit_progress(progress_callback, "Writing Excel workbook", write_completed, write_total, getattr(sheet, "name", "Sheet"))
 
     output = BytesIO()
+    _emit_progress(progress_callback, "Finalizing download", 0, 2, "Saving workbook bytes")
     workbook.save(output)
+    _emit_progress(progress_callback, "Finalizing download", 2, 2, "Download ready")
     return output.getvalue()
 
 

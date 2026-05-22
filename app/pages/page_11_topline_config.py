@@ -64,6 +64,11 @@ def _default_topline_choices(variable: str, question: dict[str, object]) -> list
     return _topline_available_choices(question)
 
 
+def _default_include_in_topline(question: dict[str, object]) -> bool:
+    """Return whether a new Topline setup should include this question by default."""
+    return bool(question.get("choice_expansion_map", {}))
+
+
 def _valid_or_default_topline_choices(
     variable: str,
     response_selections: dict[str, list[str]],
@@ -82,12 +87,14 @@ def _valid_or_default_topline_choices(
 def _build_topline_catalog() -> list[dict[str, object]]:
     """Build the list of topline-eligible rows from included columns and custom variables."""
     included_columns = list(st.session_state.get("included_columns", []))
-    saved_variables = list(st.session_state.get("topline_config", {}).get("variables", []))
+    topline_config = st.session_state.get("topline_config", {})
+    saved_variables = list(topline_config.get("variables", []))
+    topline_configured = bool(topline_config.get("configured", False))
     response_selections = deepcopy(
-        st.session_state.get("topline_config", {}).get("response_selections", {})
+        topline_config.get("response_selections", {})
     )
     note_base_sections = deepcopy(
-        st.session_state.get("topline_config", {}).get("note_base_sections", {})
+        topline_config.get("note_base_sections", {})
     )
     question_lookup = build_question_lookup(
         st.session_state.get("question_metadata", []),
@@ -105,10 +112,10 @@ def _build_topline_catalog() -> list[dict[str, object]]:
             response_selections,
             available_choices,
         )
-        if not saved_variables:
-            include_in_topline = True
-        else:
+        if topline_configured or saved_variables:
             include_in_topline = variable in saved_variables
+        else:
+            include_in_topline = _default_include_in_topline(question)
         rows.append(
             {
                 "Column": display_variable_name,
@@ -135,7 +142,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
             response_selections,
             available_choices,
         )
-        include_in_topline = variable_name in saved_variables if saved_variables else False
+        include_in_topline = variable_name in saved_variables if (topline_configured or saved_variables) else False
         rows.append(
             {
                 "Column": variable_name,
@@ -194,17 +201,18 @@ def _reset_topline_editor() -> None:
         st.session_state.get("net_definitions", {}),
         st.session_state.get("scale_mappings", {}),
     )
+    default_variables = [
+        variable
+        for variable in included_columns
+        if _default_include_in_topline(question_lookup.get(variable, {}))
+    ]
     response_selections = {
         variable: _default_topline_choices(variable, question_lookup.get(variable, {}))
-        for variable in included_columns
+        for variable in default_variables
     }
-    for record in st.session_state.get("custom_variables", []):
-        variable_name = str(record.get("name", "")).strip()
-        if variable_name:
-            response_selections[variable_name] = _build_custom_variable_choices(record)
-
     current_config = deepcopy(st.session_state.get("topline_config", {}))
-    current_config["variables"] = included_columns
+    current_config["configured"] = True
+    current_config["variables"] = default_variables
     current_config["response_selections"] = response_selections
     current_config["note_base_sections"] = {
         variable: "Total Answering"
@@ -433,6 +441,7 @@ def render() -> None:
                     note_base_updates.append(f"{display_variable_name}: {previous_note_base} -> {selected_note_base}")
 
             updated_config = deepcopy(previous_config)
+            updated_config["configured"] = True
             updated_config["variables"] = selected_variables
             updated_config["response_selections"] = updated_response_selections
             updated_config["note_base_sections"] = updated_note_base_sections

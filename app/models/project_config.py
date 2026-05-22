@@ -38,6 +38,7 @@ PROJECT_CONFIG_TEMPLATE: dict[str, Any] = {
         "adhoc_crosstabs": {},
     },
     "topline": {
+        "configured": False,
         "variables": [],
         "response_selections": {},
         "note_base_sections": {},

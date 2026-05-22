@@ -116,6 +116,7 @@ def render_sidebar() -> str:
                     st.session_state.app_current_step = STEPS[0]["label"]
                     st.session_state.project_config = build_default_project_config()
                     st.session_state.topline_config = {
+                        "configured": False,
                         "variables": [],
                         "response_selections": {},
                         "note_base_sections": {},
