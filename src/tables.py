@@ -21,7 +21,7 @@ from src.custom_vars import build_question_lookup
 from src.metadata import build_display_variable_lookup, get_display_variable_name
 from src.nets import build_enabled_net_choice_map
 from src.stats import normalize_confidence_intervals
-from src.utils import alpha_letter_sequence, normalize_text
+from src.utils import alpha_letter_sequence, multi_select_value_contains_choice, normalize_text
 
 
 ProgressCallback = Callable[[str, int, int, str | None], None]
@@ -267,15 +267,10 @@ def _value_matches_selected_choices(value: object, selected_choices: list[str]) 
         return False
     if normalized_value in normalized_choices:
         return True
-    split_parts = {
-        normalize_text(part)
-        for delimiter in [";", ","]
-        for part in normalized_value.split(delimiter)
-        if normalize_text(part)
-    }
-    if not split_parts:
-        split_parts = {normalized_value}
-    return bool(split_parts & normalized_choices)
+    return any(
+        multi_select_value_contains_choice(normalized_value, choice)
+        for choice in normalized_choices
+    )
 
 
 def _value_matches_all_selected_choices(value: object, selected_choices: list[str]) -> bool:
@@ -284,15 +279,10 @@ def _value_matches_all_selected_choices(value: object, selected_choices: list[st
     normalized_choices = [normalize_text(choice) for choice in selected_choices if normalize_text(choice)]
     if not normalized_value or not normalized_choices:
         return False
-    split_parts = {
-        normalize_text(part)
-        for delimiter in [";", ","]
-        for part in normalized_value.split(delimiter)
-        if normalize_text(part)
-    }
-    if not split_parts:
-        split_parts = {normalized_value}
-    return set(normalized_choices).issubset(split_parts)
+    return all(
+        multi_select_value_contains_choice(normalized_value, choice)
+        for choice in normalized_choices
+    )
 
 
 def _expand_selected_choices(

@@ -53,6 +53,85 @@ def unique_preserving_order(values: Iterable[str]) -> list[str]:
     return ordered
 
 
+def split_text_outside_grouping(value: object, delimiter: str) -> list[str]:
+    """Split text on a delimiter, ignoring delimiters inside parenthetical groups."""
+    normalized_value = normalize_text(value)
+    if not normalized_value:
+        return []
+
+    parts: list[str] = []
+    current: list[str] = []
+    grouping_depth = 0
+    for char in normalized_value:
+        if char in "([{":
+            grouping_depth += 1
+        elif char in ")]}" and grouping_depth > 0:
+            grouping_depth -= 1
+
+        if char == delimiter and grouping_depth == 0:
+            part = normalize_text("".join(current))
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        current.append(char)
+
+    final_part = normalize_text("".join(current))
+    if final_part:
+        parts.append(final_part)
+    return parts
+
+
+def split_multi_select_value(value: object, allow_comma: bool = True) -> list[str]:
+    """Split one stored multi-select value without breaking comma-bearing labels."""
+    normalized_value = normalize_text(value)
+    if not normalized_value:
+        return []
+
+    semicolon_parts = split_text_outside_grouping(normalized_value, ";")
+    if len(semicolon_parts) > 1:
+        return semicolon_parts
+
+    if allow_comma:
+        comma_parts = split_text_outside_grouping(normalized_value, ",")
+        if len(comma_parts) > 1:
+            return comma_parts
+
+    return [normalized_value]
+
+
+def _contains_delimited_segment(value: str, segment: str) -> bool:
+    """Return whether a segment appears with comma/semicolon boundaries."""
+    start = 0
+    while True:
+        index = value.find(segment, start)
+        if index == -1:
+            return False
+
+        before = value[:index].rstrip()
+        after = value[index + len(segment):].lstrip()
+        before_ok = not before or before[-1] in {",", ";"}
+        after_ok = not after or after[0] in {",", ";"}
+        if before_ok and after_ok:
+            return True
+        start = index + 1
+
+
+def multi_select_value_contains_choice(value: object, choice: object) -> bool:
+    """Return whether a stored multi-select value contains one selected choice."""
+    normalized_value = normalize_text(value)
+    normalized_choice = normalize_text(choice)
+    if not normalized_value or not normalized_choice:
+        return False
+    if normalized_value == normalized_choice:
+        return True
+    if normalized_choice in split_multi_select_value(normalized_value):
+        return True
+    if "," not in normalized_choice and ";" not in normalized_choice:
+        return False
+    return _contains_delimited_segment(normalized_value, normalized_choice)
+
+
 def format_timestamp() -> str:
     """Return a human-friendly timestamp for UI logs."""
     return datetime.now().strftime("%H:%M:%S")

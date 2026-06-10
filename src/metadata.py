@@ -8,7 +8,7 @@ import re
 
 import pandas as pd
 
-from src.utils import normalize_text
+from src.utils import normalize_text, split_multi_select_value, split_text_outside_grouping
 
 
 DEFAULT_INCLUDE_VALUE = True
@@ -275,12 +275,45 @@ def _has_numeric_scale_anchor(question_label: str) -> bool:
     return _extract_numeric_scale_anchors(question_label) is not None
 
 
-def _is_multi_select(series: pd.Series) -> bool:
-    values = series.dropna().astype(str).str.strip()
-    if values.empty:
+def _has_comma_delimiter_evidence(values: list[str]) -> bool:
+    """Return whether commas appear to separate recurring multi-select choices."""
+    if not values:
         return False
-    delimiter_ratio = values.str.contains(r"[;,]").mean()
-    return float(delimiter_ratio) >= 0.3
+
+    candidate_rows: list[tuple[str, list[str]]] = []
+    part_sources: dict[str, set[str]] = {}
+    for value in values:
+        parts = split_text_outside_grouping(value, ",")
+        if len(parts) <= 1:
+            continue
+        candidate_rows.append((value, parts))
+        for part in set(parts):
+            part_sources.setdefault(part, set()).add(value)
+
+    if len(candidate_rows) / len(values) < 0.3:
+        return False
+
+    varied_parts = [
+        part
+        for part, source_values in part_sources.items()
+        if len(source_values) >= 2
+    ]
+    return len(varied_parts) >= 2
+
+
+def _is_multi_select(series: pd.Series) -> bool:
+    values = [normalize_text(value) for value in series.dropna().tolist() if normalize_text(value)]
+    if not values:
+        return False
+
+    semicolon_ratio = sum(
+        len(split_text_outside_grouping(value, ";")) > 1
+        for value in values
+    ) / len(values)
+    if semicolon_ratio >= 0.3:
+        return True
+
+    return _has_comma_delimiter_evidence(values)
 
 
 def _is_scale(series: pd.Series, question_label: str = "") -> bool:
@@ -720,8 +753,9 @@ def extract_answer_choices(series: pd.Series, question_type: str, question_label
 
     if question_type == "Multi-Select":
         choices: list[str] = []
+        allow_comma = _has_comma_delimiter_evidence(values)
         for value in values:
-            parts = [part.strip() for part in re.split(r"[;,]", value) if part.strip()]
+            parts = split_multi_select_value(value, allow_comma=allow_comma)
             for part in parts:
                 if part not in choices:
                     choices.append(part)

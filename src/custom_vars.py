@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-import re
 
 import pandas as pd
 
 from src.metadata import get_display_variable_name
 from src.nets import build_enabled_net_choice_map
-from src.utils import normalize_text
+from src.utils import multi_select_value_contains_choice, normalize_text
 
 
 BUILD_TYPES = [
@@ -277,12 +276,10 @@ def _value_matches_selected_choices(value: object, selected_choices: list[str]) 
     if normalized_value in normalized_choices:
         return True
 
-    parts = {
-        normalize_text(part)
-        for part in re.split(r"[;,]", normalized_value)
-        if normalize_text(part)
-    }
-    return bool(parts & normalized_choices)
+    return any(
+        multi_select_value_contains_choice(normalized_value, choice)
+        for choice in normalized_choices
+    )
 
 
 def _expand_selected_choices(
@@ -347,14 +344,10 @@ def _value_matches_all_selected_choices(value: object, selected_choices: list[st
     normalized_choices = [normalize_text(choice) for choice in selected_choices if normalize_text(choice)]
     if not normalized_value or not normalized_choices:
         return False
-    parts = {
-        normalize_text(part)
-        for part in re.split(r"[;,]", normalized_value)
-        if normalize_text(part)
-    }
-    if not parts:
-        return False
-    return set(normalized_choices).issubset(parts)
+    return all(
+        multi_select_value_contains_choice(normalized_value, choice)
+        for choice in normalized_choices
+    )
 
 
 def _condition_matches(series: pd.Series, operator: str, choices: list[str]) -> pd.Series:
