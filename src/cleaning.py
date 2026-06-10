@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from src.io import read_excel_upload
+from src.io import read_excel_upload, read_sav_upload
 from src.utils import normalize_text, unique_preserving_order
 
 
@@ -76,6 +76,7 @@ class IngestionResult:
     removed_columns: list[str]
     sheet_name: str
     completed_at: str
+    source_answer_choices: dict[str, list[str]]
 
 
 def _looks_like_metadata_row(row: pd.Series, header_values: list[str], row_index: int) -> bool:
@@ -210,6 +211,7 @@ def ingest_qualtrics_dataframe(
         removed_columns=removed_columns,
         sheet_name=sheet_name,
         completed_at=completed_at,
+        source_answer_choices={},
     )
 
 
@@ -227,4 +229,57 @@ def ingest_qualtrics_excel(
         sheet_name=read_result.sheet_name,
         blacklist=blacklist,
         whitelist_columns=whitelist_columns,
+    )
+
+
+def ingest_qualtrics_sav(
+    uploaded_file,
+    blacklist: list[str] | None = None,
+    whitelist_columns: list[str] | None = None,
+) -> IngestionResult:
+    """Ingest, clean, and validate a Qualtrics SPSS SAV export."""
+    read_result = read_sav_upload(uploaded_file)
+    blacklist = unique_preserving_order(blacklist or DEFAULT_VARIABLE_BLACKLIST)
+    completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    log_lines = [f"Loaded SAV data from `{uploaded_file.name}`."]
+    log_lines.append("Preserved SAV variable labels and value labels for metadata defaults.")
+
+    no_tech_df, removed_columns = _remove_blacklisted_columns(
+        read_result.dataframe,
+        blacklist,
+        DEFAULT_BLACKLIST_PREFIXES,
+        whitelist_columns,
+    )
+    log_lines.append(f"Removed {len(removed_columns)} blacklisted column(s).")
+
+    cell_column = _resolve_cell_column(list(no_tech_df.columns))
+    if no_tech_df.empty:
+        raise ValueError("All respondent rows were removed during cleaning. Check the source export.")
+
+    question_labels = {
+        column: read_result.question_labels.get(column, column)
+        for column in no_tech_df.columns
+    }
+    source_answer_choices = {
+        column: list(read_result.source_answer_choices.get(column, []))
+        for column in no_tech_df.columns
+        if read_result.source_answer_choices.get(column)
+    }
+    log_lines.append(
+        f"Final dataset contains {len(no_tech_df):,} respondent rows and {len(no_tech_df.columns):,} columns."
+    )
+
+    return IngestionResult(
+        raw_df=read_result.dataframe,
+        cleaned_df=no_tech_df,
+        question_labels=question_labels,
+        cell_column=cell_column,
+        blacklist_used=blacklist,
+        log_lines=log_lines,
+        metadata_rows_removed=0,
+        removed_columns=removed_columns,
+        sheet_name=read_result.sheet_name,
+        completed_at=completed_at,
+        source_answer_choices=source_answer_choices,
     )

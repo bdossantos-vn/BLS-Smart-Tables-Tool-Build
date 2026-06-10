@@ -801,13 +801,27 @@ def build_question_metadata(
     df: pd.DataFrame,
     question_labels: dict[str, str],
     cell_col: str | None = None,
+    source_answer_choices: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the default editable metadata package for the audit page."""
     detected = detect_question_types(df, question_labels, cell_col)
+    source_answer_choices = source_answer_choices or {}
     metadata: list[dict[str, Any]] = []
     for column in df.columns:
         question_type = detected[column]
-        answer_choices = extract_answer_choices(df[column], question_type, question_labels.get(column, column))
+        source_choices = [
+            normalize_text(choice)
+            for choice in source_answer_choices.get(column, [])
+            if normalize_text(choice)
+        ]
+        if source_choices and question_type not in {"Open-End Text", "Numeric Data", "Ignore"}:
+            answer_choices = sort_answer_choices(
+                source_choices,
+                question_type,
+                question_labels.get(column, column),
+            )
+        else:
+            answer_choices = extract_answer_choices(df[column], question_type, question_labels.get(column, column))
         metadata.append(
             {
                 "variable": column,
@@ -871,10 +885,12 @@ def merge_metadata_editor_with_source(
     editor_df: pd.DataFrame,
     previous_metadata: list[dict[str, Any]],
     source_df: pd.DataFrame,
+    source_answer_choices: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge edited metadata with source data, recalculating answer choices when type changes."""
     sanitized = sanitize_metadata_editor(editor_df)
     previous_lookup = {row.get("variable"): row for row in previous_metadata}
+    source_answer_choices = source_answer_choices or {}
     merged: list[dict[str, Any]] = []
 
     for row in sanitized:
@@ -890,11 +906,23 @@ def merge_metadata_editor_with_source(
             and old_type != new_type
             and edited_answer_text == previous_answer_text
         ):
-            recalculated_choices = extract_answer_choices(
-                source_df[variable],
-                new_type,
-                row.get("question_label", variable),
-            )
+            source_choices = [
+                normalize_text(choice)
+                for choice in source_answer_choices.get(variable, [])
+                if normalize_text(choice)
+            ]
+            if source_choices and new_type not in {"Open-End Text", "Numeric Data", "Ignore"}:
+                recalculated_choices = sort_answer_choices(
+                    source_choices,
+                    new_type,
+                    row.get("question_label", variable),
+                )
+            else:
+                recalculated_choices = extract_answer_choices(
+                    source_df[variable],
+                    new_type,
+                    row.get("question_label", variable),
+                )
             row["answer_choice_count"] = len(recalculated_choices)
             row["answer_choices"] = serialize_answer_choices(recalculated_choices)
             row["answer_choices_list"] = recalculated_choices
@@ -908,9 +936,10 @@ def restore_metadata_defaults(
     df: pd.DataFrame,
     question_labels: dict[str, str],
     cell_col: str | None = None,
+    source_answer_choices: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Rebuild question metadata using the default heuristics."""
-    return build_question_metadata(df, question_labels, cell_col)
+    return build_question_metadata(df, question_labels, cell_col, source_answer_choices)
 
 
 def build_metadata_change_log_entry(variable: str, old_type: str | None, new_type: str) -> str:

@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from src.cleaning import ingest_qualtrics_dataframe, ingest_qualtrics_excel
+from src.cleaning import ingest_qualtrics_dataframe, ingest_qualtrics_excel, ingest_qualtrics_sav
 from src.io import get_excel_sheet_names
 from src.config import (
     build_analysis_variable_catalog,
@@ -561,6 +561,7 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
         filtered_df,
         st.session_state.question_labels,
         comparison_col,
+        st.session_state.get("source_answer_choices", {}),
     )
     st.session_state.scale_mappings = {}
     # 2026-05-19 BD: Comparison variable changes now seed the unified layered
@@ -1076,6 +1077,7 @@ def _apply_intake_result(result) -> None:
     st.session_state.survey_df = result.cleaned_df.copy()
     st.session_state.cleaned_df = result.cleaned_df.copy()
     st.session_state.question_labels = result.question_labels
+    st.session_state.source_answer_choices = result.source_answer_choices
     st.session_state.cell_col = result.cell_column
     st.session_state.comparison_col = result.cell_column
     st.session_state.comparison_options = available_columns
@@ -1108,6 +1110,7 @@ def _apply_intake_result(result) -> None:
         result.cleaned_df,
         result.question_labels,
         result.cell_column,
+        result.source_answer_choices,
     )
     st.session_state.scale_mappings = {}
     st.session_state.blacklist_editor = _build_blacklist_editor(
@@ -1124,38 +1127,24 @@ def render_step_1() -> None:
     """Render the data intake page."""
     st.header("2. Data Intake")
     st.write(
-        "Upload your Excel file to get started."
+        "Upload your Qualtrics/SPSS `.sav` file to get started, or use Excel as a fallback."
     )
 
     upload = st.file_uploader(
-        "Upload Qualtrics Excel export",
-        type=["xlsx"],
+        "Upload survey export",
+        type=["sav", "xlsx"],
         key="qualtrics_upload",
-        help="Expected format: a standard Qualtrics `.xlsx` export.",
+        help="Preferred format: `.sav` with labels. Fallback: a standard Qualtrics `.xlsx` export.",
     )
 
     if upload is not None:
-        try:
-            available_sheets = get_excel_sheet_names(upload)
-        except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
-            st.error(f"Upload failed: {exc}")
-            _append_log(f"Upload failed for {upload.name}: {exc}")
-        else:
+        upload_extension = upload.name.rsplit(".", 1)[-1].lower() if "." in upload.name else ""
+        if upload_extension == "sav":
             st.session_state.uploaded_filename = upload.name
-            st.session_state.available_sheets = available_sheets
-
-            if len(available_sheets) > 1:
-                st.info("This workbook has multiple sheets. Choose one sheet to process for this intake.")
-
-            selected_sheet = st.selectbox(
-                "Select sheet to process",
-                options=available_sheets,
-                key="selected_sheet_name",
-            )
-
+            st.session_state.available_sheets = ["SAV data"]
             if st.button("Process Data", type="primary", use_container_width=False):
                 try:
-                    result = ingest_qualtrics_excel(upload, sheet_name=selected_sheet)
+                    result = ingest_qualtrics_sav(upload)
                 except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
                     st.error(f"Upload failed: {exc}")
                     _append_log(f"Upload failed for {upload.name}: {exc}")
@@ -1172,7 +1161,46 @@ def render_step_1() -> None:
                     _apply_comparison_selection(default_comparison)
                     st.session_state.metadata_change_log = []
                     _append_log(f"Ingestion complete for {upload.name}.")
-                    st.success(f"File processed successfully from sheet `{selected_sheet}`.")
+                    st.success("SAV file processed successfully.")
+        else:
+            try:
+                available_sheets = get_excel_sheet_names(upload)
+            except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                st.error(f"Upload failed: {exc}")
+                _append_log(f"Upload failed for {upload.name}: {exc}")
+            else:
+                st.session_state.uploaded_filename = upload.name
+                st.session_state.available_sheets = available_sheets
+
+                if len(available_sheets) > 1:
+                    st.info("This workbook has multiple sheets. Choose one sheet to process for this intake.")
+
+                selected_sheet = st.selectbox(
+                    "Select sheet to process",
+                    options=available_sheets,
+                    key="selected_sheet_name",
+                )
+
+                if st.button("Process Data", type="primary", use_container_width=False):
+                    try:
+                        result = ingest_qualtrics_excel(upload, sheet_name=selected_sheet)
+                    except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                        st.error(f"Upload failed: {exc}")
+                        _append_log(f"Upload failed for {upload.name}: {exc}")
+                    else:
+                        st.session_state.blacklist_catalog = result.removed_columns.copy()
+                        st.session_state.restored_columns = []
+                        st.session_state.intake_change_log = []
+                        _apply_intake_result(result)
+                        default_comparison = _resolve_default_comparison(
+                            st.session_state.comparison_options,
+                            result.cell_column,
+                            result.cell_column,
+                        )
+                        _apply_comparison_selection(default_comparison)
+                        st.session_state.metadata_change_log = []
+                        _append_log(f"Ingestion complete for {upload.name}.")
+                        st.success(f"File processed successfully from sheet `{selected_sheet}`.")
 
     cleaned_df = st.session_state.cleaned_df
     survey_df = st.session_state.survey_df
@@ -1523,7 +1551,12 @@ def render_step_3() -> None:
         return
 
     if not st.session_state.question_metadata:
-        st.session_state.question_metadata = build_question_metadata(cleaned_df, question_labels, cell_col)
+        st.session_state.question_metadata = build_question_metadata(
+            cleaned_df,
+            question_labels,
+            cell_col,
+            st.session_state.get("source_answer_choices", {}),
+        )
 
     st.caption("Review question types, displayed variable names, and answer-choice labels where needed.")
 
@@ -1545,6 +1578,7 @@ def render_step_3() -> None:
                 edited,
                 st.session_state.question_metadata,
                 cleaned_df,
+                st.session_state.get("source_answer_choices", {}),
             )
             previous = {row["variable"]: row for row in st.session_state.question_metadata}
             for row in sanitized:
@@ -1581,6 +1615,7 @@ def render_step_3() -> None:
                 cleaned_df,
                 question_labels,
                 cell_col,
+                st.session_state.get("source_answer_choices", {}),
             )
             st.success("Question metadata restored to defaults.")
             st.rerun()
