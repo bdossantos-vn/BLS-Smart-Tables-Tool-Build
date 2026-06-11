@@ -57,12 +57,12 @@ How it differs from `survey_df`:
 
 - applies the selected comparison variable logic
 - removes rows where the comparison variable is blank
-- applies included-column selection
+- applies included question/variable selection
 
 Important:
 
 - many downstream pages use `cleaned_df`, not `raw_df`
-- changing included columns or comparison variable changes this active analysis frame
+- changing included questions/variables or comparison variable changes this active analysis frame
 
 ## Row Meaning By Context
 
@@ -107,20 +107,20 @@ They are summary rows describing what will be exported, for example:
 - table count
 - banner/table type
 
-## Column Meaning In Page 2
+## Question / Variable Meaning In Page 2
 
-### Included columns
+### Included questions / variables
 
-These are columns that remain in the active working dataset.
+These are survey questions or variables that remain in the active working dataset.
 
 Effects:
 
 - they stay available for later workflow steps
 - they remain eligible for topline/export if otherwise valid
 
-### Excluded columns
+### Excluded questions / variables
 
-These are columns removed during cleaning or kept out of the working dataset.
+These are survey questions or variables removed during cleaning or kept out of the working dataset.
 
 Effects:
 

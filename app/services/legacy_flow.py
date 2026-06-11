@@ -942,7 +942,7 @@ def _render_layered_comparison_editor(cleaned_df: pd.DataFrame) -> None:
 
 
 def _current_included_count() -> int:
-    """Return the current number of included columns in the working dataset."""
+    """Return the current number of included questions/variables in the working dataset."""
     cleaned_df = st.session_state.get("cleaned_df")
     if isinstance(cleaned_df, pd.DataFrame):
         return len(cleaned_df.columns)
@@ -950,7 +950,7 @@ def _current_included_count() -> int:
 
 
 def _current_excluded_count() -> int:
-    """Return the current total number of excluded columns across all intake controls."""
+    """Return the current total number of excluded questions/variables across intake controls."""
     survey_df = st.session_state.get("survey_df")
     survey_column_count = len(survey_df.columns) if isinstance(survey_df, pd.DataFrame) else 0
     blacklist_catalog = st.session_state.get("blacklist_catalog", [])
@@ -1039,7 +1039,7 @@ def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[st
 
 
 def _build_included_editor(all_columns: list[str], selected_columns: list[str]) -> pd.DataFrame:
-    """Build the editable included-columns table for Step 1."""
+    """Build the editable included questions/variables table for Step 1."""
     selected_lookup = set(selected_columns)
     rows = []
     for column in all_columns:
@@ -1292,8 +1292,8 @@ def render_step_1() -> None:
                         st.rerun()
         with summary_right:
             st.write(f"Sheet Referenced: `{st.session_state.sheet_name}`")
-            st.write(f"Columns Included: `{_current_included_count()}`")
-            st.write(f"Columns Excluded: `{_current_excluded_count()}`")
+            st.write(f"Questions / Variables Included: `{_current_included_count()}`")
+            st.write(f"Questions / Variables Excluded: `{_current_excluded_count()}`")
 
         active_order_scheme = sanitize_comparison_scheme(st.session_state.get("comparison_scheme", {}))
         if active_order_scheme.get("enabled") and len(active_order_scheme.get("groups", [])) > 1:
@@ -1344,7 +1344,7 @@ def render_step_1() -> None:
                     _move_comparison_group(group_name, "down")
                     st.rerun()
 
-        with st.expander("Columns Included", expanded=True):
+        with st.expander("Questions / Variables Included", expanded=True):
             available_columns = list(survey_df.columns)
             if st.session_state.included_editor is None:
                 st.session_state.included_editor = _build_included_editor(
@@ -1360,10 +1360,10 @@ def render_step_1() -> None:
                 hide_index=True,
                 height=620,
                 column_config={
-                    "Column": st.column_config.TextColumn(disabled=True, width="large"),
+                    "Column": st.column_config.TextColumn("Question / Variable", disabled=True, width="large"),
                     "Included": st.column_config.CheckboxColumn(
                         "Included",
-                        help="Checked means the column stays in the working dataset.",
+                        help="Checked means the question or variable stays in the working dataset.",
                         width="small",
                     ),
                 },
@@ -1372,7 +1372,7 @@ def render_step_1() -> None:
             include_spacer_left, include_left, include_right, include_spacer_right = st.columns([1, 1, 1, 1])
 
             with include_left:
-                if st.button("Update Columns", key="update_included_columns", use_container_width=True):
+                if st.button("Update Questions / Variables", key="update_included_columns", use_container_width=True):
                     previous_included_columns = list(st.session_state.get("included_columns", available_columns))
                     included_columns = [
                         row["Column"]
@@ -1400,13 +1400,13 @@ def render_step_1() -> None:
                         if removed_columns:
                             summary_bits.append("removed: " + ", ".join(removed_columns))
                         if not summary_bits:
-                            summary_bits.append("no included-column changes")
-                        _append_intake_change("Included columns updated (" + "; ".join(summary_bits) + ").")
-                        st.success("Included columns updated.")
+                            summary_bits.append("no included question/variable changes")
+                        _append_intake_change("Included questions/variables updated (" + "; ".join(summary_bits) + ").")
+                        st.success("Included questions/variables updated.")
                         st.rerun()
 
             with include_right:
-                if st.button("Reset Columns", key="reset_included_columns", use_container_width=True):
+                if st.button("Reset Questions / Variables", key="reset_included_columns", use_container_width=True):
                     st.session_state.included_columns = available_columns.copy()
                     st.session_state.included_editor = _build_included_editor(
                         available_columns,
@@ -1417,11 +1417,11 @@ def render_step_1() -> None:
                     except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
                         st.error(str(exc))
                     else:
-                        _append_intake_change("Included columns reset to all available columns.")
-                        st.success("Included columns reset to all available columns.")
+                        _append_intake_change("Included questions/variables reset to all available questions/variables.")
+                        st.success("Included questions/variables reset to all available questions/variables.")
                         st.rerun()
 
-        with st.expander("Columns Excluded", expanded=True):
+        with st.expander("Questions / Variables Excluded", expanded=True):
             if st.session_state.blacklist_catalog:
                 if st.session_state.blacklist_editor is None:
                     st.session_state.blacklist_editor = _build_blacklist_editor(
@@ -1437,10 +1437,10 @@ def render_step_1() -> None:
                     hide_index=True,
                     height=620,
                     column_config={
-                        "Column": st.column_config.TextColumn(disabled=True, width="large"),
+                        "Column": st.column_config.TextColumn("Question / Variable", disabled=True, width="large"),
                         "Excluded": st.column_config.CheckboxColumn(
                             "Excluded",
-                            help="Checked means the column stays excluded from the cleaned dataset.",
+                            help="Checked means the question or variable stays excluded from the cleaned dataset.",
                             width="small",
                         ),
                     },
@@ -1449,7 +1449,7 @@ def render_step_1() -> None:
                 btn_spacer_left, btn_left, btn_right, btn_spacer_right = st.columns([1, 1, 1, 1])
 
                 with btn_left:
-                    if st.button("Update Columns", use_container_width=True):
+                    if st.button("Update Questions / Variables", use_container_width=True):
                         previous_restored_columns = list(st.session_state.get("restored_columns", []))
                         restored_columns = [
                             row["Column"]
@@ -1488,19 +1488,19 @@ def render_step_1() -> None:
                         if re_excluded:
                             summary_bits.append("excluded again: " + ", ".join(re_excluded))
                         if not summary_bits:
-                            summary_bits.append("no excluded-column changes")
-                        _append_intake_change("Excluded columns updated (" + "; ".join(summary_bits) + ").")
+                            summary_bits.append("no excluded question/variable changes")
+                        _append_intake_change("Excluded questions/variables updated (" + "; ".join(summary_bits) + ").")
                         if restored_columns:
                             st.success(
-                                "Updated intake. Added back column(s): "
+                                "Updated intake. Added back question(s)/variable(s): "
                                 + ", ".join(restored_columns)
                             )
                         else:
-                            st.success("Updated intake. All blacklisted columns remain excluded.")
+                            st.success("Updated intake. All blacklisted questions/variables remain excluded.")
                         st.rerun()
 
                 with btn_right:
-                    if st.button("Reset Columns", use_container_width=True):
+                    if st.button("Reset Questions / Variables", use_container_width=True):
                         refreshed = ingest_qualtrics_dataframe(
                             raw_df=st.session_state.raw_df,
                             source_name=st.session_state.uploaded_filename or "uploaded_file",
@@ -1525,11 +1525,11 @@ def render_step_1() -> None:
                             st.session_state.blacklist_catalog,
                             [],
                         )
-                        _append_intake_change("Excluded columns reset to the default blacklist.")
-                        st.success("Column choices reset to the default blacklist.")
+                        _append_intake_change("Excluded questions/variables reset to the default blacklist.")
+                        st.success("Question/variable choices reset to the default blacklist.")
                         st.rerun()
             else:
-                st.caption("No blacklisted columns are configured for this intake.")
+                st.caption("No blacklisted questions/variables are configured for this intake.")
 
         st.subheader("Change Log")
         if st.session_state.get("intake_change_log"):
