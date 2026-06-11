@@ -244,6 +244,12 @@ def ingest_qualtrics_sav(
 
     log_lines = [f"Loaded SAV data from `{uploaded_file.name}`."]
     log_lines.append("Preserved SAV variable labels and value labels for metadata defaults.")
+    if read_result.collapsed_multi_response_groups:
+        log_lines.append(
+            "Collapsed "
+            f"{read_result.collapsed_multi_response_groups} SAV multiple-response set(s) "
+            "into multi-select question columns."
+        )
 
     no_tech_df, removed_columns = _remove_blacklisted_columns(
         read_result.dataframe,
