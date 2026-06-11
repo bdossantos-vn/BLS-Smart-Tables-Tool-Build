@@ -378,6 +378,17 @@ def guess_question_type(series: pd.Series, question_label: str = "") -> str:
     return "Single-Select"
 
 
+def _is_open_end_text_variable(variable: str, question_label: str = "") -> bool:
+    """Return whether a variable is an open text companion field."""
+    variable_lower = normalize_text(variable).lower()
+    label_lower = normalize_text(question_label).lower()
+    return (
+        re.search(r"_text(?:_\d+)?$", variable_lower) is not None
+        or label_lower.endswith("- text")
+        or " - other - text" in label_lower
+    )
+
+
 def get_metadata_editor_columns() -> dict[str, Any]:
     """Build Streamlit column config lazily so the heuristics remain UI-independent."""
     import streamlit as st
@@ -792,6 +803,9 @@ def detect_question_types(
     for column in df.columns:
         if column == cell_col:
             detected[column] = "Ignore"
+            continue
+        if _is_open_end_text_variable(column, question_labels.get(column, "")):
+            detected[column] = "Open-End Text"
             continue
         detected[column] = guess_question_type(df[column], question_labels.get(column, ""))
     return detected

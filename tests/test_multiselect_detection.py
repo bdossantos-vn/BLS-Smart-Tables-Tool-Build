@@ -83,6 +83,27 @@ class MultiselectDetectionTest(unittest.TestCase):
         self.assertFalse(table_value_matches_selected_choices(SUPPORT, ["coaching"]))
         self.assertFalse(custom_value_matches_selected_choices(SUPPORT, ["coaching"]))
 
+    def test_other_text_companion_fields_are_open_end_text(self) -> None:
+        df = pd.DataFrame(
+            {
+                "Brand_Usage_19_TEXT": [
+                    "Google",
+                    "",
+                    "Something not listed",
+                    "A tool from work",
+                ]
+            }
+        )
+        label = (
+            "Which of the following AI tools have you used, if any? "
+            "Please select all that apply. - Other - Text"
+        )
+
+        metadata = build_question_metadata(df, {"Brand_Usage_19_TEXT": label})[0]
+
+        self.assertEqual(metadata["detected_type"], "Open-End Text")
+        self.assertEqual(metadata["answer_choices_list"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

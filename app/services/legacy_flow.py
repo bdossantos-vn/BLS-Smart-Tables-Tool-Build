@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 import pandas as pd
 import streamlit as st
@@ -106,6 +107,7 @@ NAV_STEPS = [
 ]
 
 MAX_COMPARISON_GROUPS = 20
+SOURCE_VARIABLE_DELIMITER = "\n"
 
 
 def _append_log(message: str) -> None:
@@ -945,19 +947,23 @@ def _current_included_count() -> int:
     """Return the current number of included questions/variables in the working dataset."""
     cleaned_df = st.session_state.get("cleaned_df")
     if isinstance(cleaned_df, pd.DataFrame):
-        return len(cleaned_df.columns)
+        return len(_build_question_variable_groups(list(cleaned_df.columns), st.session_state.get("question_labels", {})))
     return 0
 
 
 def _current_excluded_count() -> int:
     """Return the current total number of excluded questions/variables across intake controls."""
     survey_df = st.session_state.get("survey_df")
-    survey_column_count = len(survey_df.columns) if isinstance(survey_df, pd.DataFrame) else 0
+    survey_count = (
+        len(_build_question_variable_groups(list(survey_df.columns), st.session_state.get("question_labels", {})))
+        if isinstance(survey_df, pd.DataFrame)
+        else 0
+    )
     blacklist_catalog = st.session_state.get("blacklist_catalog", [])
     restored_columns = set(st.session_state.get("restored_columns", []))
     active_blacklist_count = sum(1 for column in blacklist_catalog if column not in restored_columns)
     included_count = _current_included_count()
-    hidden_included_count = max(survey_column_count - included_count, 0)
+    hidden_included_count = max(survey_count - included_count, 0)
     return active_blacklist_count + hidden_included_count
 
 
@@ -1038,18 +1044,133 @@ def _build_blacklist_editor(blacklist_used: list[str], restored_columns: list[st
     return pd.DataFrame(rows)
 
 
-def _build_included_editor(all_columns: list[str], selected_columns: list[str]) -> pd.DataFrame:
+def _numbered_question_group_base(variable: str) -> str | None:
+    """Return a parent variable for numbered matrix or checkbox exports."""
+    normalized = normalize_text(variable)
+    if normalized.endswith("_TEXT"):
+        return None
+    match = re.match(r"^(.+)_\d+$", normalized)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _collapse_internal_whitespace(value: object) -> str:
+    """Normalize labels for grouping without changing saved metadata."""
+    return re.sub(r"\s+", " ", normalize_text(value)).strip()
+
+
+def _common_text_prefix(values: list[str]) -> str:
+    """Return the character prefix shared by all supplied values."""
+    if not values:
+        return ""
+    prefix = values[0]
+    for value in values[1:]:
+        while prefix and not value.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix
+
+
+def _shared_question_stem(labels: list[str]) -> str:
+    """Return a shared parent-question stem for repeated SAV labels."""
+    normalized_labels = [_collapse_internal_whitespace(label) for label in labels if _collapse_internal_whitespace(label)]
+    if len(normalized_labels) < 2:
+        return ""
+
+    prefix = _common_text_prefix(normalized_labels)
+    if len(prefix) < 16:
+        return ""
+
+    split_at = -1
+    for delimiter in [" - ", ". ", "? ", "! ", ": "]:
+        index = prefix.rfind(delimiter)
+        if index > split_at:
+            split_at = index + len(delimiter)
+    if split_at <= 0:
+        return ""
+    return prefix[:split_at].strip(" -:;.?!")
+
+
+def _build_question_variable_groups(
+    all_columns: list[str],
+    question_labels: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Group raw variables into logical questions for intake include/exclude controls."""
+    labels = question_labels or {}
+    numbered_groups: dict[str, list[str]] = {}
+    for column in all_columns:
+        base = _numbered_question_group_base(column)
+        if base:
+            numbered_groups.setdefault(base, []).append(column)
+
+    grouped_columns: set[str] = set()
+    groups_by_first_column: dict[str, dict[str, Any]] = {}
+    for base, columns in numbered_groups.items():
+        if len(columns) < 2:
+            continue
+        stem = _shared_question_stem([labels.get(column, column) for column in columns])
+        if not stem:
+            continue
+        grouped_columns.update(columns)
+        groups_by_first_column[columns[0]] = {
+            "label": base,
+            "question_text": stem,
+            "variables": columns,
+        }
+
+    groups: list[dict[str, Any]] = []
+    for column in all_columns:
+        if column in groups_by_first_column:
+            groups.append(groups_by_first_column[column])
+        if column in grouped_columns:
+            continue
+        groups.append(
+            {
+                "label": column,
+                "question_text": _collapse_internal_whitespace(labels.get(column, column)),
+                "variables": [column],
+            }
+        )
+    return groups
+
+
+def _build_included_editor(
+    all_columns: list[str],
+    selected_columns: list[str],
+    question_labels: dict[str, str] | None = None,
+) -> pd.DataFrame:
     """Build the editable included questions/variables table for Step 1."""
     selected_lookup = set(selected_columns)
     rows = []
-    for column in all_columns:
+    for group in _build_question_variable_groups(all_columns, question_labels):
+        variables = list(group["variables"])
         rows.append(
             {
-                "Column": column,
-                "Included": column in selected_lookup,
+                "Question / Variable": group["label"],
+                "Question Text": group["question_text"],
+                "_source_variables": SOURCE_VARIABLE_DELIMITER.join(variables),
+                "Included": any(variable in selected_lookup for variable in variables),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _editor_row_source_variables(
+    row: dict[str, Any],
+    source_map: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """Return raw variables stored behind one Step 2 question/variable editor row."""
+    source_text = normalize_text(row.get("_source_variables"))
+    if source_text:
+        return [
+            normalize_text(variable)
+            for variable in source_text.split(SOURCE_VARIABLE_DELIMITER)
+            if normalize_text(variable)
+        ]
+    fallback = normalize_text(row.get("Question / Variable")) or normalize_text(row.get("Column"))
+    if fallback and source_map and fallback in source_map:
+        return list(source_map[fallback])
+    return [fallback] if fallback else []
 
 
 def _apply_intake_result(result) -> None:
@@ -1120,6 +1241,7 @@ def _apply_intake_result(result) -> None:
     st.session_state.included_editor = _build_included_editor(
         available_columns,
         included_columns,
+        result.question_labels,
     )
 
 
@@ -1346,10 +1468,16 @@ def render_step_1() -> None:
 
         with st.expander("Questions / Variables Included", expanded=True):
             available_columns = list(survey_df.columns)
-            if st.session_state.included_editor is None:
+            included_editor = st.session_state.get("included_editor")
+            if (
+                included_editor is None
+                or not isinstance(included_editor, pd.DataFrame)
+                or "Question / Variable" not in included_editor.columns
+            ):
                 st.session_state.included_editor = _build_included_editor(
                     available_columns,
                     st.session_state.get("included_columns", available_columns),
+                    st.session_state.get("question_labels", {}),
                 )
 
             edited_included = st.data_editor(
@@ -1359,8 +1487,11 @@ def render_step_1() -> None:
                 num_rows="fixed",
                 hide_index=True,
                 height=620,
+                column_order=("Question / Variable", "Question Text", "Included"),
                 column_config={
-                    "Column": st.column_config.TextColumn("Question / Variable", disabled=True, width="large"),
+                    "Question / Variable": st.column_config.TextColumn(disabled=True, width="medium"),
+                    "Question Text": st.column_config.TextColumn(disabled=True, width="large"),
+                    "_source_variables": None,
                     "Included": st.column_config.CheckboxColumn(
                         "Included",
                         help="Checked means the question or variable stays in the working dataset.",
@@ -1374,10 +1505,20 @@ def render_step_1() -> None:
             with include_left:
                 if st.button("Update Questions / Variables", key="update_included_columns", use_container_width=True):
                     previous_included_columns = list(st.session_state.get("included_columns", available_columns))
+                    source_map = {
+                        normalize_text(row.get("Question / Variable")): _editor_row_source_variables(row)
+                        for row in st.session_state.included_editor.to_dict(orient="records")
+                        if normalize_text(row.get("Question / Variable"))
+                    }
+                    included_columns = []
+                    for row in edited_included.to_dict(orient="records"):
+                        if not bool(row.get("Included", True)):
+                            continue
+                        included_columns.extend(_editor_row_source_variables(row, source_map))
                     included_columns = [
-                        row["Column"]
-                        for row in edited_included.to_dict(orient="records")
-                        if bool(row.get("Included", True))
+                        column
+                        for column in dict.fromkeys(included_columns)
+                        if column in available_columns
                     ]
                     current_comparison = st.session_state.get("comparison_col")
                     if current_comparison and current_comparison not in included_columns:
@@ -1386,6 +1527,7 @@ def render_step_1() -> None:
                     st.session_state.included_editor = _build_included_editor(
                         available_columns,
                         included_columns,
+                        st.session_state.get("question_labels", {}),
                     )
                     try:
                         _apply_comparison_selection(current_comparison)
@@ -1411,6 +1553,7 @@ def render_step_1() -> None:
                     st.session_state.included_editor = _build_included_editor(
                         available_columns,
                         available_columns,
+                        st.session_state.get("question_labels", {}),
                     )
                     try:
                         _apply_comparison_selection(st.session_state.get("comparison_col"))
@@ -1475,6 +1618,7 @@ def render_step_1() -> None:
                         st.session_state.included_editor = _build_included_editor(
                             list(st.session_state.survey_df.columns),
                             st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
+                            st.session_state.get("question_labels", {}),
                         )
                         st.session_state.blacklist_editor = _build_blacklist_editor(
                             st.session_state.blacklist_catalog,
@@ -1520,6 +1664,7 @@ def render_step_1() -> None:
                         st.session_state.included_editor = _build_included_editor(
                             list(st.session_state.survey_df.columns),
                             st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
+                            st.session_state.get("question_labels", {}),
                         )
                         st.session_state.blacklist_editor = _build_blacklist_editor(
                             st.session_state.blacklist_catalog,

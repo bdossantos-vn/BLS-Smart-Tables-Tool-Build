@@ -40,6 +40,7 @@ class _SavMultiResponseGroup:
     question_label: str
     source_variables: list[str]
     answer_choices: list[str]
+    choice_by_source_variable: dict[str, str]
     selected_values_by_variable: dict[str, set[str]]
 
 
@@ -213,12 +214,16 @@ def _has_multi_response_hint(label: str) -> bool:
 
 def _clean_question_stem(label: str) -> str:
     """Normalize a grouped question stem without dropping meaningful punctuation."""
-    return normalize_text(label).strip(" -:;")
+    cleaned = re.sub(r"\s+", " ", normalize_text(label))
+    return cleaned.strip(" -:;")
 
 
 def _clean_option_label(label: str) -> str:
     """Normalize an answer option found inside a SAV variable label."""
-    return normalize_text(label).strip(" -:;,.")
+    cleaned = re.sub(r"\s+", " ", normalize_text(label))
+    cleaned = cleaned.strip(" -:;,.")
+    cleaned = re.sub(r"^(?:selected\s+choice|choice)\b\s*", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" -:;,.")
 
 
 def _split_multiselect_label(label: str) -> tuple[str, str] | None:
@@ -279,8 +284,6 @@ def _split_group_labels_by_common_prefix(labels: list[str]) -> tuple[str, list[s
     options = [_clean_option_label(label[split_at:]) for label in normalized_labels]
     if any(not option for option in options):
         return None
-    if len(set(options)) != len(options):
-        return None
     return stem, options
 
 
@@ -290,7 +293,7 @@ def _split_numbered_multiselect_labels(labels: list[str]) -> tuple[str, list[str
     if all(split is not None for split in explicit_splits):
         stems = [split[0] for split in explicit_splits if split is not None]
         options = [split[1] for split in explicit_splits if split is not None]
-        if len(set(stems)) == 1 and len(set(options)) == len(options):
+        if len(set(stems)) == 1:
             return stems[0], options
 
     return _split_group_labels_by_common_prefix(labels)
@@ -422,6 +425,7 @@ def _build_sav_mr_set_groups(
         counted_value = mr_set.get("counted_value")
         answer_choices: list[str] = []
         aligned_source_variables: list[str] = []
+        choice_by_source_variable: dict[str, str] = {}
         selected_values_by_variable: dict[str, set[str]] = {}
         for source_variable in source_variables:
             variable_label = question_labels.get(source_variable, source_variable)
@@ -431,10 +435,12 @@ def _build_sav_mr_set_groups(
                 or source_variable
             )
             choice_label = _clean_option_label(choice_label)
-            if not choice_label or choice_label in answer_choices:
+            if not choice_label:
                 continue
             aligned_source_variables.append(source_variable)
-            answer_choices.append(choice_label)
+            choice_by_source_variable[source_variable] = choice_label
+            if choice_label not in answer_choices:
+                answer_choices.append(choice_label)
             selected_values_by_variable[source_variable] = _selected_values_for_variable(
                 source_variable,
                 choice_label,
@@ -450,6 +456,7 @@ def _build_sav_mr_set_groups(
                 question_label=_clean_question_stem(question_label) or variable,
                 source_variables=aligned_source_variables,
                 answer_choices=answer_choices,
+                choice_by_source_variable=choice_by_source_variable,
                 selected_values_by_variable=selected_values_by_variable,
             )
         )
@@ -489,20 +496,29 @@ def _build_label_based_sav_multiselect_groups(
         question_label, answer_choices = split_labels
         existing_columns = dataframe_columns.difference(source_variables)
         variable = _clean_group_variable_name(base, base, existing_columns)
+        choice_by_source_variable = {
+            source_variable: choice_label
+            for source_variable, choice_label in zip(source_variables, answer_choices)
+        }
+        unique_answer_choices: list[str] = []
+        for choice_label in answer_choices:
+            if choice_label not in unique_answer_choices:
+                unique_answer_choices.append(choice_label)
         selected_values_by_variable = {
             source_variable: _selected_values_for_variable(
                 source_variable,
-                choice_label,
+                choice_by_source_variable[source_variable],
                 value_labels_by_variable,
             )
-            for source_variable, choice_label in zip(source_variables, answer_choices)
+            for source_variable in source_variables
         }
         groups.append(
             _SavMultiResponseGroup(
                 variable=variable,
                 question_label=question_label,
                 source_variables=source_variables,
-                answer_choices=answer_choices,
+                answer_choices=unique_answer_choices,
+                choice_by_source_variable=choice_by_source_variable,
                 selected_values_by_variable=selected_values_by_variable,
             )
         )
@@ -524,7 +540,7 @@ def _collapse_sav_multi_response_groups(
         for group in groups
         for variable in group.source_variables
     }
-    collapsed_df = pd.DataFrame(index=dataframe.index)
+    collapsed_columns: dict[str, Any] = {}
 
     for column in dataframe.columns:
         variable = normalize_text(column)
@@ -532,26 +548,24 @@ def _collapse_sav_multi_response_groups(
             group = group_by_first_variable[variable]
             combined_values = []
             for row_values in dataframe[group.source_variables].itertuples(index=False, name=None):
-                selected_choices = [
-                    choice_label
-                    for source_variable, choice_label, value in zip(
-                        group.source_variables,
-                        group.answer_choices,
-                        row_values,
-                    )
-                    if _is_selected_multiselect_value(
+                selected_choices = []
+                for source_variable, value in zip(group.source_variables, row_values):
+                    choice_label = group.choice_by_source_variable.get(source_variable, source_variable)
+                    if not _is_selected_multiselect_value(
                         value,
                         choice_label,
                         group.selected_values_by_variable.get(source_variable, set()),
-                    )
-                ]
+                    ):
+                        continue
+                    if choice_label not in selected_choices:
+                        selected_choices.append(choice_label)
                 combined_values.append("; ".join(selected_choices))
-            collapsed_df[group.variable] = combined_values
+            collapsed_columns[group.variable] = combined_values
         if variable in grouped_variables:
             continue
-        collapsed_df[variable] = dataframe[variable]
+        collapsed_columns[variable] = dataframe[variable].tolist()
 
-    return collapsed_df
+    return pd.DataFrame(collapsed_columns, index=dataframe.index)
 
 
 def _normalize_sav_multi_response_sets(

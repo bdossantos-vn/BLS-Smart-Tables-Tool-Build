@@ -188,6 +188,48 @@ class SavIngestionTest(unittest.TestCase):
         self.assertEqual(media_row["detected_type"], "Multi-Select")
         self.assertEqual(media_row["answer_choices_list"], ["Social Media", "Podcasts"])
 
+    def test_sav_duplicate_numbered_options_collapse_to_unique_choices(self) -> None:
+        dataframe = pd.DataFrame(
+            {
+                "ResponseId": ["R_1", "R_2", "R_3"],
+                "Brand_Usage_2": ["", "1.0", ""],
+                "Brand_Usage_10": ["1.0", "", "1.0"],
+                "Brand_Usage_20": ["", "", "1.0"],
+                "cell": ["Control", "Test", "Test"],
+            }
+        )
+        question = "Which of the following AI tools have you used, if any? Please select all that apply."
+        metadata = SimpleNamespace(
+            column_names=["ResponseId", "Brand_Usage_2", "Brand_Usage_10", "Brand_Usage_20", "cell"],
+            column_labels=[
+                "Response ID",
+                f"{question} - Selected Choice None of these",
+                f"{question} - Selected Choice ChatGPT",
+                f"{question} - Selected Choice None of these",
+                "Cell",
+            ],
+            variable_value_labels={
+                "cell": {1: "Control", 2: "Test"},
+            },
+            mr_sets={},
+        )
+
+        def fake_read_sav(path: str, **kwargs: object) -> tuple[pd.DataFrame, SimpleNamespace]:
+            self.assertTrue(path.endswith(".sav"))
+            self.assertTrue(kwargs["apply_value_formats"])
+            return dataframe, metadata
+
+        fake_pyreadstat = SimpleNamespace(read_sav=fake_read_sav)
+        with patch.dict(sys.modules, {"pyreadstat": fake_pyreadstat}):
+            result = ingest_qualtrics_sav(_UploadedFile())
+
+        self.assertEqual(list(result.cleaned_df.columns), ["Brand_Usage", "cell"])
+        self.assertEqual(
+            result.cleaned_df["Brand_Usage"].tolist(),
+            ["ChatGPT", "None of these", "ChatGPT; None of these"],
+        )
+        self.assertEqual(result.source_answer_choices["Brand_Usage"], ["None of these", "ChatGPT"])
+
 
 if __name__ == "__main__":
     unittest.main()
