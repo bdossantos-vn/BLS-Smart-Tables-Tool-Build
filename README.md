@@ -40,7 +40,7 @@ The refactor introduces:
 
 - A modular `app/` package with page-level routing
 - A central `project_config` object in session state
-- A configuration-only template flow on `Project Setup`
+- A configuration-only project resume flow on `Project Setup`
 - Dedicated documentation files:
   - `docs/changelog.md`
   - `docs/system_instructions.md`
@@ -68,13 +68,13 @@ streamlit run app.py
 
 4. Open the local Streamlit URL shown in the terminal.
 
-## Template Support
+## Project Resume Support
 
-The app now supports a configuration-only template workflow:
+The app supports a configuration-only project settings workflow:
 
-- Download current project settings as JSON from `Project Setup`
-- Upload that template later to pre-populate future configuration steps
-- Templates intentionally exclude respondent-level data
+- Download current project settings as JSON from `Project Setup` or `Export`
+- Upload the saved settings file, then process the matching data file to restore the working project
+- Project settings intentionally exclude respondent-level data
 
 ## Deployment
 

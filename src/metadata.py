@@ -58,14 +58,18 @@ SCALE_LABEL_HINTS = [
     "agree or disagree",
     "how likely",
     "how familiar",
+    "how comfortable",
     "to what extent",
     "feel about",
     "how interested",
     "familiar are you",
     "familiarity",
+    "comfortable are you",
     "brand affinity",
     "brand sentiment",
     "sentiment",
+    "view of ai tools",
+    "attitude",
     "interest",
     "affinity",
     "relationship with",
@@ -73,6 +77,14 @@ SCALE_LABEL_HINTS = [
 
 SCALE_VALUE_HINTS = [
     "very interested",
+    "very comfortable",
+    "somewhat comfortable",
+    "somewhat uncomfortable",
+    "very uncomfortable",
+    "actively use them",
+    "find them valuable",
+    "open to using them",
+    "unsure about them",
     "extremely familiar",
     "very familiar",
     "somewhat familiar",
@@ -648,6 +660,26 @@ def _scale_choice_score(choice: str) -> tuple[int, int] | None:
         return (3, 0)
     if _contains_phrase(normalized, "much worse"):
         return (4, 0)
+
+    if _contains_phrase(normalized, "very comfortable"):
+        return (0, 0)
+    if _contains_phrase(normalized, "somewhat comfortable"):
+        return (1, 0)
+    if _contains_phrase(normalized, "somewhat uncomfortable"):
+        return (3, 0)
+    if _contains_phrase(normalized, "very uncomfortable"):
+        return (4, 0)
+    if _contains_phrase(normalized, "comfortable"):
+        return (1, 1)
+    if _contains_phrase(normalized, "uncomfortable"):
+        return (3, 1)
+
+    if _contains_phrase(normalized, "actively use them") or _contains_phrase(normalized, "find them valuable"):
+        return (0, 0)
+    if _contains_phrase(normalized, "open to using them"):
+        return (1, 0)
+    if _contains_phrase(normalized, "unsure about them"):
+        return (2, 0)
 
     if _contains_phrase(normalized, "strongly agree"):
         return (0, 0)

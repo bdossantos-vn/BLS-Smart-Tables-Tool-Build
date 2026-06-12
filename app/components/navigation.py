@@ -125,6 +125,10 @@ def render_sidebar() -> str:
                         "include_significance_notes": True,
                     }
                     st.session_state.template_upload_message = ""
+                    st.session_state.pending_project_config = None
+                    st.session_state.pending_project_snapshot_info = {}
+                    st.session_state.project_restore_message = ""
+                    st.session_state.project_restore_status = {}
                     st.session_state.qualtrics_upload = None
                     st.session_state.confirm_new_project = False
                     sync_project_config_from_session()

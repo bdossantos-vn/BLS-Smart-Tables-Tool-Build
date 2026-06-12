@@ -264,15 +264,15 @@ def render() -> None:
                 st.success(f"Saved workbook to `{output_path}`.")
 
     st.divider()
-    st.subheader("Project Template Export")
-    st.write("Download a configuration-only template after your project is fully set up.")
+    st.subheader("Project Settings Export")
+    st.write("Download a configuration-only project settings file after your project is fully set up.")
     template_json = export_project_template()
     st.download_button(
-        "Download Project Template",
+        "Download Project Settings",
         data=template_json,
-        file_name="bls_smart_tables_template.json",
+        file_name="bls_smart_tables_project_settings.json",
         mime="application/json",
     )
-    if st.button("Save Project Template Locally", use_container_width=True):
-        output_path = _save_local_export("bls_smart_tables_template.json", template_json)
-        st.success(f"Saved template to `{output_path}`.")
+    if st.button("Save Project Settings Locally", use_container_width=True):
+        output_path = _save_local_export("bls_smart_tables_project_settings.json", template_json)
+        st.success(f"Saved project settings to `{output_path}`.")

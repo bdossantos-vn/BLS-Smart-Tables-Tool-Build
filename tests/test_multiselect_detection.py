@@ -104,6 +104,47 @@ class MultiselectDetectionTest(unittest.TestCase):
         self.assertEqual(metadata["detected_type"], "Open-End Text")
         self.assertEqual(metadata["answer_choices_list"], [])
 
+    def test_comfort_scale_is_detected_and_ordered_positive_to_negative(self) -> None:
+        df = pd.DataFrame(
+            {
+                "AI_Comfort": [
+                    "Somewhat Comfortable",
+                    "Somewhat Uncomfortable",
+                    "Very Comfortable",
+                    "Neutral",
+                ]
+            }
+        )
+        label = "How comfortable are you using AI to assist with everyday tasks?"
+
+        metadata = build_question_metadata(df, {"AI_Comfort": label})[0]
+
+        self.assertEqual(metadata["detected_type"], "Scale / Likert")
+        self.assertEqual(
+            metadata["answer_choices_list"],
+            ["Very Comfortable", "Somewhat Comfortable", "Neutral", "Somewhat Uncomfortable"],
+        )
+
+    def test_ai_attitude_scale_is_detected_and_ordered_positive_to_unsure(self) -> None:
+        active = "I actively use them and find them valuable"
+        open_to_use = "I’m open to using them but don’t use them much yet"
+        unsure = "I’m unsure about them"
+        df = pd.DataFrame(
+            {
+                "AI_Attitude": [
+                    unsure,
+                    open_to_use,
+                    active,
+                ]
+            }
+        )
+        label = "Which of the following best describes your view of AI tools?"
+
+        metadata = build_question_metadata(df, {"AI_Attitude": label})[0]
+
+        self.assertEqual(metadata["detected_type"], "Scale / Likert")
+        self.assertEqual(metadata["answer_choices_list"], [active, open_to_use, unsure])
+
 
 if __name__ == "__main__":
     unittest.main()

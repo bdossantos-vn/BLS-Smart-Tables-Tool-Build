@@ -8,6 +8,10 @@ import re
 import pandas as pd
 import streamlit as st
 
+from app.state.manager import (
+    apply_project_config_after_loaded_data,
+    prepare_project_config_for_loaded_data,
+)
 from src.cleaning import ingest_qualtrics_dataframe, ingest_qualtrics_excel, ingest_qualtrics_sav
 from src.io import get_excel_sheet_names
 from src.config import (
@@ -1245,6 +1249,42 @@ def _apply_intake_result(result) -> None:
     )
 
 
+def _apply_comparison_or_project_restore(default_comparison: str | None) -> bool:
+    """Apply comparison setup, using a staged project restore when present."""
+    pending_config = st.session_state.get("pending_project_config")
+    restore_prep_status: dict[str, Any] = {}
+    selected_comparison = default_comparison
+    if pending_config:
+        selected_comparison, restore_prep_status = prepare_project_config_for_loaded_data(
+            pending_config,
+            default_comparison,
+        )
+
+    _apply_comparison_selection(selected_comparison)
+
+    if not pending_config:
+        return False
+
+    restore_status = apply_project_config_after_loaded_data(pending_config)
+    restore_status.update(restore_prep_status)
+    st.session_state.project_restore_status = restore_status
+    available_columns = list(st.session_state.survey_df.columns)
+    st.session_state.included_editor = _build_included_editor(
+        available_columns,
+        st.session_state.get("included_columns", available_columns),
+        st.session_state.get("question_labels", {}),
+    )
+    missing_included = restore_status.get("missing_included_variables", [])
+    message = st.session_state.get("project_restore_message") or "Project settings restored from the saved file."
+    if missing_included:
+        message = (
+            f"{message} {len(missing_included)} saved included question/variable(s) were not found "
+            "in this data file."
+        )
+    _append_intake_change(message)
+    return True
+
+
 def render_step_1() -> None:
     """Render the data intake page."""
     st.header("2. Data Intake")
@@ -1280,10 +1320,14 @@ def render_step_1() -> None:
                         result.cell_column,
                         result.cell_column,
                     )
-                    _apply_comparison_selection(default_comparison)
-                    st.session_state.metadata_change_log = []
+                    restored_project = _apply_comparison_or_project_restore(default_comparison)
+                    if not restored_project:
+                        st.session_state.metadata_change_log = []
                     _append_log(f"Ingestion complete for {upload.name}.")
-                    st.success("SAV file processed successfully.")
+                    if restored_project:
+                        st.success("SAV file processed successfully and project settings restored.")
+                    else:
+                        st.success("SAV file processed successfully.")
         else:
             try:
                 available_sheets = get_excel_sheet_names(upload)
@@ -1319,10 +1363,16 @@ def render_step_1() -> None:
                             result.cell_column,
                             result.cell_column,
                         )
-                        _apply_comparison_selection(default_comparison)
-                        st.session_state.metadata_change_log = []
+                        restored_project = _apply_comparison_or_project_restore(default_comparison)
+                        if not restored_project:
+                            st.session_state.metadata_change_log = []
                         _append_log(f"Ingestion complete for {upload.name}.")
-                        st.success(f"File processed successfully from sheet `{selected_sheet}`.")
+                        if restored_project:
+                            st.success(
+                                f"File processed successfully from sheet `{selected_sheet}` and project settings restored."
+                            )
+                        else:
+                            st.success(f"File processed successfully from sheet `{selected_sheet}`.")
 
     cleaned_df = st.session_state.cleaned_df
     survey_df = st.session_state.survey_df

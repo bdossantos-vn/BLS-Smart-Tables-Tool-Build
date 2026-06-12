@@ -53,13 +53,7 @@ def _reconcile_scale_mapping(
     mapping: dict[str, Any],
     canonical_values: list[str],
 ) -> dict[str, Any]:
-    """Align one saved scale mapping to the canonical question choice order.
-
-    This keeps persisted mappings resilient when older app versions seeded a
-    bad order. If the saved rows contain the same set of answer choices as the
-    canonical question metadata, we normalize them back to canonical order
-    while respecting polarity.
-    """
+    """Keep saved scale mappings aligned with available choices without reordering them."""
     normalized_canonical = [normalize_text(value) for value in canonical_values if normalize_text(value)]
     if not normalized_canonical:
         return mapping
@@ -69,13 +63,16 @@ def _reconcile_scale_mapping(
     if not saved_values:
         return mapping
 
-    if set(saved_values) != set(normalized_canonical):
-        return mapping
-
     polarity = normalize_text(mapping.get("polarity", "standard")) or "standard"
-    ordered_values = list(normalized_canonical)
-    if polarity == "flipped":
-        ordered_values = list(reversed(ordered_values))
+    canonical_lookup = set(normalized_canonical)
+    ordered_values = [
+        value
+        for value in saved_values
+        if value in canonical_lookup
+    ]
+    for value in normalized_canonical:
+        if value not in ordered_values:
+            ordered_values.append(value)
 
     rows = []
     for index, value in enumerate(ordered_values, start=1):
