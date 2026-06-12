@@ -160,7 +160,6 @@ def load_project_template(template_payload: dict[str, Any]) -> None:
     st.session_state.project_config = project_config
     st.session_state.pending_project_config = deepcopy(project_config)
     st.session_state.pending_project_snapshot_info = deepcopy(snapshot_info)
-    st.session_state.project_setup_mode = "Resume from saved project"
     st.session_state.banner_config = deepcopy(project_config.get("banners", {}))
     st.session_state.adhoc_crosstabs_config = deepcopy(
         project_config.get("ad_hoc_crosstabs", EXTRA_DEFAULTS["adhoc_crosstabs_config"])

@@ -33,6 +33,16 @@ def _build_export_filename(uploaded_filename: str | None) -> str:
     return f"{stem}_Tables_{datetime.now().strftime('%Y%m%d')}.xlsx"
 
 
+def _build_project_settings_filename(uploaded_filename: str | None) -> str:
+    """Build a project-settings filename using the source data filename."""
+    stem = (uploaded_filename or "BLS_Smart_Tables").rsplit(".", 1)[0].strip() or "BLS_Smart_Tables"
+    safe_stem = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "_"
+        for character in stem
+    ).strip("_")
+    return f"{safe_stem or 'BLS_Smart_Tables'}_project_settings.json"
+
+
 def _save_local_export(filename: str, data: bytes | str) -> Path:
     """Save an export artifact inside the local workspace."""
     # 2026-05-15 BD: Codex's in-app browser may block localhost downloads, so
@@ -267,12 +277,13 @@ def render() -> None:
     st.subheader("Project Settings Export")
     st.write("Download a configuration-only project settings file after your project is fully set up.")
     template_json = export_project_template()
+    settings_filename = _build_project_settings_filename(st.session_state.get("uploaded_filename"))
     st.download_button(
         "Download Project Settings",
         data=template_json,
-        file_name="bls_smart_tables_project_settings.json",
+        file_name=settings_filename,
         mime="application/json",
     )
     if st.button("Save Project Settings Locally", use_container_width=True):
-        output_path = _save_local_export("bls_smart_tables_project_settings.json", template_json)
+        output_path = _save_local_export(settings_filename, template_json)
         st.success(f"Saved project settings to `{output_path}`.")
