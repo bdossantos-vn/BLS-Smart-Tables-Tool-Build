@@ -72,7 +72,7 @@ streamlit run app.py
 
 The app supports a configuration-only project settings workflow:
 
-- Download current project settings as JSON from `Project Setup` or `Export`
+- Download current project settings as JSON from `Export`
 - Upload the saved settings file, then process the matching data file to restore the working project
 - Project settings intentionally exclude respondent-level data
 

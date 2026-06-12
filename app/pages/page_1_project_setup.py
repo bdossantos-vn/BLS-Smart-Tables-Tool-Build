@@ -5,18 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from app.services.template_service import parse_template_bytes
-from app.state.manager import export_project_template, load_project_template
-
-
-def _settings_filename() -> str:
-    """Build a useful project-settings filename."""
-    uploaded_filename = st.session_state.get("uploaded_filename") or "bls_smart_tables_project"
-    basename = uploaded_filename.rsplit(".", 1)[0]
-    safe_basename = "".join(
-        character if character.isalnum() or character in {"-", "_"} else "_"
-        for character in basename
-    ).strip("_")
-    return f"{safe_basename or 'bls_smart_tables_project'}_settings.json"
+from app.state.manager import load_project_template
 
 
 def render() -> None:
@@ -34,15 +23,6 @@ def render() -> None:
         "How do you want to begin?",
         ["Start from scratch", "Resume from saved project"],
         key="project_setup_mode",
-    )
-
-    st.subheader("Save Current Project")
-    st.download_button(
-        "Download Project Settings",
-        data=export_project_template(),
-        file_name=_settings_filename(),
-        mime="application/json",
-        width="stretch",
     )
 
     if mode == "Resume from saved project":
