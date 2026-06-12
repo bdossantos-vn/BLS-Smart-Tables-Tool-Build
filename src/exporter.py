@@ -10,7 +10,7 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from src.comparisons import COMPARISON_SCHEME_DISPLAY_NAME
-from src.utils import normalize_text
+from src.utils import alpha_letter_sequence, normalize_text
 
 
 VN_BLACK = "FF000000"
@@ -796,11 +796,21 @@ def _write_banner_sheet(
         sig_row = header_end_row
         if table_include_stat_testing:
             sig_row = header_end_row + 1
+            active_sig_indexes = [
+                index
+                for index, group in enumerate(active_groups)
+                if group["label"] != "Total"
+            ]
+            active_sig_letters = alpha_letter_sequence(len(active_sig_indexes))
+            sig_letter_by_group_index = {
+                group_index: active_sig_letters[position]
+                for position, group_index in enumerate(active_sig_indexes)
+            }
             for data_columns in [left_data_columns, right_data_columns]:
                 for index, group in enumerate(active_groups):
                     column_index = data_columns[index]
                     if group["label"] != "Total":
-                        sig_letter = chr(64 + index) if index < 27 else ""
+                        sig_letter = sig_letter_by_group_index.get(index, "")
                         sig_cell = worksheet.cell(row=sig_row, column=column_index, value=sig_letter)
                         _apply_body_style(sig_cell)
                         sig_cell.alignment = Alignment(horizontal="center", vertical="center")

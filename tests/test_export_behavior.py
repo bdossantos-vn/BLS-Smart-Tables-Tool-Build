@@ -246,6 +246,32 @@ class ExportBehaviorTest(unittest.TestCase):
         self.assertIn(PERFORMANCE_SIG_TEST_NOTE, sheet.footnotes)
         self.assertEqual(package["export_summary"]["optimized_sig_sheets"], ["Tier x Creator"])
 
+    def test_sig_header_letters_start_at_a_when_total_is_hidden(self) -> None:
+        package = _generate_package(
+            {
+                "banners": [
+                    {"name": "Creators", "level_1": "__comparison_scheme__", "level_2": "", "level_3": ""},
+                ],
+                "include_total": False,
+                "export_style": "one_per_sheet",
+            }
+        )
+
+        workbook = load_workbook(BytesIO(export_workbook_to_excel_bytes(package)), read_only=True)
+        worksheet = workbook["Creators"]
+        left_sig_letters = [
+            worksheet.cell(row=8, column=column).value
+            for column in range(3, 13)
+        ]
+        right_sig_letters = [
+            worksheet.cell(row=8, column=column).value
+            for column in range(14, 24)
+        ]
+
+        self.assertEqual(left_sig_letters, list("ABCDEFGHIJ"))
+        self.assertEqual(right_sig_letters, list("ABCDEFGHIJ"))
+        self.assertNotIn("@", left_sig_letters + right_sig_letters)
+
 
 if __name__ == "__main__":
     unittest.main()

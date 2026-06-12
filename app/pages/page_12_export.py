@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
-from pathlib import Path
 import time
 from typing import Callable
 
@@ -41,20 +40,6 @@ def _build_project_settings_filename(uploaded_filename: str | None) -> str:
         for character in stem
     ).strip("_")
     return f"{safe_stem or 'BLS_Smart_Tables'}_project_settings.json"
-
-
-def _save_local_export(filename: str, data: bytes | str) -> Path:
-    """Save an export artifact inside the local workspace."""
-    # 2026-05-15 BD: Codex's in-app browser may block localhost downloads, so
-    # export pages also provide a workspace-local save path for analyst testing.
-    export_dir = Path.cwd() / "exports"
-    export_dir.mkdir(exist_ok=True)
-    output_path = export_dir / filename
-    if isinstance(data, str):
-        output_path.write_text(data, encoding="utf-8")
-    else:
-        output_path.write_bytes(data)
-    return output_path
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -269,9 +254,6 @@ def render() -> None:
                 file_name=export_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            if st.button("Save Excel Workbook Locally", use_container_width=True):
-                output_path = _save_local_export(export_filename, excel_bytes)
-                st.success(f"Saved workbook to `{output_path}`.")
 
     st.divider()
     st.subheader("Project Settings Export")
@@ -284,6 +266,3 @@ def render() -> None:
         file_name=settings_filename,
         mime="application/json",
     )
-    if st.button("Save Project Settings Locally", use_container_width=True):
-        output_path = _save_local_export(settings_filename, template_json)
-        st.success(f"Saved project settings to `{output_path}`.")
