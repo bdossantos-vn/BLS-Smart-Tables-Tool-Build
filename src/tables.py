@@ -20,6 +20,7 @@ from src.comparisons import (
 from src.custom_vars import build_question_lookup
 from src.metadata import build_display_variable_lookup, get_display_variable_name
 from src.nets import build_enabled_net_choice_map
+from src.respondents import respondent_count
 from src.stats import normalize_confidence_intervals
 from src.utils import alpha_letter_sequence, multi_select_value_contains_choice, normalize_text
 
@@ -1204,9 +1205,9 @@ def _build_question_table(
         comparison_group_labels=comparison_group_labels,
     )
 
-    total_base_denominators = [int(group["mask"].sum()) for group in groups]
+    total_base_denominators = [respondent_count(df, group["mask"]) for group in groups]
     answering_masks = question_series.map(lambda value: normalize_text(value) != "").fillna(False)
-    total_answering_denominators = [int((group["mask"] & answering_masks).sum()) for group in groups]
+    total_answering_denominators = [respondent_count(df, group["mask"] & answering_masks) for group in groups]
     if comparison_pairs is None:
         comparison_pairs = _build_pair_metadata_for_scope(groups, comparison_col, comparison_scope)
     active_sig_cache = sig_cache if optimize_significance else None
@@ -1235,7 +1236,7 @@ def _build_question_table(
                     )
                 ).fillna(False)
             for group_mask, denominator in zip(base_masks, denominators):
-                numerator = int((group_mask & matched_mask).sum())
+                numerator = respondent_count(df, group_mask & matched_mask)
                 counts_by_group.append(numerator)
                 percentages_by_group.append((numerator / denominator) if denominator else None)
             sig_letters = _build_sig_letters(
@@ -2021,7 +2022,7 @@ def generate_workbook_package(
         comparison_group_order,
         comparison_group_labels,
     )
-    project_has_overlaps = bool(detect_group_overlaps(project_comparison_groups)) if layered_scheme_active else False
+    project_has_overlaps = bool(detect_group_overlaps(project_comparison_groups, analysis_df)) if layered_scheme_active else False
     adhoc_response_selection_map = {
         normalize_text(variable): [
             normalize_text(choice)
@@ -2385,7 +2386,7 @@ def generate_workbook_package(
                 )
                 active_levels = _layered_banner_levels(banner_row, comparison_col)
                 table_comparison_scope = _comparison_scope_for_groups(banner_comparison_scope, groups) if banner_include_stat_testing else "none"
-                sheet_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups))
+                sheet_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups, filtered_banner_df))
                 table_comparison_col = effective_comparison_col
             else:
                 groups = _build_banner_groups(
@@ -2560,7 +2561,7 @@ def generate_workbook_package(
                 )
                 column_levels = [effective_comparison_col]
                 adhoc_scope_for_table = _comparison_scope_for_groups(adhoc_scope, groups) if adhoc_include_stat_testing else "none"
-                adhoc_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups))
+                adhoc_has_overlaps = bool(detect_group_overlaps(filtered_comparison_groups, filtered_df))
                 adhoc_comparison_col = effective_comparison_col
             elif normalize_text(column_question_row.get("detected_type") if column_question_row else "") == "Multi-Select":
                 groups = _build_adhoc_multiselect_groups(
@@ -2739,9 +2740,7 @@ def generate_workbook_package(
         )
         for sheet in sheet_specs
     ]
-    effective_topline_lift = bool(topline_config.get("include_lift", False)) and bool(
-        banner_stat_config.get("include_lift", False)
-    )
+    effective_topline_lift = bool(topline_config.get("include_lift", False))
     _emit_progress(progress_callback, "Building topline", 0, 2, "Checking note eligibility")
     topline_notes_requested = bool(topline_config.get("include_significance_notes", True))
     topline_notes_warning = ""

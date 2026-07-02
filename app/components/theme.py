@@ -242,6 +242,93 @@ def apply_theme() -> None:
                 fill: var(--vn-black) !important;
             }
 
+            [data-baseweb="popover"] {
+                z-index: 999999 !important;
+            }
+
+            [data-baseweb="popover"] [role="listbox"],
+            [data-baseweb="popover"] [data-baseweb="menu"],
+            [data-baseweb="popover"] ul {
+                min-width: min(44rem, calc(100vw - 2rem)) !important;
+                max-width: min(64rem, calc(100vw - 2rem)) !important;
+                width: max-content !important;
+                background: var(--vn-white) !important;
+                border: 1px solid var(--vn-gray-200) !important;
+                border-radius: 14px !important;
+                box-shadow: 0 18px 44px rgba(0, 0, 0, 0.14) !important;
+            }
+
+            [data-baseweb="popover"] [role="option"],
+            [data-baseweb="popover"] [data-baseweb="menu"] li,
+            [data-baseweb="popover"] li {
+                align-items: flex-start !important;
+                height: auto !important;
+                min-height: 2.5rem !important;
+                padding-top: 0.55rem !important;
+                padding-bottom: 0.55rem !important;
+                white-space: normal !important;
+            }
+
+            [data-baseweb="popover"] [role="option"] *,
+            [data-baseweb="popover"] [data-baseweb="menu"] li *,
+            [data-baseweb="popover"] li * {
+                color: var(--vn-black) !important;
+                fill: var(--vn-black) !important;
+                max-width: none !important;
+                overflow: visible !important;
+                overflow-wrap: anywhere !important;
+                text-overflow: clip !important;
+                white-space: normal !important;
+                word-break: normal !important;
+            }
+
+            [data-testid="stMain"] div[data-baseweb="select"] [data-baseweb="tag"] {
+                align-items: center !important;
+                display: inline-flex !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                width: auto !important;
+            }
+
+            [data-testid="stMain"] div[data-baseweb="select"] [data-baseweb="tag"] > span,
+            [data-testid="stMain"] div[data-baseweb="select"] [data-baseweb="tag"] > div {
+                direction: ltr !important;
+                flex: 0 1 auto !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                overflow: hidden !important;
+                text-align: left !important;
+                text-overflow: ellipsis !important;
+                white-space: nowrap !important;
+                width: auto !important;
+            }
+
+            [data-testid="stMain"] div[data-baseweb="select"] [data-baseweb="tag"] > button,
+            [data-testid="stMain"] div[data-baseweb="select"] [data-baseweb="tag"] svg {
+                flex: 0 0 auto !important;
+            }
+
+            [data-testid="stMain"] div[data-baseweb="select"] [role="combobox"] span,
+            [data-testid="stMain"] div[data-baseweb="select"] [role="combobox"] div {
+                direction: ltr !important;
+                text-align: left !important;
+                text-overflow: ellipsis !important;
+            }
+
+            [data-testid="stMain"] .vn-selected-values {
+                color: #45484f !important;
+                font-size: 0.9rem !important;
+                line-height: 1.35 !important;
+                margin: 0.15rem 0 0.45rem 0 !important;
+                overflow-wrap: anywhere !important;
+                white-space: normal !important;
+            }
+
+            [data-testid="stMain"] .vn-selected-values strong {
+                color: var(--vn-black) !important;
+                font-weight: 700 !important;
+            }
+
             [data-testid="stMain"] [data-baseweb="tag"],
             [data-testid="stMain"] [data-baseweb="tag"] *,
             [data-testid="stMain"] [data-baseweb="button-group"] *,

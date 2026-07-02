@@ -68,12 +68,16 @@ streamlit run app.py
 
 4. Open the local Streamlit URL shown in the terminal.
 
+## Snowflake Intake
+
+Data Intake can load survey response data from Snowflake when the app can create a Snowpark session. Configure `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, and `SNOWFLAKE_ROLE`, plus either `SNOWFLAKE_PASSWORD` or `SNOWFLAKE_PRIVATE_KEY` / `SNOWFLAKE_PRIVATE_KEY_PATH`.
+
 ## Project Resume Support
 
 The app supports a configuration-only project settings workflow:
 
 - Download current project settings as JSON from `Export`
-- Upload the saved settings file, then process the matching data file to restore the working project
+- Upload the saved settings file, then process the matching uploaded or Snowflake data to restore the working project
 - Project settings intentionally exclude respondent-level data
 
 ## Deployment

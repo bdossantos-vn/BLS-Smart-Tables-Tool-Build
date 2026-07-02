@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
+import os
+from pathlib import Path
 import time
 from typing import Callable
 
@@ -24,11 +26,29 @@ PROGRESS_STAGE_WEIGHTS = {
     "Writing Excel workbook": 25,
     "Finalizing download": 7,
 }
+EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+JSON_MIME = "application/json"
+LOCAL_TEST_DOWNLOAD_DIR = Path("exports") / "local_testing"
+CODEX_LOCAL_ENV_KEYS = (
+    "CODEX_THREAD_ID",
+    "CODEX_SHELL",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+)
+
+
+def _safe_download_stem(value: str | None, fallback: str = "BLS_Smart_Tables") -> str:
+    """Return a filesystem/browser-safe stem for downloaded files."""
+    stem = (value or fallback).rsplit(".", 1)[0].strip() or fallback
+    safe_stem = "".join(
+        character if character.isalnum() or character in {"-", "_", " "} else "_"
+        for character in stem
+    ).strip(" _")
+    return safe_stem or fallback
 
 
 def _build_export_filename(uploaded_filename: str | None) -> str:
     """Build the final Excel filename using the agreed naming convention."""
-    stem = (uploaded_filename or "BLS_Smart_Tables").rsplit(".", 1)[0].strip() or "BLS_Smart_Tables"
+    stem = _safe_download_stem(uploaded_filename)
     return f"{stem}_Tables_{datetime.now().strftime('%Y%m%d')}.xlsx"
 
 
@@ -40,6 +60,54 @@ def _build_project_settings_filename(uploaded_filename: str | None) -> str:
         for character in stem
     ).strip("_")
     return f"{safe_stem or 'BLS_Smart_Tables'}_project_settings.json"
+
+
+def _is_local_codex_testing() -> bool:
+    """Return whether local testing-only download helpers should be visible."""
+    override = os.environ.get("BLS_LOCAL_TEST_DOWNLOADS", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    if os.environ.get("__CFBundleIdentifier") == "com.openai.codex":
+        return True
+    return any(os.environ.get(key) for key in CODEX_LOCAL_ENV_KEYS)
+
+
+def _local_testing_download_path(filename: str) -> Path:
+    """Return the local-only save target for a prepared download."""
+    raw_name = str(filename).replace("/", "_").replace("\\", "_")
+    safe_name = Path(raw_name).name
+    safe_name = "".join(
+        character if character.isalnum() or character in {"-", "_", " ", "."} else "_"
+        for character in safe_name
+    ).strip(" ._")
+    return Path.cwd() / LOCAL_TEST_DOWNLOAD_DIR / (safe_name or "BLS_Smart_Tables_download")
+
+
+def _save_local_testing_download(filename: str, data: bytes | str) -> Path:
+    """Save a prepared download to disk for Codex-local browser testing."""
+    output_path = _local_testing_download_path(filename)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(data, str):
+        output_path.write_text(data, encoding="utf-8")
+    else:
+        output_path.write_bytes(data)
+    return output_path
+
+
+def _render_local_testing_download_button(
+    label: str,
+    filename: str,
+    data: bytes | str | None,
+    key: str,
+) -> None:
+    """Render a Codex-local fallback that writes the file to the workspace."""
+    if not _is_local_codex_testing() or not filename or data is None:
+        return
+    if st.button(label, key=key, help="Local testing only. Saves the prepared file into exports/local_testing/."):
+        output_path = _save_local_testing_download(filename, data)
+        st.success(f"Local testing file saved: `{output_path}`")
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -166,6 +234,47 @@ def _prepare_excel_download(
     return excel_bytes, export_filename
 
 
+def _is_generated_workbook_stale(generated_tables_signature: str, current_export_signature: str) -> bool:
+    """Return whether the visible workbook preview is older than the current settings."""
+    return bool(generated_tables_signature and generated_tables_signature != current_export_signature)
+
+
+def _download_signature_for_generated_workbook(
+    generated_tables_signature: str,
+    current_export_signature: str,
+) -> str:
+    """Return the signature that belongs to the workbook currently shown for download."""
+    return generated_tables_signature or current_export_signature
+
+
+def _download_button_key(prefix: str, signature: str, data: bytes | str | None) -> str:
+    """Build a stable Streamlit widget key for a prepared download payload."""
+    data_length = len(data or b"")
+    signature_token = (signature or "current")[:16]
+    return f"{prefix}_{signature_token}_{data_length}"
+
+
+def _project_settings_download_signature(template_json: str) -> str:
+    """Return a stable signature for project settings, ignoring export-time metadata."""
+    try:
+        payload = json.loads(template_json)
+    except (TypeError, json.JSONDecodeError):
+        canonical_payload = str(template_json)
+    else:
+        if isinstance(payload, dict):
+            stable_payload = dict(payload)
+            stable_payload.pop("saved_at", None)
+            canonical_payload = json.dumps(stable_payload, sort_keys=True, default=str)
+        else:
+            canonical_payload = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+
+
+def _project_settings_download_key(prefix: str, template_json: str) -> str:
+    """Build a Streamlit key that does not change only because saved_at changed."""
+    return f"{prefix}_{_project_settings_download_signature(template_json)[:16]}"
+
+
 def render() -> None:
     """Render the export page and generate the final workbook."""
     st.header("12. Table Generator & Excel Export")
@@ -225,8 +334,12 @@ def render() -> None:
     preview_df = build_workbook_preview(workbook_package) if workbook_package else pd.DataFrame()
     if not preview_df.empty:
         generated_tables_signature = st.session_state.get("generated_tables_signature", "")
-        if generated_tables_signature and generated_tables_signature != current_export_signature:
-            st.info("Settings changed after these tables were generated. Click Generate Tables to refresh the workbook.")
+        workbook_is_stale = _is_generated_workbook_stale(generated_tables_signature, current_export_signature)
+        if workbook_is_stale:
+            st.info(
+                "Settings changed after these tables were generated. You can still download the last generated workbook, "
+                "or click Generate Tables to refresh it."
+            )
         st.subheader("Workbook Preview")
         st.dataframe(preview_df, use_container_width=True, hide_index=True)
         if workbook_package.get("export_summary", {}).get("topline_notes_warning"):
@@ -235,13 +348,21 @@ def render() -> None:
         excel_bytes = st.session_state.get("generated_excel_bytes")
         export_filename = st.session_state.get("generated_excel_filename")
         excel_signature = st.session_state.get("generated_excel_signature", "")
-        can_use_cached_excel = bool(excel_bytes and export_filename and excel_signature == current_export_signature)
-        if not can_use_cached_excel and (not generated_tables_signature or generated_tables_signature == current_export_signature):
+        workbook_download_signature = _download_signature_for_generated_workbook(
+            generated_tables_signature,
+            current_export_signature,
+        )
+        can_use_cached_excel = bool(
+            excel_bytes
+            and export_filename
+            and excel_signature == workbook_download_signature
+        )
+        if not can_use_cached_excel:
             progress_callback, elapsed, progress_was_visible = _build_progress_callback()
             excel_bytes, export_filename = _prepare_excel_download(
                 workbook_package,
                 st.session_state.get("uploaded_filename"),
-                current_export_signature,
+                workbook_download_signature,
                 progress_callback=progress_callback,
             )
             if progress_was_visible():
@@ -249,10 +370,19 @@ def render() -> None:
             can_use_cached_excel = True
         if can_use_cached_excel:
             st.download_button(
-                "Download Excel Workbook",
+                "Download Last Generated Workbook" if workbook_is_stale else "Download Excel Workbook",
                 data=excel_bytes,
                 file_name=export_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                mime=EXCEL_MIME,
+                key=_download_button_key("excel_workbook_download", workbook_download_signature, excel_bytes),
+                on_click="ignore",
+                type="primary",
+            )
+            _render_local_testing_download_button(
+                "Local Testing Download - Excel Workbook",
+                export_filename,
+                excel_bytes,
+                _download_button_key("local_testing_excel_download", workbook_download_signature, excel_bytes),
             )
 
     st.divider()
@@ -260,9 +390,19 @@ def render() -> None:
     st.write("Download a configuration-only project settings file after your project is fully set up.")
     template_json = export_project_template()
     settings_filename = _build_project_settings_filename(st.session_state.get("uploaded_filename"))
+    project_settings_key = _project_settings_download_key("project_settings_download", template_json)
+    local_project_settings_key = _project_settings_download_key("local_testing_project_settings_download", template_json)
     st.download_button(
         "Download Project Settings",
         data=template_json,
         file_name=settings_filename,
-        mime="application/json",
+        mime=JSON_MIME,
+        key=project_settings_key,
+        on_click="ignore",
+    )
+    _render_local_testing_download_button(
+        "Local Testing Download - Project Settings",
+        settings_filename,
+        template_json,
+        local_project_settings_key,
     )

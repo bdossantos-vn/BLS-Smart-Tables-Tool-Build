@@ -116,21 +116,21 @@ def build_analysis_variable_catalog(
         )
         seen.add(COMPARISON_SCHEME_LEVEL)
 
-    if comparison_variable:
-        catalog.append(
-            {
-                "id": comparison_variable,
-                "label": display_lookup.get(comparison_variable, comparison_variable),
-                "kind": "Comparison Variable",
-                "question_type": "Single-Select",
-            }
-        )
-        seen.add(comparison_variable)
-
     for row in question_metadata:
         variable = normalize_text(row.get("variable"))
         question_type = normalize_text(row.get("detected_type"))
         if not variable or variable in seen:
+            continue
+        if variable == comparison_variable:
+            catalog.append(
+                {
+                    "id": variable,
+                    "label": display_lookup.get(variable, variable),
+                    "kind": "Comparison Variable",
+                    "question_type": "Single-Select",
+                }
+            )
+            seen.add(variable)
             continue
         if question_type in {"Ignore", "Open-End Text"}:
             continue
@@ -143,6 +143,17 @@ def build_analysis_variable_catalog(
             }
         )
         seen.add(variable)
+
+    if comparison_variable and comparison_variable not in seen:
+        catalog.append(
+            {
+                "id": comparison_variable,
+                "label": display_lookup.get(comparison_variable, comparison_variable),
+                "kind": "Comparison Variable",
+                "question_type": "Single-Select",
+            }
+        )
+        seen.add(comparison_variable)
 
     for record in custom_variables:
         name = normalize_text(record.get("name"))

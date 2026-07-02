@@ -7,15 +7,15 @@ Maintenance note:
 
 ## Snapshot
 
-This status reflects the repository state as of 2026-05-01.
+This status reflects the repository state as of 2026-07-02.
 
 ## Overall State
 
 - The app is functionally broad and fairly feature-rich.
 - The main workflow is present from setup through Excel export.
-- Several newer features are implemented but still need deeper end-to-end regression testing.
+- Snowflake intake, project settings resume, topline selection, and export behavior have current regression coverage.
 - Some legacy code paths still exist behind the current modular app shell.
-- Template import/export exists in code, but should be treated as only partially verified until round-trip testing is completed.
+- Template import/export is configuration-only and verified for the current project snapshot shape.
 
 ## Status Rubric
 
@@ -58,38 +58,38 @@ Status is determined from a mix of:
 
 ### 1. Project Setup
 
-Status: `Working, lightly verified`
+Status: `Working, verified`
 
 Implemented:
 
 - start from scratch
-- upload configuration template (`.json`)
-
-Known caveats:
-
-- template upload depends on config compatibility, not respondent-data restoration
-- end-to-end template round-trip should still be treated as needing explicit verification
+- upload project settings snapshot (`.json`)
+- hold uploaded settings until matching uploaded or Snowflake data is ingested
+- restore configuration without respondent-level data
 
 ### 2. Data Intake
 
-Status: `Working, recently changed, needs regression verification`
+Status: `Working, verified`
 
 Implemented:
 
 - upload Qualtrics Excel file
+- load survey response data from Snowflake
 - choose a sheet when multiple sheets exist
 - process and clean the dataset
+- convert Snowflake long-format survey rows into one respondent row
+- preserve stable internal respondent identity for N/base counts
 - choose/apply comparison variable
 - comparison label editing
 - comparison group order controls
 - included/excluded column controls
 - change log
 
-Recent risk area:
+Recent stability work:
 
-- Page 2 grid styling and control rendering were recently refactored several times
-- included/excluded selectors are now back on native `st.data_editor` to match Page 3 more closely
-- visual behavior should be considered recently stabilized, but still worth user verification
+- Snowflake survey labels are applied to metadata/display names while preserving source variable keys
+- blank and stale multiselect values are sanitized before Streamlit renders widgets
+- internal respondent ID columns are hidden from analyst-facing catalogs
 
 ### 3. Survey Question Audit
 
@@ -131,7 +131,7 @@ Implemented:
 
 ### 6. Custom Variables
 
-Status: `Working, medium complexity, should be regression-tested`
+Status: `Working, medium complexity`
 
 Implemented:
 
@@ -142,7 +142,7 @@ Implemented:
 - saved custom variable summary
 - edit/delete custom variables
 
-Risk areas:
+Areas to keep covered:
 
 - multi-condition logic
 - fallback categories
@@ -163,7 +163,7 @@ Implemented:
 
 ### 8. Custom AdHoc Crosstabs
 
-Status: `Working, recently expanded, should be regression-tested`
+Status: `Working, recently expanded`
 
 Implemented:
 
@@ -173,7 +173,7 @@ Implemented:
 - multiple AdHoc table definitions on one page
 - exports grouped on one sheet
 
-Recent risk areas:
+Areas to keep covered:
 
 - multi-select row behavior
 - multi-select column selected/not-selected behavior
@@ -218,7 +218,7 @@ Notes:
 
 ### 11. Topline Configuration
 
-Status: `Working, high-change area, needs continued regression testing`
+Status: `Working, verified`
 
 Implemented:
 
@@ -228,18 +228,20 @@ Implemented:
 - bulk note-base actions
 - per-variable note base (`Total Sample` / `Total Answering`)
 - topline lift toggle
+- control-vs-test or all-pairs topline comparison scope
 - topline significance-notes toggle
 - change log
 
-Recent risk areas:
+Current regression coverage:
 
 - exact response carryover into export
 - note-base alignment with actual topline metric source
 - subgroup note generation rules
+- topline lift columns independent from banner lift settings
 
 ### 12. Export
 
-Status: `Working, broadest regression surface`
+Status: `Working, verified`
 
 Implemented:
 
@@ -248,6 +250,7 @@ Implemented:
 - workbook preview
 - Excel workbook download
 - project template download
+- cached export signature that excludes respondent-level data
 
 Workbook/export features currently present in code:
 
@@ -260,6 +263,7 @@ Workbook/export features currently present in code:
 - lifts
 - significance notation location
 - footnotes for stats / filters / weighting context
+- generated workbook outputs are treated as local artifacts, not source files
 
 ## Hidden / Less-Visible Features
 
@@ -294,18 +298,19 @@ Status: `Working but transitional`
 
 ### Download template
 
-Status: `Implemented, likely working, not fully regression-tested`
+Status: `Implemented and verified`
 
 - current project config is serialized to JSON
 - intended to exclude respondent data
 
 ### Upload template
 
-Status: `Implemented, partially verified, needs explicit round-trip testing`
+Status: `Implemented and verified`
 
 - loads configuration sections into session state
 - does not restore respondent rows
 - depends on current config structure remaining compatible
+- supports restoring against matching uploaded or Snowflake data
 
 Known caution:
 
@@ -315,19 +320,18 @@ Known caution:
 
 Observed in repo:
 
-- active code compiles cleanly after recent edits
-- no strong evidence of a broad automated regression suite covering workflow behavior end to end
+- `python -m unittest discover tests` passes under the app environment
+- current run: 74 tests, all passing
+- coverage includes Snowflake cleaning, multiselect safeguards, topline config, project snapshots, and export behavior
 
 Practical meaning:
 
-- “implemented” does not always mean “fully tested”
-- recent UI/theme/grid changes especially should be treated as requiring manual validation
+- automated coverage is strongest around data/model/export behavior
+- Streamlit visual layout should still be checked when broad UI styling changes are made
 
 ## Unfinished Or Untested Areas To Watch
 
-- template upload/download round-trip
 - hidden weighting flow
-- Page 2 grid visual consistency after recent renderer/theme changes
 - AdHoc multi-select edge cases
 - complex significance note logic across all banner structures
 - full workbook regression across:

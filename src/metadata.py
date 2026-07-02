@@ -8,7 +8,12 @@ import re
 
 import pandas as pd
 
-from src.utils import normalize_text, split_multi_select_value, split_text_outside_grouping
+from src.respondents import is_internal_respondent_column
+from src.utils import (
+    normalize_text,
+    split_multi_select_value,
+    split_text_outside_grouping,
+)
 
 
 DEFAULT_INCLUDE_VALUE = True
@@ -407,6 +412,7 @@ def get_metadata_editor_columns() -> dict[str, Any]:
 
     return {
         "variable": st.column_config.TextColumn("Raw Variable Name", disabled=True, width=220),
+        "_source_variable": None,
         "display_variable_name": st.column_config.TextColumn(
             "Displayed Variable Name",
             width=260,
@@ -833,6 +839,8 @@ def detect_question_types(
     """Detect default question types for all relevant variables."""
     detected: dict[str, str] = {}
     for column in df.columns:
+        if is_internal_respondent_column(column):
+            continue
         if column == cell_col:
             detected[column] = "Ignore"
             continue
@@ -854,6 +862,8 @@ def build_question_metadata(
     source_answer_choices = source_answer_choices or {}
     metadata: list[dict[str, Any]] = []
     for column in df.columns:
+        if is_internal_respondent_column(column):
+            continue
         question_type = detected[column]
         source_choices = [
             normalize_text(choice)
@@ -889,7 +899,8 @@ def prepare_metadata_editor_frame(metadata_rows: list[dict[str, Any]]) -> pd.Dat
     for row in metadata_rows:
         editor_rows.append(
             {
-                "variable": row.get("variable", ""),
+                "variable": get_display_variable_name(row),
+                "_source_variable": row.get("variable", ""),
                 "display_variable_name": get_display_variable_name(row),
                 "question_label": row.get("question_label", ""),
                 "detected_type": row.get("detected_type", "Single-Select"),
@@ -912,7 +923,7 @@ def sanitize_metadata_editor(editor_df: pd.DataFrame) -> list[dict[str, Any]]:
         answer_choices_text = normalize_text(row.get("answer_choices"))
         sanitized.append(
             {
-                "variable": normalize_text(row.get("variable")),
+                "variable": normalize_text(row.get("_source_variable")) or normalize_text(row.get("variable")),
                 "display_variable_name": normalize_text(row.get("display_variable_name"))
                 or normalize_text(row.get("variable")),
                 "question_label": normalize_text(row.get("question_label")),

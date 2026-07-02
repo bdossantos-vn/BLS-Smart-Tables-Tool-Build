@@ -10,10 +10,14 @@ import streamlit as st
 
 DEFAULT_STATE: dict[str, Any] = {
     "uploaded_filename": None,
+    "data_source_type": "",
+    "snowflake_survey_labels": [],
+    "snowflake_survey_keys": [],
     "raw_df": None,
     "survey_df": None,
     "cleaned_df": None,
     "question_labels": {},
+    "question_text_labels": {},
     "source_answer_choices": {},
     "ingestion_log": [],
     "intake_change_log": [],
@@ -32,6 +36,7 @@ DEFAULT_STATE: dict[str, Any] = {
         "control_group_id": "",
         "groups": [],
     },
+    "question_order": [],
     "included_columns": [],
     "included_editor": None,
     "blacklist_used": [],

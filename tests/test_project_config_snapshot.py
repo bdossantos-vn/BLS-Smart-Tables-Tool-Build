@@ -11,6 +11,8 @@ from app.models.project_config import (
     migrate_project_config,
     unpack_project_payload,
 )
+from app.state.manager import _order_question_metadata_by_columns
+from src.config import build_analysis_variable_catalog
 
 
 class ProjectConfigSnapshotTests(unittest.TestCase):
@@ -27,6 +29,7 @@ class ProjectConfigSnapshotTests(unittest.TestCase):
 
         self.assertEqual(migrated["schema_version"], PROJECT_CONFIG_SCHEMA_VERSION)
         self.assertEqual(migrated["variables"]["available_columns"], [])
+        self.assertEqual(migrated["variables"]["question_order"], ["Age", "Gender"])
         self.assertEqual(migrated["variables"]["blacklist_removed_columns"], ["IPAddress"])
         self.assertEqual(migrated["data"]["comparison_group_order"], {})
         self.assertEqual(migrated["scales"]["AI_Comfort"]["scale_points"], ["Low", "High"])
@@ -71,6 +74,48 @@ class ProjectConfigSnapshotTests(unittest.TestCase):
         self.assertEqual(info["kind"], "legacy_project_config")
         self.assertEqual(info["source_filename"], "old.xlsx")
         self.assertEqual(project_config["nets"]["Scale"], {"Top 2": ["A", "B"]})
+
+    def test_restored_metadata_uses_saved_question_order(self) -> None:
+        metadata_rows = [
+            {"variable": "QID1", "display_variable_name": "Question 1"},
+            {"variable": "QID2", "display_variable_name": "Question 2"},
+            {"variable": "QID3", "display_variable_name": "Question 3"},
+        ]
+
+        ordered = _order_question_metadata_by_columns(metadata_rows, ["QID3", "QID1", "QID2"])
+
+        self.assertEqual([row["variable"] for row in ordered], ["QID3", "QID1", "QID2"])
+
+    def test_analysis_catalog_keeps_comparison_variable_in_question_order(self) -> None:
+        metadata_rows = [
+            {
+                "variable": "QID1",
+                "display_variable_name": "Question 1",
+                "question_label": "Question 1",
+                "detected_type": "Single-Select",
+            },
+            {
+                "variable": "CELL",
+                "display_variable_name": "Cell",
+                "question_label": "Cell",
+                "detected_type": "Ignore",
+            },
+            {
+                "variable": "QID2",
+                "display_variable_name": "Question 2",
+                "question_label": "Question 2",
+                "detected_type": "Single-Select",
+            },
+        ]
+
+        catalog = build_analysis_variable_catalog(
+            metadata_rows,
+            custom_variables=[],
+            comparison_col="CELL",
+            comparison_scheme={"enabled": False},
+        )
+
+        self.assertEqual([row["id"] for row in catalog], ["QID1", "CELL", "QID2"])
 
 
 if __name__ == "__main__":

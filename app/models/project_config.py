@@ -21,7 +21,14 @@ PROJECT_CONFIG_TEMPLATE: dict[str, Any] = {
         "template_name": "",
         "setup_mode": "Start from scratch",
     },
-    "data": {},
+    "data": {
+        "data_source_type": "",
+        "uploaded_filename": None,
+        "sheet_name": None,
+        "available_sheets": [],
+        "snowflake_survey_labels": [],
+        "snowflake_survey_keys": [],
+    },
     # 2026-05-19 BD: Save layered comparison rules in templates so they can be
     # merged or replayed separately from respondent data.
     "comparison_scheme": {
@@ -103,6 +110,8 @@ def migrate_project_config(saved_config: dict[str, Any] | None) -> dict[str, Any
         )
     if "excluded_columns" not in variables:
         variables["excluded_columns"] = []
+    if "question_order" not in variables:
+        variables["question_order"] = list(variables.get("included_columns", []) or [])
 
     data = migrated.setdefault("data", {})
     if "comparison_group_order" not in data:

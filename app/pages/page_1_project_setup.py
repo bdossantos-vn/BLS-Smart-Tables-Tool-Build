@@ -43,4 +43,7 @@ def render() -> None:
                 st.success(st.session_state.get("template_upload_message", "Project settings loaded."))
 
     if st.session_state.get("pending_project_config"):
-        st.info("Saved project settings are ready. Go to Data Intake and process the matching data file to restore the working project.")
+        st.info(
+            "Saved project settings are ready. Go to Data Intake and load the matching data "
+            "from upload or Snowflake to restore the working project."
+        )

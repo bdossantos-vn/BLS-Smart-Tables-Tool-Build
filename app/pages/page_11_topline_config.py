@@ -9,6 +9,7 @@ import re
 import pandas as pd
 import streamlit as st
 
+from app.components.multiselect import safe_multiselect
 from src.comparisons import sanitize_comparison_scheme
 from src.custom_vars import build_question_lookup
 from src.metadata import serialize_answer_choices
@@ -59,6 +60,28 @@ def _topline_available_choices(question: dict[str, object]) -> list[str]:
     return _raw_answer_choices(question)
 
 
+def _topline_choice_display_labels(question: dict[str, object]) -> dict[str, str]:
+    """Return friendly selector labels while preserving raw saved values."""
+    expansion_map = question.get("choice_expansion_map", {})
+    if not isinstance(expansion_map, dict):
+        expansion_map = {}
+
+    labels: dict[str, str] = {}
+    for choice in _topline_available_choices(question):
+        expanded_choices = [
+            normalize_text(value)
+            for value in expansion_map.get(choice, [])
+            if normalize_text(value)
+        ]
+        labels[choice] = f"{choice}: {', '.join(expanded_choices)}" if expanded_choices else choice
+    return labels
+
+
+def _serialize_display_choices(choices: list[str], display_labels: dict[str, str]) -> str:
+    """Serialize choices using display labels for read-only UI text."""
+    return serialize_answer_choices([display_labels.get(choice, choice) for choice in choices])
+
+
 def _default_topline_choices(variable: str, question: dict[str, object]) -> list[str]:
     """Return the default selected topline choices for one variable."""
     return _topline_available_choices(question)
@@ -107,6 +130,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
         question = question_lookup.get(variable, {})
         display_variable_name = str(question.get("display_variable_name") or variable).strip() or variable
         available_choices = _default_topline_choices(variable, question)
+        choice_display_labels = _topline_choice_display_labels(question)
         valid_selected_choices = _valid_or_default_topline_choices(
             variable,
             response_selections,
@@ -121,12 +145,13 @@ def _build_topline_catalog() -> list[dict[str, object]]:
                 "Column": display_variable_name,
                 "Question Text": question.get("question_label", variable),
                 "Response Choices Count": len(available_choices),
-                "Available Response Choices": serialize_answer_choices(available_choices),
+                "Available Response Choices": _serialize_display_choices(available_choices, choice_display_labels),
                 "Include in Topline": include_in_topline,
                 "_variable": variable,
                 "_default_choices": available_choices,
                 "_preferred_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
+                "_choice_display_labels": choice_display_labels,
                 "_note_base_section": note_base_sections.get(variable, "Total Answering"),
                 "_row_type": "question",
             }
@@ -154,6 +179,7 @@ def _build_topline_catalog() -> list[dict[str, object]]:
                 "_default_choices": available_choices,
                 "_preferred_default_choices": available_choices,
                 "_selected_choices": valid_selected_choices,
+                "_choice_display_labels": {choice: choice for choice in available_choices},
                 "_note_base_section": note_base_sections.get(variable_name, "Total Answering"),
                 "_row_type": "custom_variable",
             }
@@ -298,7 +324,16 @@ def render() -> None:
 
     editor_source_df = st.session_state.topline_editor.copy()
     editor_df = st.data_editor(
-        editor_source_df.drop(columns=["_variable", "_default_choices", "_preferred_default_choices", "_row_type"], errors="ignore"),
+        editor_source_df.drop(
+            columns=[
+                "_variable",
+                "_default_choices",
+                "_preferred_default_choices",
+                "_choice_display_labels",
+                "_row_type",
+            ],
+            errors="ignore",
+        ),
         key="topline_columns_editor",
         use_container_width=True,
         hide_index=True,
@@ -352,6 +387,7 @@ def render() -> None:
             preferred_default_choices = list(source_row.get("_preferred_default_choices", default_choices))
             saved_choices = list(source_row.get("_selected_choices", preferred_default_choices))
             valid_saved_choices = [choice for choice in saved_choices if choice in default_choices]
+            choice_display_labels = dict(source_row.get("_choice_display_labels", {}))
             choice_key = _topline_choice_key(variable)
             note_base_key = _topline_note_base_key(variable)
             saved_note_base = str(source_row.get("_note_base_section", "Total Answering")).strip() or "Total Answering"
@@ -365,10 +401,13 @@ def render() -> None:
                 st.session_state[note_base_key] = saved_note_base
 
             with st.expander(f"{display_variable_name} Response Choices", expanded=False):
-                st.multiselect(
+                safe_multiselect(
                     "Select topline response choices",
                     options=default_choices,
+                    default=valid_saved_choices,
                     key=choice_key,
+                    reset_invalid_to_default=True,
+                    format_func=lambda value, labels=choice_display_labels: labels.get(value, value),
                     help="Only the selected response choices will appear in the topline export.",
                 )
                 st.selectbox(
@@ -418,7 +457,10 @@ def render() -> None:
                     {
                         **source_row,
                         "Response Choices Count": len(default_choices),
-                        "Available Response Choices": serialize_answer_choices(default_choices),
+                        "Available Response Choices": _serialize_display_choices(
+                            default_choices,
+                            dict(source_row.get("_choice_display_labels", {})),
+                        ),
                         "Include in Topline": bool(edited_row.get("Include in Topline", False)),
                         "_preferred_default_choices": preferred_default_choices,
                         "_selected_choices": parsed_choices,

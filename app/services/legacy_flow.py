@@ -3,17 +3,37 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
+import json
 import re
 
 import pandas as pd
 import streamlit as st
 
+from app.components.multiselect import (
+    safe_multiselect,
+    sanitize_multiselect_session_values,
+    valid_multiselect_values,
+    widget_key_token,
+)
+from app.services.snowflake_service import (
+    build_survey_options,
+    get_snowflake_session,
+    load_available_surveys,
+)
 from app.state.manager import (
     apply_project_config_after_loaded_data,
     prepare_project_config_for_loaded_data,
 )
-from src.cleaning import ingest_qualtrics_dataframe, ingest_qualtrics_excel, ingest_qualtrics_sav
+from src.cleaning import (
+    extract_snowflake_label_maps,
+    ingest_qualtrics_dataframe,
+    ingest_qualtrics_excel,
+    ingest_qualtrics_sav,
+    ingest_snowflake_dataframe,
+)
 from src.io import get_excel_sheet_names
+from src.respondents import is_internal_respondent_column, respondent_count
 from src.config import (
     build_analysis_variable_catalog,
     build_default_banner_config,
@@ -94,7 +114,12 @@ from src.tables import (
     generate_placeholder_tables,
 )
 from src.exporter import export_tables_to_excel_bytes
-from src.utils import dataframe_to_download_name, format_timestamp, normalize_text
+from src.utils import (
+    dataframe_to_download_name,
+    format_timestamp,
+    normalize_text,
+    questionnaire_variable_sort_key,
+)
 
 
 NAV_STEPS = [
@@ -220,10 +245,69 @@ def _build_filter_value_options(
     if comparison_col and normalize_text(variable) == normalize_text(comparison_col):
         return [group for group in (comparison_groups or {}).keys() if normalize_text(group)]
     if variable in question_lookup:
-        return list(question_lookup[variable].get("answer_choices_list", []))
+        return list(dict.fromkeys(
+            normalize_text(value)
+            for value in question_lookup[variable].get("answer_choices_list", [])
+            if normalize_text(value)
+        ))
     for record in custom_variables:
         if normalize_text(record.get("name")) == normalize_text(variable):
             return [normalize_text(bucket.get("label")) for bucket in record.get("buckets", []) if normalize_text(bucket.get("label"))]
+    return []
+
+
+def _build_filter_value_display_labels(
+    variable: str,
+    value_options: list[str],
+    comparison_col: str | None = None,
+    comparison_group_labels: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return display labels for selectable values without changing their meaning."""
+    return {value: value for value in value_options}
+
+
+def _valid_multiselect_values(values: list[Any], options: list[str]) -> list[str]:
+    """Return nonblank selected values that are still available options."""
+    return valid_multiselect_values(values, options)
+
+
+def _sanitize_multiselect_session_values(key: str, options: list[str]) -> None:
+    """Remove blank/stale values from a Streamlit multiselect before rendering."""
+    sanitize_multiselect_session_values(key, options)
+
+
+def _widget_key_token(value: object) -> str:
+    """Return a compact token for variable-scoped Streamlit widget keys."""
+    return widget_key_token(value)
+
+
+def _layered_condition_default_values(
+    condition_values: list[Any],
+    value_options: list[str],
+    variable: str,
+    group_label: str,
+    group_id: str,
+    comparison_col: str | None,
+) -> list[str]:
+    """Return valid defaults, repairing blank CELL group values when possible."""
+    valid_values = _valid_multiselect_values(condition_values, value_options)
+    if valid_values:
+        return valid_values
+
+    is_comparison_variable = normalize_text(variable) == normalize_text(comparison_col)
+    is_cell_variable = normalize_text(variable).casefold() == "cell"
+    if not is_comparison_variable and not is_cell_variable:
+        return []
+
+    option_lookup = {
+        normalize_text(option).casefold(): option
+        for option in value_options
+        if normalize_text(option)
+    }
+    for candidate in [group_label, group_id]:
+        repaired_value = option_lookup.get(normalize_text(candidate).casefold())
+        if repaired_value:
+            return [repaired_value]
     return []
 
 
@@ -343,6 +427,9 @@ def render_sidebar() -> str:
                     st.session_state.confirm_new_project = False
                     if "qualtrics_upload" in st.session_state:
                         del st.session_state["qualtrics_upload"]
+                    for key in ["data_source_radio", "snowflake_survey_select"]:
+                        if key in st.session_state:
+                            del st.session_state[key]
                     st.rerun()
             with confirm_right:
                 if st.button("No", use_container_width=True, key="confirm_start_new_project_no"):
@@ -563,11 +650,24 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
     }
     st.session_state.cell_sort_order = dict(st.session_state.comparison_group_order)
     st.session_state.cell_letter_map = {}
+    question_text_labels = st.session_state.get("question_text_labels", {}) or st.session_state.question_labels
     st.session_state.question_metadata = build_question_metadata(
         filtered_df,
-        st.session_state.question_labels,
+        question_text_labels,
         comparison_col,
         st.session_state.get("source_answer_choices", {}),
+    )
+    if st.session_state.get("data_source_type") == "snowflake":
+        _apply_snowflake_display_variable_names(st.session_state.question_metadata, st.session_state.question_labels)
+        _sync_question_metadata_from_intake_labels(
+            st.session_state.question_metadata,
+            list(filtered_df.columns),
+            st.session_state.question_labels,
+            question_text_labels,
+        )
+    st.session_state.question_metadata = _order_question_metadata_by_columns(
+        st.session_state.question_metadata,
+        st.session_state.get("included_columns", []),
     )
     st.session_state.scale_mappings = {}
     # 2026-05-19 BD: Comparison variable changes now seed the unified layered
@@ -590,16 +690,20 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
 def _build_comparison_summary_frame(cleaned_df: pd.DataFrame, comparison_col: str | None) -> pd.DataFrame:
     """Build the summary table for the selected comparison variable."""
     if not comparison_col:
-        return pd.DataFrame([{"Raw Value": "Total", "Display Label": "Total", "N": int(len(cleaned_df))}])
+        return pd.DataFrame([{"Raw Value": "Total", "Display Label": "Total", "N": respondent_count(cleaned_df)}])
 
-    counts = (
-        cleaned_df[comparison_col]
-        .astype(str)
-        .str.strip()
-        .value_counts()
-        .rename_axis("Raw Value")
-        .reset_index(name="N")
-    )
+    values = cleaned_df[comparison_col].map(normalize_text)
+    rows = [
+        {
+            "Raw Value": value,
+            "N": respondent_count(cleaned_df, values == value),
+        }
+        for value in values.dropna().unique().tolist()
+        if value
+    ]
+    counts = pd.DataFrame(rows)
+    if counts.empty:
+        return pd.DataFrame(columns=["Raw Value", "N", "Display Label"])
     order_map = st.session_state.get("comparison_group_order", {})
     label_map = st.session_state.get("comparison_group_labels", {})
     counts["Display Label"] = counts["Raw Value"].map(lambda value: label_map.get(value, value))
@@ -839,12 +943,31 @@ def _render_layered_comparison_editor(cleaned_df: pd.DataFrame) -> None:
                         comparison_col=st.session_state.get("comparison_col"),
                         comparison_groups=st.session_state.get("comparison_group_order", {}),
                     )
-                    default_values = [value for value in condition.get("values", []) if value in value_options]
-                    values = cond_cols[2].multiselect(
+                    value_display_labels = _build_filter_value_display_labels(
+                        variable,
+                        value_options,
+                        st.session_state.get("comparison_col"),
+                        st.session_state.get("comparison_group_labels", {}),
+                    )
+                    value_key = (
+                        f"layered_condition_values_"
+                        f"{group_index}_{condition_index}_{_widget_key_token(variable)}"
+                    )
+                    default_values = _layered_condition_default_values(
+                        list(condition.get("values", [])),
+                        value_options,
+                        variable,
+                        normalize_text(label),
+                        group_id,
+                        st.session_state.get("comparison_col"),
+                    )
+                    values = safe_multiselect(
                         "Values",
                         options=value_options,
                         default=default_values,
-                        key=f"layered_condition_values_{group_index}_{condition_index}",
+                        key=value_key,
+                        reset_invalid_to_default=True,
+                        format_func=lambda value, labels=value_display_labels: labels.get(value, value),
                     )
                 rendered_conditions.append(
                     {
@@ -879,8 +1002,8 @@ def _render_layered_comparison_editor(cleaned_df: pd.DataFrame) -> None:
     )
     if preview_groups:
         st.write("Group bases")
-        st.dataframe(summarize_comparison_groups(preview_groups), hide_index=True, use_container_width=True)
-        overlaps = detect_group_overlaps(preview_groups)
+        st.dataframe(summarize_comparison_groups(preview_groups, cleaned_df), hide_index=True, use_container_width=True)
+        overlaps = detect_group_overlaps(preview_groups, cleaned_df)
         if overlaps:
             st.warning(
                 "Overlap detected: "
@@ -951,7 +1074,11 @@ def _current_included_count() -> int:
     """Return the current number of included questions/variables in the working dataset."""
     cleaned_df = st.session_state.get("cleaned_df")
     if isinstance(cleaned_df, pd.DataFrame):
-        return len(_build_question_variable_groups(list(cleaned_df.columns), st.session_state.get("question_labels", {})))
+        return len(_build_question_variable_groups(
+            list(cleaned_df.columns),
+            st.session_state.get("question_labels", {}),
+            st.session_state.get("question_text_labels", {}),
+        ))
     return 0
 
 
@@ -959,7 +1086,11 @@ def _current_excluded_count() -> int:
     """Return the current total number of excluded questions/variables across intake controls."""
     survey_df = st.session_state.get("survey_df")
     survey_count = (
-        len(_build_question_variable_groups(list(survey_df.columns), st.session_state.get("question_labels", {})))
+        len(_build_question_variable_groups(
+            list(survey_df.columns),
+            st.session_state.get("question_labels", {}),
+            st.session_state.get("question_text_labels", {}),
+        ))
         if isinstance(survey_df, pd.DataFrame)
         else 0
     )
@@ -1095,12 +1226,29 @@ def _shared_question_stem(labels: list[str]) -> str:
     return prefix[:split_at].strip(" -:;.?!")
 
 
+def _friendly_question_variable_label(variable: str, question_label: str) -> str:
+    """Prefer source question text over raw IDs for intake display labels."""
+    variable_name = normalize_text(variable)
+    label = _collapse_internal_whitespace(question_label)
+    if label and label.lower() != variable_name.lower():
+        return label
+    return variable_name
+
+
 def _build_question_variable_groups(
     all_columns: list[str],
     question_labels: dict[str, str] | None = None,
+    question_text_labels: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Group raw variables into logical questions for intake include/exclude controls."""
+    all_columns = [
+        column
+        for column in all_columns
+        if not is_internal_respondent_column(column)
+    ]
+    all_columns = sorted(all_columns, key=questionnaire_variable_sort_key)
     labels = question_labels or {}
+    text_labels = question_text_labels or {}
     numbered_groups: dict[str, list[str]] = {}
     for column in all_columns:
         base = _numbered_question_group_base(column)
@@ -1115,10 +1263,14 @@ def _build_question_variable_groups(
         stem = _shared_question_stem([labels.get(column, column) for column in columns])
         if not stem:
             continue
+        text_stem = _shared_question_stem([
+            text_labels.get(column, labels.get(column, column))
+            for column in columns
+        ]) or stem
         grouped_columns.update(columns)
         groups_by_first_column[columns[0]] = {
-            "label": base,
-            "question_text": stem,
+            "label": stem,
+            "question_text": text_stem,
             "variables": columns,
         }
 
@@ -1128,35 +1280,165 @@ def _build_question_variable_groups(
             groups.append(groups_by_first_column[column])
         if column in grouped_columns:
             continue
+        display_source = _collapse_internal_whitespace(labels.get(column, column))
+        display_label = _friendly_question_variable_label(column, display_source)
+        question_text = _collapse_internal_whitespace(text_labels.get(column, ""))
+        if not question_text or question_text.lower() == normalize_text(column).lower():
+            question_text = display_label
         groups.append(
             {
-                "label": column,
-                "question_text": _collapse_internal_whitespace(labels.get(column, column)),
+                "label": display_label,
+                "question_text": question_text,
                 "variables": [column],
             }
         )
     return groups
 
 
+def _flatten_question_group_variables(groups: list[dict[str, Any]]) -> list[str]:
+    """Flatten ordered question groups into raw variable ids."""
+    flattened: list[str] = []
+    for group in groups:
+        for variable in group.get("variables", []):
+            normalized_variable = normalize_text(variable)
+            if normalized_variable and normalized_variable not in flattened:
+                flattened.append(normalized_variable)
+    return flattened
+
+
+def _sort_question_variable_groups_by_order(
+    groups: list[dict[str, Any]],
+    ordered_columns: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Sort question groups using an ordered raw-variable list when available."""
+    order_lookup = {
+        normalize_text(column): index
+        for index, column in enumerate(ordered_columns or [])
+        if normalize_text(column)
+    }
+    if not order_lookup:
+        return groups
+
+    def group_order(item: tuple[int, dict[str, Any]]) -> tuple[int, int]:
+        default_index, group = item
+        variable_orders = [
+            order_lookup[normalize_text(variable)]
+            for variable in group.get("variables", [])
+            if normalize_text(variable) in order_lookup
+        ]
+        if variable_orders:
+            return (0, min(variable_orders))
+        return (1, default_index)
+
+    return [
+        group
+        for _, group in sorted(enumerate(groups), key=group_order)
+    ]
+
+
+def _default_ordered_columns(
+    all_columns: list[str],
+    question_labels: dict[str, str] | None = None,
+    question_text_labels: dict[str, str] | None = None,
+) -> list[str]:
+    """Return the default QNR-style question order as raw variable ids."""
+    return _flatten_question_group_variables(
+        _build_question_variable_groups(all_columns, question_labels, question_text_labels)
+    )
+
+
 def _build_included_editor(
     all_columns: list[str],
     selected_columns: list[str],
     question_labels: dict[str, str] | None = None,
+    question_text_labels: dict[str, str] | None = None,
+    order_columns: list[str] | None = None,
 ) -> pd.DataFrame:
     """Build the editable included questions/variables table for Step 1."""
     selected_lookup = set(selected_columns)
     rows = []
-    for group in _build_question_variable_groups(all_columns, question_labels):
+    groups = _build_question_variable_groups(all_columns, question_labels, question_text_labels)
+    groups = _sort_question_variable_groups_by_order(groups, order_columns)
+    for group in groups:
         variables = list(group["variables"])
+        source_ids = ", ".join(variables)
         rows.append(
             {
                 "Question / Variable": group["label"],
+                "Variable ID": source_ids,
                 "Question Text": group["question_text"],
                 "_source_variables": SOURCE_VARIABLE_DELIMITER.join(variables),
                 "Included": any(variable in selected_lookup for variable in variables),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _order_question_metadata_by_columns(
+    metadata_rows: list[dict[str, Any]],
+    ordered_columns: list[str],
+) -> list[dict[str, Any]]:
+    """Return metadata rows in Page 2 question order, with leftovers after."""
+    order_lookup = {
+        normalize_text(column): index
+        for index, column in enumerate(ordered_columns)
+        if normalize_text(column)
+    }
+    if not order_lookup:
+        return list(metadata_rows)
+
+    def row_order(item: tuple[int, dict[str, Any]]) -> tuple[int, int]:
+        default_index, row = item
+        variable = normalize_text(row.get("variable"))
+        if variable in order_lookup:
+            return (0, order_lookup[variable])
+        return (1, default_index)
+
+    return [
+        row
+        for _, row in sorted(enumerate(metadata_rows), key=row_order)
+    ]
+
+
+def _current_question_order_columns(available_columns: list[str]) -> list[str]:
+    """Return the active Page 2 question order constrained to current data."""
+    available_lookup = set(available_columns)
+    ordered_columns = [
+        column
+        for column in st.session_state.get("included_columns", [])
+        if column in available_lookup
+    ]
+    for column in st.session_state.get("question_order", []):
+        if column in available_lookup and column not in ordered_columns:
+            ordered_columns.append(column)
+    return ordered_columns
+
+
+def _sync_question_order_state(available_columns: list[str]) -> None:
+    """Apply the current question order to editor, metadata, and dependent views."""
+    available_lookup = set(available_columns)
+    included_columns = [
+        column
+        for column in st.session_state.get("included_columns", [])
+        if column in available_lookup
+    ]
+    ordered_columns = _current_question_order_columns(available_columns)
+    for column in available_columns:
+        if column not in ordered_columns:
+            ordered_columns.append(column)
+
+    st.session_state.question_order = ordered_columns
+    st.session_state.included_columns = included_columns
+    if st.session_state.get("question_metadata"):
+        st.session_state.question_metadata = _order_question_metadata_by_columns(
+            st.session_state.question_metadata,
+            included_columns or ordered_columns,
+        )
+    st.session_state.topline_editor = None
+    st.session_state.generated_tables = {}
+    st.session_state.generated_tables_signature = ""
+    st.session_state.generated_excel_bytes = None
+    st.session_state.generated_excel_signature = ""
 
 
 def _editor_row_source_variables(
@@ -1172,36 +1454,240 @@ def _editor_row_source_variables(
             if normalize_text(variable)
         ]
     fallback = normalize_text(row.get("Question / Variable")) or normalize_text(row.get("Column"))
+    variable_id_text = normalize_text(row.get("Variable ID"))
+    if variable_id_text:
+        return [
+            normalize_text(variable)
+            for variable in variable_id_text.split(",")
+            if normalize_text(variable)
+        ]
     if fallback and source_map and fallback in source_map:
         return list(source_map[fallback])
     return [fallback] if fallback else []
 
 
+def _included_question_order_rows(
+    editor_df: pd.DataFrame,
+    available_columns: list[str],
+) -> list[dict[str, Any]]:
+    """Return included editor rows that can be reordered."""
+    available_lookup = set(available_columns)
+    rows: list[dict[str, Any]] = []
+    if not isinstance(editor_df, pd.DataFrame) or editor_df.empty:
+        return rows
+    for row in editor_df.to_dict(orient="records"):
+        if not bool(row.get("Included", True)):
+            continue
+        variables = [
+            variable
+            for variable in _editor_row_source_variables(row)
+            if variable in available_lookup
+        ]
+        if not variables:
+            continue
+        row_copy = dict(row)
+        row_copy["_order_variables"] = variables
+        row_copy["_order_key"] = SOURCE_VARIABLE_DELIMITER.join(variables)
+        rows.append(row_copy)
+    return rows
+
+
+def _included_editor_widget_key(editor_df: pd.DataFrame) -> str:
+    """Return a Streamlit key that changes when the included editor source changes."""
+    if not isinstance(editor_df, pd.DataFrame) or editor_df.empty:
+        return "included_editor_grid_empty"
+    signature_rows = []
+    for row in editor_df.to_dict(orient="records"):
+        signature_rows.append(
+            {
+                "source": normalize_text(row.get("_source_variables"))
+                or normalize_text(row.get("Variable ID"))
+                or normalize_text(row.get("Question / Variable")),
+                "included": bool(row.get("Included", True)),
+            }
+        )
+    payload = json.dumps(signature_rows, sort_keys=True, default=str)
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    return f"included_editor_grid_{digest}"
+
+
+def _reorder_included_question_rows(
+    rows: list[dict[str, Any]],
+    source_key: str,
+    direction: str,
+) -> list[dict[str, Any]]:
+    """Return included question rows after one ordering action."""
+    current_index = next(
+        (index for index, row in enumerate(rows) if row.get("_order_key") == source_key),
+        None,
+    )
+    if current_index is None:
+        return rows
+    if direction == "top":
+        target_index = 0
+    elif direction == "up":
+        target_index = current_index - 1
+    elif direction == "down":
+        target_index = current_index + 1
+    elif direction == "bottom":
+        target_index = len(rows) - 1
+    else:
+        return rows
+    if target_index < 0 or target_index >= len(rows) or target_index == current_index:
+        return rows
+
+    reordered_rows = list(rows)
+    moving_row = reordered_rows.pop(current_index)
+    reordered_rows.insert(target_index, moving_row)
+    return reordered_rows
+
+
+def _move_included_question_order(
+    source_key: str,
+    direction: str,
+    available_columns: list[str],
+    editor_df: pd.DataFrame | None = None,
+) -> bool:
+    """Move one included question row and persist the new order."""
+    source_editor = editor_df if isinstance(editor_df, pd.DataFrame) else st.session_state.get("included_editor")
+    rows = _included_question_order_rows(source_editor, available_columns)
+    reordered_rows = _reorder_included_question_rows(rows, source_key, direction)
+    if reordered_rows == rows:
+        return False
+
+    included_columns = _flatten_question_group_variables(
+        [{"variables": row.get("_order_variables", [])} for row in reordered_rows]
+    )
+    current_comparison = st.session_state.get("comparison_col")
+    if current_comparison and current_comparison not in included_columns:
+        included_columns = [current_comparison, *included_columns]
+
+    st.session_state.included_columns = [
+        column
+        for column in dict.fromkeys(included_columns)
+        if column in set(available_columns)
+    ]
+    _sync_question_order_state(available_columns)
+    st.session_state.included_editor = _build_included_editor(
+        available_columns,
+        st.session_state.included_columns,
+        st.session_state.get("question_labels", {}),
+        st.session_state.get("question_text_labels", {}),
+        st.session_state.question_order,
+    )
+    return True
+
+
+def _apply_snowflake_display_variable_names(metadata_rows: list[dict[str, Any]], labels: dict[str, str]) -> None:
+    """Use Snowflake display labels while preserving source question text."""
+    for metadata_row in metadata_rows:
+        variable = normalize_text(metadata_row.get("variable"))
+        label = _collapse_internal_whitespace(labels.get(variable, ""))
+        if label and label.lower() != variable.lower():
+            metadata_row["display_variable_name"] = label
+
+
+def _refresh_snowflake_label_maps_from_raw_data() -> None:
+    """Refresh Snowflake label maps from the already-loaded raw dataframe."""
+    if st.session_state.get("data_source_type") != "snowflake":
+        return
+    raw_df = st.session_state.get("raw_df")
+    if not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+        return
+
+    display_labels, question_text_labels = extract_snowflake_label_maps(raw_df)
+    if display_labels:
+        merged_display_labels = dict(st.session_state.get("question_labels", {}))
+        merged_display_labels.update(display_labels)
+        st.session_state.question_labels = merged_display_labels
+    if question_text_labels:
+        merged_question_text_labels = dict(st.session_state.get("question_text_labels", {}))
+        merged_question_text_labels.update(question_text_labels)
+        st.session_state.question_text_labels = merged_question_text_labels
+
+
+def _sync_question_metadata_from_intake_labels(
+    metadata_rows: list[dict[str, Any]],
+    all_columns: list[str],
+    question_labels: dict[str, str],
+    question_text_labels: dict[str, str],
+) -> None:
+    """Carry Page 2 labels/question text into Page 3 metadata rows."""
+    groups = _build_question_variable_groups(all_columns, question_labels, question_text_labels)
+    display_lookup: dict[str, str] = {}
+    text_lookup: dict[str, str] = {}
+    for group in groups:
+        display_label = normalize_text(group.get("label"))
+        question_text = normalize_text(group.get("question_text")) or display_label
+        for variable in group.get("variables", []):
+            normalized_variable = normalize_text(variable)
+            if not normalized_variable:
+                continue
+            display_lookup[normalized_variable] = display_label
+            text_lookup[normalized_variable] = question_text
+
+    for row in metadata_rows:
+        variable = normalize_text(row.get("variable"))
+        if not variable:
+            continue
+        desired_display = display_lookup.get(variable)
+        desired_question_text = text_lookup.get(variable)
+        existing_display = get_display_variable_name(row)
+        default_display_values = {
+            variable.lower(),
+            normalize_text(row.get("question_label")).lower(),
+            normalize_text(question_labels.get(variable)).lower(),
+            normalize_text(question_text_labels.get(variable)).lower(),
+        }
+        if desired_display and (
+            not existing_display
+            or existing_display.lower() in default_display_values
+        ):
+            row["display_variable_name"] = desired_display
+        if desired_question_text:
+            row["question_label"] = desired_question_text
+
+
 def _apply_intake_result(result) -> None:
     """Persist a completed intake result into session state."""
-    available_columns = [column for column in result.cleaned_df.columns]
+    available_columns = [
+        column
+        for column in result.cleaned_df.columns
+        if not is_internal_respondent_column(column)
+    ]
     previous_survey_df = st.session_state.get("survey_df")
     previous_available_columns = (
-        list(previous_survey_df.columns)
+        [
+            column
+            for column in previous_survey_df.columns
+            if not is_internal_respondent_column(column)
+        ]
         if isinstance(previous_survey_df, pd.DataFrame) and not previous_survey_df.empty
         else []
     )
     previous_included = st.session_state.get("included_columns", [])
+    question_text_labels = getattr(result, "question_text_labels", {}) or result.question_labels
+    default_ordered_columns = _default_ordered_columns(
+        available_columns,
+        result.question_labels,
+        question_text_labels,
+    )
     if previous_included:
         included_columns = [column for column in previous_included if column in available_columns]
         newly_available_columns = [
             column
-            for column in available_columns
+            for column in default_ordered_columns
             if column not in previous_available_columns and column not in included_columns
         ]
         included_columns.extend(newly_available_columns)
     else:
-        included_columns = available_columns.copy()
+        included_columns = default_ordered_columns.copy()
 
     st.session_state.raw_df = result.raw_df
     st.session_state.survey_df = result.cleaned_df.copy()
     st.session_state.cleaned_df = result.cleaned_df.copy()
     st.session_state.question_labels = result.question_labels
+    st.session_state.question_text_labels = question_text_labels
     st.session_state.source_answer_choices = result.source_answer_choices
     st.session_state.cell_col = result.cell_column
     st.session_state.comparison_col = result.cell_column
@@ -1231,11 +1717,19 @@ def _apply_intake_result(result) -> None:
     st.session_state.locked_cell_bases = {}
     st.session_state.cell_sort_order = {}
     st.session_state.cell_letter_map = {}
+    metadata_question_labels = st.session_state.question_text_labels or result.question_labels
     st.session_state.question_metadata = build_question_metadata(
         result.cleaned_df,
-        result.question_labels,
+        metadata_question_labels,
         result.cell_column,
         result.source_answer_choices,
+    )
+    if st.session_state.get("data_source_type") == "snowflake":
+        _apply_snowflake_display_variable_names(st.session_state.question_metadata, result.question_labels)
+    st.session_state.question_order = list(dict.fromkeys([*included_columns, *default_ordered_columns]))
+    st.session_state.question_metadata = _order_question_metadata_by_columns(
+        st.session_state.question_metadata,
+        included_columns,
     )
     st.session_state.scale_mappings = {}
     st.session_state.blacklist_editor = _build_blacklist_editor(
@@ -1246,6 +1740,8 @@ def _apply_intake_result(result) -> None:
         available_columns,
         included_columns,
         result.question_labels,
+        st.session_state.question_text_labels,
+        included_columns,
     )
 
 
@@ -1269,10 +1765,13 @@ def _apply_comparison_or_project_restore(default_comparison: str | None) -> bool
     restore_status.update(restore_prep_status)
     st.session_state.project_restore_status = restore_status
     available_columns = list(st.session_state.survey_df.columns)
+    _sync_question_order_state(available_columns)
     st.session_state.included_editor = _build_included_editor(
         available_columns,
         st.session_state.get("included_columns", available_columns),
         st.session_state.get("question_labels", {}),
+        st.session_state.get("question_text_labels", {}),
+        st.session_state.get("question_order", []),
     )
     missing_included = restore_status.get("missing_included_variables", [])
     message = st.session_state.get("project_restore_message") or "Project settings restored from the saved file."
@@ -1285,71 +1784,157 @@ def _apply_comparison_or_project_restore(default_comparison: str | None) -> bool
     return True
 
 
+def _render_snowflake_intake() -> None:
+    """Render the Snowflake data-loading UI inside the data intake page."""
+    session = get_snowflake_session()
+    if session is None:
+        st.error(
+            "Could not connect to Snowflake. Set SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, "
+            "and SNOWFLAKE_PASSWORD, or use SNOWFLAKE_PRIVATE_KEY / SNOWFLAKE_PRIVATE_KEY_PATH."
+        )
+        return
+
+    survey_options: dict[str, str] = {}
+    try:
+        surveys_df = load_available_surveys(session)
+        survey_options = build_survey_options(surveys_df)
+    except Exception as exc:
+        st.warning(f"Could not load survey list: {exc}")
+
+    selected_labels: list[str] = []
+    if survey_options:
+        option_labels = list(survey_options.keys())
+        saved_labels = [
+            label
+            for label in st.session_state.get("snowflake_survey_labels", [])
+            if label in survey_options
+        ]
+        selected_labels = safe_multiselect(
+            "Surveys",
+            options=option_labels,
+            default=saved_labels,
+            placeholder="Type a survey name or ID to search",
+            key="snowflake_survey_select",
+            reset_invalid_to_default=True,
+        )
+    else:
+        st.caption("No surveys found in RPT_QUALTRICS__SURVEY_RESPONSE.")
+
+    if st.button("Load from Snowflake", type="primary", use_container_width=False):
+        if not selected_labels:
+            st.error("Select at least one survey before loading.")
+            return
+
+        selected_keys = [
+            survey_options[label]
+            for label in selected_labels
+            if label in survey_options and survey_options[label]
+        ]
+        if not selected_keys:
+            st.error("The selected survey does not have a usable SURVEY_KEY.")
+            return
+
+        escaped_keys = ", ".join(
+            f"'{key.replace(chr(39), chr(39) * 2)}'"
+            for key in selected_keys
+        )
+        sql_to_run = (
+            "SELECT * FROM SNOWFLAKE_EDW.EDW.RPT_QUALTRICS__SURVEY_RESPONSE "
+            f"WHERE SURVEY_KEY IN ({escaped_keys})"
+        )
+        source_name = (
+            selected_labels[0]
+            if len(selected_labels) == 1
+            else f"{selected_labels[0]} (+{len(selected_labels) - 1} more)"
+        )
+
+        try:
+            with st.spinner("Loading survey data from Snowflake..."):
+                raw_df = session.sql(sql_to_run).to_pandas()
+                result = ingest_snowflake_dataframe(raw_df, source_name=source_name)
+        except Exception as exc:
+            st.error(f"Snowflake load failed: {exc}")
+            _append_log(f"Snowflake load failed for {source_name}: {exc}")
+            return
+
+        st.session_state.data_source_type = "snowflake"
+        st.session_state.uploaded_filename = source_name
+        st.session_state.available_sheets = ["Snowflake"]
+        st.session_state.snowflake_survey_labels = list(selected_labels)
+        st.session_state.snowflake_survey_keys = list(selected_keys)
+        st.session_state.blacklist_catalog = result.removed_columns.copy()
+        st.session_state.restored_columns = []
+        st.session_state.intake_change_log = []
+        _apply_intake_result(result)
+        default_comparison = _resolve_default_comparison(
+            st.session_state.comparison_options,
+            result.cell_column,
+            result.cell_column,
+        )
+        restored_project = _apply_comparison_or_project_restore(default_comparison)
+        if not restored_project:
+            st.session_state.metadata_change_log = []
+        _append_log(f"Snowflake ingestion complete for {source_name}.")
+        respondent_total = respondent_count(result.cleaned_df)
+        if restored_project:
+            st.success(f"Loaded {respondent_total:,} respondent(s) from Snowflake and restored project settings.")
+        else:
+            st.success(f"Loaded {respondent_total:,} respondent(s) from Snowflake.")
+
+
+def _refresh_current_intake(whitelist_columns: list[str]) -> Any:
+    """Re-run cleaning for the current data source with updated column restores."""
+    if st.session_state.get("data_source_type") == "snowflake":
+        return ingest_snowflake_dataframe(
+            df=st.session_state.raw_df,
+            source_name=st.session_state.uploaded_filename or "Snowflake",
+            blacklist=st.session_state.blacklist_catalog,
+            whitelist_columns=whitelist_columns,
+        )
+    return ingest_qualtrics_dataframe(
+        raw_df=st.session_state.raw_df,
+        source_name=st.session_state.uploaded_filename or "uploaded_file",
+        sheet_name=st.session_state.sheet_name or "Sheet1",
+        blacklist=st.session_state.blacklist_catalog,
+        whitelist_columns=whitelist_columns,
+    )
+
+
 def render_step_1() -> None:
     """Render the data intake page."""
     st.header("2. Data Intake")
     st.write(
-        "Upload your Qualtrics/SPSS `.sav` file to get started, or use Excel as a fallback."
+        "Upload a Qualtrics/SPSS file or load project survey data from Snowflake."
     )
 
-    upload = st.file_uploader(
-        "Upload survey export",
-        type=["sav", "xlsx"],
-        key="qualtrics_upload",
-        help="Preferred format: `.sav` with labels. Fallback: a standard Qualtrics `.xlsx` export.",
+    source = st.radio(
+        "Data source",
+        ["Upload survey export", "Load from Snowflake"],
+        horizontal=True,
+        key="data_source_radio",
     )
 
-    if upload is not None:
-        upload_extension = upload.name.rsplit(".", 1)[-1].lower() if "." in upload.name else ""
-        if upload_extension == "sav":
-            st.session_state.uploaded_filename = upload.name
-            st.session_state.available_sheets = ["SAV data"]
-            if st.button("Process Data", type="primary", use_container_width=False):
-                try:
-                    result = ingest_qualtrics_sav(upload)
-                except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
-                    st.error(f"Upload failed: {exc}")
-                    _append_log(f"Upload failed for {upload.name}: {exc}")
-                else:
-                    st.session_state.blacklist_catalog = result.removed_columns.copy()
-                    st.session_state.restored_columns = []
-                    st.session_state.intake_change_log = []
-                    _apply_intake_result(result)
-                    default_comparison = _resolve_default_comparison(
-                        st.session_state.comparison_options,
-                        result.cell_column,
-                        result.cell_column,
-                    )
-                    restored_project = _apply_comparison_or_project_restore(default_comparison)
-                    if not restored_project:
-                        st.session_state.metadata_change_log = []
-                    _append_log(f"Ingestion complete for {upload.name}.")
-                    if restored_project:
-                        st.success("SAV file processed successfully and project settings restored.")
-                    else:
-                        st.success("SAV file processed successfully.")
-        else:
-            try:
-                available_sheets = get_excel_sheet_names(upload)
-            except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
-                st.error(f"Upload failed: {exc}")
-                _append_log(f"Upload failed for {upload.name}: {exc}")
-            else:
+    if source == "Load from Snowflake":
+        _render_snowflake_intake()
+    else:
+        upload = st.file_uploader(
+            "Upload survey export",
+            type=["sav", "xlsx"],
+            key="qualtrics_upload",
+            help="Preferred format: `.sav` with labels. Fallback: a standard Qualtrics `.xlsx` export.",
+        )
+
+        if upload is not None:
+            upload_extension = upload.name.rsplit(".", 1)[-1].lower() if "." in upload.name else ""
+            if upload_extension == "sav":
+                st.session_state.data_source_type = "sav"
                 st.session_state.uploaded_filename = upload.name
-                st.session_state.available_sheets = available_sheets
-
-                if len(available_sheets) > 1:
-                    st.info("This workbook has multiple sheets. Choose one sheet to process for this intake.")
-
-                selected_sheet = st.selectbox(
-                    "Select sheet to process",
-                    options=available_sheets,
-                    key="selected_sheet_name",
-                )
-
+                st.session_state.available_sheets = ["SAV data"]
+                st.session_state.snowflake_survey_labels = []
+                st.session_state.snowflake_survey_keys = []
                 if st.button("Process Data", type="primary", use_container_width=False):
                     try:
-                        result = ingest_qualtrics_excel(upload, sheet_name=selected_sheet)
+                        result = ingest_qualtrics_sav(upload)
                     except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
                         st.error(f"Upload failed: {exc}")
                         _append_log(f"Upload failed for {upload.name}: {exc}")
@@ -1368,11 +1953,57 @@ def render_step_1() -> None:
                             st.session_state.metadata_change_log = []
                         _append_log(f"Ingestion complete for {upload.name}.")
                         if restored_project:
-                            st.success(
-                                f"File processed successfully from sheet `{selected_sheet}` and project settings restored."
-                            )
+                            st.success("SAV file processed successfully and project settings restored.")
                         else:
-                            st.success(f"File processed successfully from sheet `{selected_sheet}`.")
+                            st.success("SAV file processed successfully.")
+            else:
+                try:
+                    available_sheets = get_excel_sheet_names(upload)
+                except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                    st.error(f"Upload failed: {exc}")
+                    _append_log(f"Upload failed for {upload.name}: {exc}")
+                else:
+                    st.session_state.data_source_type = "excel"
+                    st.session_state.uploaded_filename = upload.name
+                    st.session_state.available_sheets = available_sheets
+                    st.session_state.snowflake_survey_labels = []
+                    st.session_state.snowflake_survey_keys = []
+
+                    if len(available_sheets) > 1:
+                        st.info("This workbook has multiple sheets. Choose one sheet to process for this intake.")
+
+                    selected_sheet = st.selectbox(
+                        "Select sheet to process",
+                        options=available_sheets,
+                        key="selected_sheet_name",
+                    )
+
+                    if st.button("Process Data", type="primary", use_container_width=False):
+                        try:
+                            result = ingest_qualtrics_excel(upload, sheet_name=selected_sheet)
+                        except Exception as exc:  # pragma: no cover - defensive Streamlit boundary
+                            st.error(f"Upload failed: {exc}")
+                            _append_log(f"Upload failed for {upload.name}: {exc}")
+                        else:
+                            st.session_state.blacklist_catalog = result.removed_columns.copy()
+                            st.session_state.restored_columns = []
+                            st.session_state.intake_change_log = []
+                            _apply_intake_result(result)
+                            default_comparison = _resolve_default_comparison(
+                                st.session_state.comparison_options,
+                                result.cell_column,
+                                result.cell_column,
+                            )
+                            restored_project = _apply_comparison_or_project_restore(default_comparison)
+                            if not restored_project:
+                                st.session_state.metadata_change_log = []
+                            _append_log(f"Ingestion complete for {upload.name}.")
+                            if restored_project:
+                                st.success(
+                                    f"File processed successfully from sheet `{selected_sheet}` and project settings restored."
+                                )
+                            else:
+                                st.success(f"File processed successfully from sheet `{selected_sheet}`.")
 
     cleaned_df = st.session_state.cleaned_df
     survey_df = st.session_state.survey_df
@@ -1413,7 +2044,7 @@ def render_step_1() -> None:
                 # 2026-05-19 BD: With one unified setup, group labels are edited
                 # in Comparison Setup; Intake Summary is read-only confirmation.
                 st.dataframe(
-                    summarize_comparison_groups(scheme_groups),
+                    summarize_comparison_groups(scheme_groups, cleaned_df),
                     key="comparison_scheme_summary",
                     use_container_width=True,
                     hide_index=True,
@@ -1488,7 +2119,7 @@ def render_step_1() -> None:
                 group_id = normalize_text(group.get("comparison_group_id") or group.get("id"))
                 display_label = normalize_text(group.get("label")) or group_id
                 role_label = normalize_text(group.get("role")).title() or "Test"
-                base_n = int(group.get("mask", pd.Series(dtype=bool)).sum())
+                base_n = respondent_count(cleaned_df, group.get("mask", pd.Series(dtype=bool)))
                 row_cols = st.columns([3, 1.3, 1, 0.8, 0.8])
                 row_cols[0].write(display_label)
                 row_cols[1].write(role_label)
@@ -1523,23 +2154,27 @@ def render_step_1() -> None:
                 included_editor is None
                 or not isinstance(included_editor, pd.DataFrame)
                 or "Question / Variable" not in included_editor.columns
+                or "Variable ID" not in included_editor.columns
             ):
                 st.session_state.included_editor = _build_included_editor(
                     available_columns,
                     st.session_state.get("included_columns", available_columns),
                     st.session_state.get("question_labels", {}),
+                    st.session_state.get("question_text_labels", {}),
+                    _current_question_order_columns(available_columns),
                 )
 
             edited_included = st.data_editor(
                 st.session_state.included_editor,
-                key="included_editor_grid",
+                key=_included_editor_widget_key(st.session_state.included_editor),
                 use_container_width=True,
                 num_rows="fixed",
                 hide_index=True,
                 height=620,
-                column_order=("Question / Variable", "Question Text", "Included"),
+                column_order=("Question / Variable", "Variable ID", "Question Text", "Included"),
                 column_config={
-                    "Question / Variable": st.column_config.TextColumn(disabled=True, width="medium"),
+                    "Question / Variable": st.column_config.TextColumn(disabled=True, width="large"),
+                    "Variable ID": st.column_config.TextColumn(disabled=True, width="medium"),
                     "Question Text": st.column_config.TextColumn(disabled=True, width="large"),
                     "_source_variables": None,
                     "Included": st.column_config.CheckboxColumn(
@@ -1549,6 +2184,61 @@ def render_step_1() -> None:
                     ),
                 },
             )
+
+            order_rows = _included_question_order_rows(
+                edited_included,
+                available_columns,
+            )
+            if order_rows:
+                st.markdown("**Question Order**")
+                for row_index, row in enumerate(order_rows):
+                    source_key = normalize_text(row.get("_order_key"))
+                    row_label = normalize_text(row.get("Question / Variable")) or normalize_text(row.get("Variable ID"))
+                    variable_id = normalize_text(row.get("Variable ID"))
+                    row_cols = st.columns([0.45, 5.0, 1.5, 0.5, 0.5, 0.5, 0.5])
+                    row_cols[0].write(row_index + 1)
+                    row_cols[1].write(row_label)
+                    row_cols[2].write(variable_id)
+                    if row_cols[3].button(
+                        "↑↑",
+                        key=f"included_order_top_{row_index}_{widget_key_token(source_key)}",
+                        disabled=row_index == 0,
+                        use_container_width=True,
+                        help="Send to top",
+                    ):
+                        if _move_included_question_order(source_key, "top", available_columns, edited_included):
+                            _append_intake_change(f"Moved question/variable to top: {row_label}.")
+                        st.rerun()
+                    if row_cols[4].button(
+                        "↑",
+                        key=f"included_order_up_{row_index}_{widget_key_token(source_key)}",
+                        disabled=row_index == 0,
+                        use_container_width=True,
+                        help="Move up",
+                    ):
+                        if _move_included_question_order(source_key, "up", available_columns, edited_included):
+                            _append_intake_change(f"Moved question/variable up: {row_label}.")
+                        st.rerun()
+                    if row_cols[5].button(
+                        "↓",
+                        key=f"included_order_down_{row_index}_{widget_key_token(source_key)}",
+                        disabled=row_index == len(order_rows) - 1,
+                        use_container_width=True,
+                        help="Move down",
+                    ):
+                        if _move_included_question_order(source_key, "down", available_columns, edited_included):
+                            _append_intake_change(f"Moved question/variable down: {row_label}.")
+                        st.rerun()
+                    if row_cols[6].button(
+                        "↓↓",
+                        key=f"included_order_bottom_{row_index}_{widget_key_token(source_key)}",
+                        disabled=row_index == len(order_rows) - 1,
+                        use_container_width=True,
+                        help="Send to bottom",
+                    ):
+                        if _move_included_question_order(source_key, "bottom", available_columns, edited_included):
+                            _append_intake_change(f"Moved question/variable to bottom: {row_label}.")
+                        st.rerun()
 
             include_spacer_left, include_left, include_right, include_spacer_right = st.columns([1, 1, 1, 1])
 
@@ -1574,10 +2264,13 @@ def render_step_1() -> None:
                     if current_comparison and current_comparison not in included_columns:
                         included_columns = [current_comparison, *included_columns]
                     st.session_state.included_columns = included_columns
+                    _sync_question_order_state(available_columns)
                     st.session_state.included_editor = _build_included_editor(
                         available_columns,
                         included_columns,
                         st.session_state.get("question_labels", {}),
+                        st.session_state.get("question_text_labels", {}),
+                        st.session_state.get("question_order", []),
                     )
                     try:
                         _apply_comparison_selection(current_comparison)
@@ -1599,11 +2292,20 @@ def render_step_1() -> None:
 
             with include_right:
                 if st.button("Reset Questions / Variables", key="reset_included_columns", use_container_width=True):
-                    st.session_state.included_columns = available_columns.copy()
-                    st.session_state.included_editor = _build_included_editor(
-                        available_columns,
+                    default_included_columns = _default_ordered_columns(
                         available_columns,
                         st.session_state.get("question_labels", {}),
+                        st.session_state.get("question_text_labels", {}),
+                    )
+                    st.session_state.included_columns = default_included_columns
+                    st.session_state.question_order = default_included_columns
+                    _sync_question_order_state(available_columns)
+                    st.session_state.included_editor = _build_included_editor(
+                        available_columns,
+                        default_included_columns,
+                        st.session_state.get("question_labels", {}),
+                        st.session_state.get("question_text_labels", {}),
+                        st.session_state.get("question_order", []),
                     )
                     try:
                         _apply_comparison_selection(st.session_state.get("comparison_col"))
@@ -1649,13 +2351,7 @@ def render_step_1() -> None:
                             for row in edited_blacklist.to_dict(orient="records")
                             if not bool(row.get("Excluded", True))
                         ]
-                        refreshed = ingest_qualtrics_dataframe(
-                            raw_df=st.session_state.raw_df,
-                            source_name=st.session_state.uploaded_filename or "uploaded_file",
-                            sheet_name=st.session_state.sheet_name or "Sheet1",
-                            blacklist=st.session_state.blacklist_catalog,
-                            whitelist_columns=restored_columns,
-                        )
+                        refreshed = _refresh_current_intake(restored_columns)
                         previous_comparison = st.session_state.get("comparison_col")
                         st.session_state.restored_columns = restored_columns
                         _apply_intake_result(refreshed)
@@ -1669,6 +2365,8 @@ def render_step_1() -> None:
                             list(st.session_state.survey_df.columns),
                             st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
                             st.session_state.get("question_labels", {}),
+                            st.session_state.get("question_text_labels", {}),
+                            st.session_state.get("question_order", []),
                         )
                         st.session_state.blacklist_editor = _build_blacklist_editor(
                             st.session_state.blacklist_catalog,
@@ -1695,13 +2393,7 @@ def render_step_1() -> None:
 
                 with btn_right:
                     if st.button("Reset Questions / Variables", use_container_width=True):
-                        refreshed = ingest_qualtrics_dataframe(
-                            raw_df=st.session_state.raw_df,
-                            source_name=st.session_state.uploaded_filename or "uploaded_file",
-                            sheet_name=st.session_state.sheet_name or "Sheet1",
-                            blacklist=st.session_state.blacklist_catalog,
-                            whitelist_columns=[],
-                        )
+                        refreshed = _refresh_current_intake([])
                         st.session_state.restored_columns = []
                         _apply_intake_result(refreshed)
                         _apply_comparison_selection(
@@ -1715,6 +2407,8 @@ def render_step_1() -> None:
                             list(st.session_state.survey_df.columns),
                             st.session_state.get("included_columns", list(st.session_state.survey_df.columns)),
                             st.session_state.get("question_labels", {}),
+                            st.session_state.get("question_text_labels", {}),
+                            st.session_state.get("question_order", []),
                         )
                         st.session_state.blacklist_editor = _build_blacklist_editor(
                             st.session_state.blacklist_catalog,
@@ -1738,20 +2432,40 @@ def render_step_3() -> None:
     """Render the question audit page."""
     st.header("3. Survey Question Audit")
     cleaned_df = st.session_state.cleaned_df
-    question_labels = st.session_state.question_labels
     cell_col = st.session_state.cell_col
 
     if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty:
         st.info("Upload and process a dataset in Step 1 before auditing questions.")
         return
 
+    if st.session_state.get("data_source_type") == "snowflake":
+        _refresh_snowflake_label_maps_from_raw_data()
+
+    question_labels = st.session_state.question_labels
+    question_text_labels = st.session_state.get("question_text_labels", {}) or question_labels
+
     if not st.session_state.question_metadata:
         st.session_state.question_metadata = build_question_metadata(
             cleaned_df,
-            question_labels,
+            question_text_labels,
             cell_col,
             st.session_state.get("source_answer_choices", {}),
         )
+        if st.session_state.get("data_source_type") == "snowflake":
+            _apply_snowflake_display_variable_names(st.session_state.question_metadata, question_labels)
+
+    if st.session_state.get("data_source_type") == "snowflake":
+        _sync_question_metadata_from_intake_labels(
+            st.session_state.question_metadata,
+            list(cleaned_df.columns),
+            question_labels,
+            question_text_labels,
+        )
+
+    st.session_state.question_metadata = _order_question_metadata_by_columns(
+        st.session_state.question_metadata,
+        st.session_state.get("included_columns", []),
+    )
 
     st.caption("Review question types, displayed variable names, and answer-choice labels where needed.")
 
@@ -1801,16 +2515,31 @@ def render_step_3() -> None:
                         f"[{timestamp}] {variable}: Answer choices changed "
                         f"{_summarize_choice_change(old_choices, new_choices)}"
                     )
-            st.session_state.question_metadata = sanitized
+            st.session_state.question_metadata = _order_question_metadata_by_columns(
+                sanitized,
+                st.session_state.get("included_columns", []),
+            )
             st.success("Question audit changes saved.")
 
     with action_right:
         if st.button("Reset Defaults", use_container_width=True):
             st.session_state.question_metadata = restore_metadata_defaults(
                 cleaned_df,
-                question_labels,
+                question_text_labels,
                 cell_col,
                 st.session_state.get("source_answer_choices", {}),
+            )
+            if st.session_state.get("data_source_type") == "snowflake":
+                _apply_snowflake_display_variable_names(st.session_state.question_metadata, question_labels)
+                _sync_question_metadata_from_intake_labels(
+                    st.session_state.question_metadata,
+                    list(cleaned_df.columns),
+                    question_labels,
+                    question_text_labels,
+                )
+            st.session_state.question_metadata = _order_question_metadata_by_columns(
+                st.session_state.question_metadata,
+                st.session_state.get("included_columns", []),
             )
             st.success("Question metadata restored to defaults.")
             st.rerun()
@@ -2082,10 +2811,13 @@ def render_step_6() -> None:
                 key=f"custom_bucket_label_{bucket_index}",
             )
             selected_choices: list[str] = []
-            selected_choices = st.multiselect(
+            selected_choices = safe_multiselect(
                 question_labels.get(source_variable, source_variable),
                 options=source_choices,
-                key=f"custom_bucket_simple_choices_{bucket_index}",
+                key=(
+                    f"custom_bucket_simple_choices_"
+                    f"{bucket_index}_{_widget_key_token(source_variable)}"
+                ),
             )
 
             bucket_record = {
@@ -2175,10 +2907,13 @@ def render_step_6() -> None:
                     format_func=lambda value: value if value else "Select operator",
                     key=f"custom_condition_operator_{bucket_index}_{condition_index}",
                 )
-                condition_choices = st.multiselect(
+                condition_choices = safe_multiselect(
                     "Selected Choices",
                     options=question_lookup.get(condition_variable, {}).get("answer_choices_list", []),
-                    key=f"custom_condition_choices_{bucket_index}_{condition_index}",
+                    key=(
+                        f"custom_condition_choices_"
+                        f"{bucket_index}_{condition_index}_{_widget_key_token(condition_variable)}"
+                    ),
                 )
                 conditions.append(
                     {
@@ -2653,11 +3388,23 @@ def render_step_8() -> None:
                     comparison_col=st.session_state.get("comparison_col"),
                     comparison_groups=st.session_state.get("comparison_group_order", {}),
                 )
-                values = col3.multiselect(
+                value_display_labels = _build_filter_value_display_labels(
+                    variable,
+                    value_options,
+                    st.session_state.get("comparison_col"),
+                    st.session_state.get("comparison_group_labels", {}),
+                )
+                value_key = (
+                    f"global_filter_values_"
+                    f"{index}_{branch_index}_{condition_index}_{_widget_key_token(variable)}"
+                )
+                values = safe_multiselect(
                     "Values",
                     options=value_options,
-                    default=[value for value in condition.get("values", []) if value in value_options],
-                    key=f"global_filter_values_{index}_{branch_index}_{condition_index}",
+                    default=_valid_multiselect_values(list(condition.get("values", [])), value_options),
+                    key=value_key,
+                    reset_invalid_to_default=True,
+                    format_func=lambda value, labels=value_display_labels: labels.get(value, value),
                     help="Select one or more values for this condition.",
                 )
                 rendered_conditions.append(
@@ -2677,11 +3424,12 @@ def render_step_8() -> None:
             )
 
         default_targets = _normalize_filter_targets(row.get("applies_to", []), apply_targets)
-        applies_to = st.multiselect(
+        applies_to = safe_multiselect(
             "Applies To",
             options=apply_targets,
             default=default_targets,
             key=f"global_filter_applies_to_{index}",
+            reset_invalid_to_default=True,
             help="`All Tables` is the base filter layer. Banner-level filters stack on top of it.",
         )
         applies_to = _normalize_filter_targets(applies_to, apply_targets)
@@ -2785,22 +3533,24 @@ def render_step_9() -> None:
             key=f"weight_source_{index}",
             help="Optional source variable or metric you want to weight on.",
         )
-        variables = st.multiselect(
+        variables = safe_multiselect(
             "Weighting Variables",
             options=weight_variable_options,
             default=[value for value in row.get("variables", []) if value in weight_variable_options],
             format_func=lambda value: variable_labels.get(value, value),
             key=f"weight_variables_{index}",
+            reset_invalid_to_default=True,
             help="Select one or more variables to use in the weighting scheme.",
         )
         default_targets = [target_value for target_value in row.get("applies_to", []) if target_value in apply_targets]
         if "All Tables" in default_targets and len(default_targets) > 1:
             default_targets = ["All Tables"]
-        applies_to = st.multiselect(
+        applies_to = safe_multiselect(
             "Applies To",
             options=apply_targets,
             default=default_targets,
             key=f"weight_applies_to_{index}",
+            reset_invalid_to_default=True,
             help="`All Tables` is the base weight layer. Banner-level or comparison-level weights stack on top of it.",
         )
         if "All Tables" in applies_to and len(applies_to) > 1:

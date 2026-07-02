@@ -16,6 +16,7 @@ This guide explains how the app interprets the dataset, how rows/columns evolve 
 Source:
 
 - uploaded Qualtrics-style `.xlsx`
+- Snowflake survey response query result
 
 Typical traits:
 
@@ -26,6 +27,24 @@ Typical traits:
 In code:
 
 - `raw_df`
+
+### Snowflake intake
+
+Snowflake can arrive in long format, where each row is one respondent/question answer, or already-wide format, where each row is one respondent.
+
+Long-format intake is normalized by:
+
+- detecting survey/response/question key columns
+- grouping rows into one record per respondent
+- preferring Qualtrics RID-style identity when available
+- preserving a hidden internal respondent ID for unique respondent counts
+- pivoting embedded data and repeated respondent attributes into analysis columns
+
+Important:
+
+- the hidden respondent ID column is for counting only
+- analyst-facing variable selectors should not expose internal respondent identity
+- Snowflake display labels can differ from source variable keys; source keys remain the stable config identifiers
 
 ### 2. Survey dataframe
 
@@ -74,6 +93,7 @@ That means:
 
 - each row in `survey_df` or `cleaned_df` is one respondent
 - banner percentages, topline percentages, and custom variables are all computed from respondent rows
+- when an internal respondent ID is present, N/base counts use unique respondent IDs rather than raw dataframe row count
 
 ### Metadata rows
 
@@ -342,6 +362,7 @@ Topline config stores:
 - `response_selections`
 - `note_base_sections`
 - `include_lift`
+- `comparison_scope`
 - `include_significance_notes`
 
 Meaning:
@@ -351,6 +372,7 @@ Meaning:
 - each variable can also choose whether subgroup notes are based on:
   - `Total Sample`
   - `Total Answering`
+- lift/significance behavior can be configured separately from banner statistical settings
 
 ## Total Sample vs Total Answering
 
@@ -414,6 +436,17 @@ Important:
 
 - templates do not carry respondent rows
 - templates are meant to restore setup/config, not the uploaded dataset itself
+- a loaded settings file waits for matching uploaded or Snowflake data before restoring the working project state
+
+## Local Output Artifacts
+
+Generated Excel workbooks are local artifacts, not durable source files.
+
+Interpretation:
+
+- use `exports/` for user-generated workbook output during local runs
+- use ignored subfolders such as `exports/local_testing/` for scratch output
+- avoid committing generated workbook files unless they are intentionally added as fixtures
 
 ## Practical Interpretation Tips
 

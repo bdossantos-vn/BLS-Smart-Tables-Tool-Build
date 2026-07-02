@@ -10,6 +10,7 @@ Maintenance note:
 This repository is a Streamlit-based table-building tool for survey analysis. Its job is to:
 
 - ingest a Qualtrics-style Excel export
+- ingest survey response data from Snowflake
 - clean the respondent data into an analysis-ready dataframe
 - let analysts define metadata, scales, nets, custom variables, banners, filters, statistical settings, and topline behavior
 - generate a branded Excel workbook with topline, banner tables, and AdHoc crosstabs
@@ -40,6 +41,9 @@ This repository is a Streamlit-based table-building tool for survey analysis. It
   - main-surface overrides
 - `app/components/branding.py`
   - brand header and sidebar brand block
+- `app/components/multiselect.py`
+  - shared safeguards for blank/stale Streamlit multiselect state
+  - selected-value summaries that use display labels
 
 ### State + template persistence
 
@@ -50,11 +54,16 @@ This repository is a Streamlit-based table-building tool for survey analysis. It
   - loads configuration-only templates
 - `app/models/project_config.py`
   - canonical template/config skeleton
+  - schema migration for current project settings snapshots
+- `app/services/snowflake_service.py`
+  - Snowpark session setup from Streamlit secrets, environment variables, GCP secrets, or active Snowflake context
+  - survey-list and survey-response query helpers
 
 ### Core analysis logic
 
 - `src/cleaning.py`
   - Excel ingestion and cleaning
+  - Snowflake long-format detection and respondent-level pivoting
 - `src/metadata.py`
   - question metadata and answer choice handling
 - `src/mapping.py`
@@ -75,6 +84,8 @@ This repository is a Streamlit-based table-building tool for survey analysis. It
   - notes / lift / significance helpers
 - `src/exporter.py`
   - branded Excel workbook output
+- `src/respondents.py`
+  - internal respondent ID helper and unique respondent counting
 
 ### Page layer
 
@@ -116,18 +127,17 @@ Standalone page implementations:
 
 ### Track 1: Stabilize what exists
 
-1. Lock down Page 2 and Page 3 grid behavior
-   - keep Page 2 visually aligned with Page 3
-   - prevent white-on-white regressions in `st.data_editor`
-   - confirm hover/button styling inside expanders
+1. Keep Snowflake intake production-ready
+   - maintain credential-path coverage for local, Streamlit Cloud/GCP, and active Snowflake contexts
+   - keep long-format and already-wide response handling covered by tests
+   - avoid exposing internal respondent identity columns in analyst-facing selectors
 
-2. Harden template import/export
-   - verify end-to-end import from empty session
-   - verify export after full project setup
-   - confirm all current config sections survive round-trip
-   - define expected behavior for fields that should not restore data rows
+2. Keep project settings import/export stable
+   - preserve configuration-only behavior
+   - continue excluding respondent-level data from snapshots and cache signatures
+   - confirm new config sections migrate from older saved settings
 
-3. Regression-test workbook generation
+3. Continue regression-testing workbook generation
    - topline selected responses
    - note base alignment
    - banner export style: one sheet vs combined sheet
@@ -135,7 +145,7 @@ Standalone page implementations:
    - footnotes, lifts, notation placement
    - comparison labels across all sheets
 
-4. Verify hidden code paths
+4. Verify hidden code paths when productized
    - weighting configuration logic
    - older legacy step numbering / redirects
    - compatibility between legacy state and refactored page registry
@@ -184,6 +194,7 @@ Standalone page implementations:
 
 1. Add automated tests around:
    - cleaning
+   - Snowflake response pivoting
    - metadata and scale ordering
    - nets
    - custom variable evaluation
@@ -204,6 +215,7 @@ The roadmap should continue to account for all of these, not just the visible on
 
 - project template upload
 - project template download
+- Snowflake survey intake
 - intake comparison variable logic
 - comparison group relabeling and ordering
 - included/excluded column controls

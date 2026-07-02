@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from io import BytesIO
+from unittest.mock import patch
 import unittest
 
 import pandas as pd
 from openpyxl import load_workbook
 
+from app.pages.page_12_export import (
+    _build_export_filename,
+    _download_signature_for_generated_workbook,
+    _is_local_codex_testing,
+    _local_testing_download_path,
+    _is_generated_workbook_stale,
+    _project_settings_download_key,
+)
 from src.exporter import export_workbook_to_excel_bytes
 from src.tables import (
     PERFORMANCE_SIG_TEST_NOTE,
@@ -98,31 +107,36 @@ def _comparison_scheme() -> dict[str, object]:
     }
 
 
-def _stat_config() -> dict[str, object]:
+def _stat_config(include_lift: bool = False) -> dict[str, object]:
     return {
         "enabled": True,
         "comparison_scope": "lowest_banner_level",
         "confidence_intervals": [95],
         "include_percentage": True,
         "include_n_count": False,
-        "include_lift": False,
+        "include_lift": include_lift,
         "notation_location": "below_metric",
     }
 
 
-def _topline_config() -> dict[str, object]:
+def _topline_config(include_lift: bool = False) -> dict[str, object]:
     return {
         "configured": True,
         "variables": ["Post_Affinity"],
         "response_selections": {"Post_Affinity": ["T2B"]},
         "note_base_sections": {"Post_Affinity": "Total Answering"},
-        "include_lift": False,
+        "include_lift": include_lift,
         "comparison_scope": "lowest_banner_level",
         "include_significance_notes": True,
     }
 
 
-def _generate_package(banner_config: dict[str, object], question_metadata: list[dict[str, object]] | None = None) -> dict[str, object]:
+def _generate_package(
+    banner_config: dict[str, object],
+    question_metadata: list[dict[str, object]] | None = None,
+    banner_stat_config: dict[str, object] | None = None,
+    topline_config: dict[str, object] | None = None,
+) -> dict[str, object]:
     return generate_workbook_package(
         cleaned_df=_base_dataframe(),
         question_metadata=question_metadata or _question_metadata(),
@@ -131,7 +145,7 @@ def _generate_package(banner_config: dict[str, object], question_metadata: list[
         adhoc_crosstabs_config={"tables": []},
         net_definitions={"Post_Affinity": {"T2B": True, "T3B": False, "B2B": False, "B3B": False}},
         scale_mappings=_scale_mappings(),
-        banner_stat_config=_stat_config(),
+        banner_stat_config=banner_stat_config or _stat_config(),
         adhoc_stat_config=_stat_config(),
         comparison_col="content_variant",
         comparison_group_order={},
@@ -139,11 +153,62 @@ def _generate_package(banner_config: dict[str, object], question_metadata: list[
         comparison_scheme=_comparison_scheme(),
         global_filters={"rows": []},
         weighting_config={"weights": []},
-        topline_config=_topline_config(),
+        topline_config=topline_config or _topline_config(),
     )
 
 
 class ExportBehaviorTest(unittest.TestCase):
+    def test_export_filename_strips_browser_unsafe_characters(self) -> None:
+        filename = _build_export_filename("Brand / Test: Wave 1.xlsx")
+
+        self.assertNotIn("/", filename)
+        self.assertNotIn(":", filename)
+        self.assertTrue(filename.endswith(".xlsx"))
+
+    def test_stale_workbook_remains_downloadable_against_generated_signature(self) -> None:
+        self.assertTrue(_is_generated_workbook_stale("generated", "current"))
+        self.assertEqual(
+            _download_signature_for_generated_workbook("generated", "current"),
+            "generated",
+        )
+
+    def test_local_testing_downloads_are_codex_gated(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(_is_local_codex_testing())
+        with patch.dict("os.environ", {"CODEX_THREAD_ID": "thread"}, clear=True):
+            self.assertTrue(_is_local_codex_testing())
+        with patch.dict("os.environ", {"CODEX_THREAD_ID": "thread", "BLS_LOCAL_TEST_DOWNLOADS": "0"}, clear=True):
+            self.assertFalse(_is_local_codex_testing())
+        with patch.dict("os.environ", {"BLS_LOCAL_TEST_DOWNLOADS": "1"}, clear=True):
+            self.assertTrue(_is_local_codex_testing())
+
+    def test_local_testing_download_path_stays_in_testing_folder(self) -> None:
+        path = _local_testing_download_path("../Brand / Test: Wave 1.xlsx")
+
+        self.assertIn("exports/local_testing", str(path))
+        self.assertEqual(path.name, "Brand _ Test_ Wave 1.xlsx")
+
+    def test_project_settings_download_key_ignores_saved_at(self) -> None:
+        first_snapshot = (
+            '{"kind":"bls_smart_tables_project_settings","saved_at":"2026-06-12T10:00:00Z",'
+            '"project_config":{"variables":{"included_columns":["QID1"]}}}'
+        )
+        second_snapshot = (
+            '{"kind":"bls_smart_tables_project_settings","saved_at":"2026-06-12T10:00:01Z",'
+            '"project_config":{"variables":{"included_columns":["QID1"]}}}'
+        )
+        changed_snapshot = (
+            '{"kind":"bls_smart_tables_project_settings","saved_at":"2026-06-12T10:00:01Z",'
+            '"project_config":{"variables":{"included_columns":["QID2"]}}}'
+        )
+
+        first_key = _project_settings_download_key("local_testing_project_settings_download", first_snapshot)
+        second_key = _project_settings_download_key("local_testing_project_settings_download", second_snapshot)
+        changed_key = _project_settings_download_key("local_testing_project_settings_download", changed_snapshot)
+
+        self.assertEqual(first_key, second_key)
+        self.assertNotEqual(first_key, changed_key)
+
     def test_exact_single_level_banners_and_topline_net_filter(self) -> None:
         package = _generate_package(
             {
@@ -182,6 +247,29 @@ class ExportBehaviorTest(unittest.TestCase):
         ]
         self.assertIn("Creator 1", topline_header_values)
         self.assertIn("Creator 10", topline_header_values)
+
+    def test_banner_tables_follow_question_metadata_order(self) -> None:
+        metadata = [
+            _question_metadata()[2],
+            _question_metadata()[1],
+            _question_metadata()[0],
+        ]
+
+        package = _generate_package(
+            {
+                "banners": [
+                    {"name": "Creators", "level_1": "__comparison_scheme__", "level_2": "", "level_3": ""},
+                ],
+                "include_total": True,
+                "export_style": "one_per_sheet",
+            },
+            question_metadata=metadata,
+        )
+
+        self.assertEqual(
+            [table.variable for table in package["sheets"][0].tables],
+            ["Post_Affinity", "tier", "content_variant"],
+        )
 
     def test_explicit_nested_banner_scopes_all_cell_pairs(self) -> None:
         package = _generate_package(
@@ -271,6 +359,49 @@ class ExportBehaviorTest(unittest.TestCase):
         self.assertEqual(left_sig_letters, list("ABCDEFGHIJ"))
         self.assertEqual(right_sig_letters, list("ABCDEFGHIJ"))
         self.assertNotIn("@", left_sig_letters + right_sig_letters)
+
+    def test_topline_lift_columns_do_not_require_banner_lift(self) -> None:
+        package = _generate_package(
+            {
+                "banners": [
+                    {"name": "Creators", "level_1": "__comparison_scheme__", "level_2": "", "level_3": ""},
+                ],
+                "include_total": True,
+                "export_style": "one_per_sheet",
+            },
+            banner_stat_config=_stat_config(include_lift=False),
+            topline_config=_topline_config(include_lift=True),
+        )
+
+        self.assertFalse(package["include_lift"])
+        workbook = load_workbook(BytesIO(export_workbook_to_excel_bytes(package)), read_only=True)
+        topline_header_values = [
+            workbook["Topline"].cell(row=11, column=column).value
+            for column in range(1, workbook["Topline"].max_column + 1)
+        ]
+
+        self.assertIn("Creator 2 vs Creator 1 Lift", topline_header_values)
+
+    def test_banner_lift_setting_adds_lift_columns(self) -> None:
+        package = _generate_package(
+            {
+                "banners": [
+                    {"name": "Creators", "level_1": "__comparison_scheme__", "level_2": "", "level_3": ""},
+                ],
+                "include_total": True,
+                "export_style": "one_per_sheet",
+            },
+            banner_stat_config=_stat_config(include_lift=True),
+        )
+
+        self.assertTrue(package["include_lift"])
+        workbook = load_workbook(BytesIO(export_workbook_to_excel_bytes(package)), read_only=True)
+        creator_header_values = [
+            workbook["Creators"].cell(row=6, column=column).value
+            for column in range(1, workbook["Creators"].max_column + 1)
+        ]
+
+        self.assertTrue(any("Lift" in str(value) for value in creator_header_values if value))
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from app.models.project_config import (
 from src.config import build_default_adhoc_crosstab_config, build_default_stat_config
 from src.comparisons import build_default_comparison_scheme, sanitize_comparison_scheme
 from src.metadata import parse_answer_choices, serialize_answer_choices
+from src.respondents import is_internal_respondent_column
 from src.state import init_session_state
 
 
@@ -83,9 +84,12 @@ def sync_project_config_from_session() -> None:
         "setup_mode": st.session_state.get("project_setup_mode", "Start from scratch"),
     }
     project_config["data"] = {
+        "data_source_type": st.session_state.get("data_source_type", ""),
         "uploaded_filename": st.session_state.get("uploaded_filename"),
         "sheet_name": st.session_state.get("sheet_name"),
         "available_sheets": list(st.session_state.get("available_sheets", [])),
+        "snowflake_survey_labels": list(st.session_state.get("snowflake_survey_labels", [])),
+        "snowflake_survey_keys": list(st.session_state.get("snowflake_survey_keys", [])),
         "comparison_col": st.session_state.get("comparison_col"),
         "comparison_configured": bool(st.session_state.get("comparison_configured")),
         "comparison_rows_removed": int(st.session_state.get("comparison_rows_removed", 0)),
@@ -99,6 +103,11 @@ def sync_project_config_from_session() -> None:
     )
     project_config["variables"] = {
         "available_columns": available_columns,
+        "question_order": [
+            column
+            for column in st.session_state.get("question_order", [])
+            if column in available_columns
+        ],
         "included_columns": included_columns,
         "excluded_columns": [
             column
@@ -156,10 +165,20 @@ def load_project_template(template_payload: dict[str, Any]) -> None:
         Updates Streamlit session state in-place.
     """
     project_config, snapshot_info = unpack_project_payload(template_payload)
+    data_config = project_config.get("data", {})
 
     st.session_state.project_config = project_config
     st.session_state.pending_project_config = deepcopy(project_config)
     st.session_state.pending_project_snapshot_info = deepcopy(snapshot_info)
+    st.session_state.data_source_type = data_config.get("data_source_type", "")
+    st.session_state.snowflake_survey_labels = list(data_config.get("snowflake_survey_labels", []))
+    st.session_state.snowflake_survey_keys = list(data_config.get("snowflake_survey_keys", []))
+    if st.session_state.data_source_type == "snowflake":
+        st.session_state.data_source_radio = "Load from Snowflake"
+        if st.session_state.snowflake_survey_labels:
+            st.session_state.snowflake_survey_select = list(st.session_state.snowflake_survey_labels)
+    else:
+        st.session_state.data_source_radio = "Upload survey export"
     st.session_state.banner_config = deepcopy(project_config.get("banners", {}))
     st.session_state.adhoc_crosstabs_config = deepcopy(
         project_config.get("ad_hoc_crosstabs", EXTRA_DEFAULTS["adhoc_crosstabs_config"])
@@ -205,8 +224,16 @@ def _get_available_columns() -> list[str]:
     """Return the current uploaded-data columns without touching row data."""
     survey_df = st.session_state.get("survey_df")
     if hasattr(survey_df, "columns"):
-        return list(survey_df.columns)
-    return list(st.session_state.get("comparison_options", []))
+        return [
+            column
+            for column in survey_df.columns
+            if not is_internal_respondent_column(column)
+        ]
+    return [
+        column
+        for column in st.session_state.get("comparison_options", [])
+        if not is_internal_respondent_column(column)
+    ]
 
 
 def _string_list(value: Any) -> list[str]:
@@ -245,6 +272,29 @@ def _reconcile_included_columns(
     return list(dict.fromkeys(included_columns)), missing_columns
 
 
+def _reconcile_question_order(
+    project_config: dict[str, Any],
+    available_columns: list[str],
+    included_columns: list[str],
+) -> list[str]:
+    """Restore the saved Page 2 question order against the current schema."""
+    variables_config = project_config.get("variables", {})
+    saved_order = _string_list(variables_config.get("question_order"))
+    available_lookup = set(available_columns)
+    question_order = [
+        column
+        for column in saved_order
+        if column in available_lookup
+    ]
+    for column in included_columns:
+        if column in available_lookup and column not in question_order:
+            question_order.append(column)
+    for column in available_columns:
+        if column not in question_order:
+            question_order.append(column)
+    return question_order
+
+
 def prepare_project_config_for_loaded_data(
     project_config: dict[str, Any],
     default_comparison_col: str | None,
@@ -253,6 +303,7 @@ def prepare_project_config_for_loaded_data(
     migrated_config = migrate_project_config(project_config)
     available_columns = _get_available_columns()
     included_columns, missing_included = _reconcile_included_columns(migrated_config, available_columns)
+    question_order = _reconcile_question_order(migrated_config, available_columns, included_columns)
 
     saved_comparison_col = migrated_config.get("data", {}).get("comparison_col")
     comparison_col = saved_comparison_col if saved_comparison_col in available_columns else default_comparison_col
@@ -260,6 +311,7 @@ def prepare_project_config_for_loaded_data(
         included_columns = [comparison_col, *included_columns]
 
     st.session_state.included_columns = included_columns
+    st.session_state.question_order = question_order
     st.session_state.comparison_col = comparison_col
     st.session_state.cell_col = comparison_col
 
@@ -320,6 +372,32 @@ def _restore_question_metadata(
         if variable not in current_variables
     ]
     return restored_rows, missing_metadata
+
+
+def _order_question_metadata_by_columns(
+    metadata_rows: list[dict[str, Any]],
+    ordered_columns: list[str],
+) -> list[dict[str, Any]]:
+    """Return metadata rows in the saved Page 2 question order."""
+    order_lookup = {
+        column: index
+        for index, column in enumerate(ordered_columns)
+        if isinstance(column, str) and column
+    }
+    if not order_lookup:
+        return list(metadata_rows)
+
+    def row_order(item: tuple[int, dict[str, Any]]) -> tuple[int, int]:
+        fallback_index, row = item
+        variable = row.get("variable")
+        if variable in order_lookup:
+            return (0, order_lookup[variable])
+        return (1, fallback_index)
+
+    return [
+        row
+        for _, row in sorted(enumerate(metadata_rows), key=row_order)
+    ]
 
 
 def _filter_mapping_by_current_variables(
@@ -391,6 +469,8 @@ def apply_project_config_after_loaded_data(project_config: dict[str, Any]) -> di
     migrated_config = migrate_project_config(project_config)
     current_metadata = list(st.session_state.get("question_metadata", []))
     restored_metadata, missing_metadata = _restore_question_metadata(current_metadata, migrated_config)
+    ordered_columns = list(st.session_state.get("included_columns", [])) or list(st.session_state.get("question_order", []))
+    restored_metadata = _order_question_metadata_by_columns(restored_metadata, ordered_columns)
     st.session_state.question_metadata = restored_metadata
     current_variables = {
         row.get("variable")

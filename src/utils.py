@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Iterable
+import re
 
 import pandas as pd
 
@@ -51,6 +52,32 @@ def unique_preserving_order(values: Iterable[str]) -> list[str]:
             ordered.append(value)
             seen.add(value)
     return ordered
+
+
+def _natural_sort_parts(value: object) -> tuple[tuple[int, object], ...]:
+    """Split text into case-insensitive string and integer sort parts."""
+    normalized = normalize_text(value)
+    parts = re.split(r"(\d+)", normalized)
+    sort_parts: list[tuple[int, object]] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            sort_parts.append((0, int(part)))
+        else:
+            sort_parts.append((1, part.lower()))
+    return tuple(sort_parts)
+
+
+def questionnaire_variable_sort_key(value: object) -> tuple[int, tuple[tuple[int, object], ...], str]:
+    """Sort Qualtrics question ids naturally, with embedded/non-QID fields last."""
+    normalized = normalize_text(value)
+    is_questionnaire_id = re.match(r"(?i)^q(?:id)?\d+", normalized) is not None
+    return (
+        0 if is_questionnaire_id else 1,
+        _natural_sort_parts(normalized),
+        normalized.lower(),
+    )
 
 
 def split_text_outside_grouping(value: object, delimiter: str) -> list[str]:

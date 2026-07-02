@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.respondents import respondent_count
 from src.utils import normalize_text
 
 
@@ -300,12 +301,13 @@ def materialize_comparison_variable(
     return memberships.rename(column_name)
 
 
-def detect_group_overlaps(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def detect_group_overlaps(groups: list[dict[str, Any]], df: pd.DataFrame | None = None) -> list[dict[str, Any]]:
     """Return pairwise overlap counts for non-total groups."""
     overlaps: list[dict[str, Any]] = []
     indexed_groups = [(index, group) for index, group in enumerate(groups) if group.get("label") != "Total"]
     for (left_index, left_group), (right_index, right_group) in combinations(indexed_groups, 2):
-        overlap_count = int((left_group["mask"] & right_group["mask"]).sum())
+        overlap_mask = left_group["mask"] & right_group["mask"]
+        overlap_count = respondent_count(df, overlap_mask) if df is not None else int(overlap_mask.sum())
         if overlap_count:
             overlaps.append(
                 {
@@ -366,15 +368,16 @@ def build_control_comparison_pairs(groups: list[dict[str, Any]]) -> list[dict[st
     return pairs
 
 
-def summarize_comparison_groups(groups: list[dict[str, Any]]) -> pd.DataFrame:
+def summarize_comparison_groups(groups: list[dict[str, Any]], df: pd.DataFrame | None = None) -> pd.DataFrame:
     """Build a compact group-base summary dataframe for setup screens."""
     rows = []
     for group in groups:
+        mask = group.get("mask", pd.Series(dtype=bool))
         rows.append(
             {
                 "Group": normalize_text(group.get("label")),
                 "Role": normalize_text(group.get("role")).title() or "Test",
-                "Base N": int(group.get("mask", pd.Series(dtype=bool)).sum()),
+                "Base N": respondent_count(df, mask) if df is not None else int(mask.sum()),
             }
         )
     return pd.DataFrame(rows)
