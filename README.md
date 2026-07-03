@@ -72,6 +72,8 @@ streamlit run app.py
 
 Data Intake can load survey response data from Snowflake when the app can create a Snowpark session. Configure `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, and `SNOWFLAKE_ROLE`, plus either `SNOWFLAKE_PASSWORD` or `SNOWFLAKE_PRIVATE_KEY` / `SNOWFLAKE_PRIVATE_KEY_PATH`.
 
+For Streamlit Community Cloud, configure those values in the app's Secrets panel. For Cloud Run, set `GCP_PROJECT` on the service and create matching secrets in GCP Secret Manager; the app will read them through the Cloud Run service account. Browser-based SSO is only suitable for local interactive use, not hosted/headless deployments.
+
 ## Project Resume Support
 
 The app supports a configuration-only project settings workflow:
@@ -88,6 +90,8 @@ The app is ready for [Streamlit Community Cloud](https://streamlit.io/cloud):
 2. Create a new Streamlit Community Cloud app pointed at the repository.
 3. Set the entrypoint to `app.py`.
 4. Streamlit Cloud will install packages from `requirements.txt` automatically.
+
+The repository also includes a `Dockerfile` for deploying the same app to Cloud Run. The container entrypoint is `streamlit_app.py` so this project matches the legacy Cloud Run deployment shape. When using Cloud Run behind Cloudflare Access, set `CLOUDFLARE_TEAM_DOMAIN` and `CLOUDFLARE_AUD`; if either is missing, the Cloudflare validator is skipped for local development.
 
 ## Notes
 
