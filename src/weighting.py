@@ -71,7 +71,13 @@ def _target_mask_for_row(
 ) -> pd.Series:
     """Resolve the target group/distribution for one weight row."""
     normalized_target = normalize_text(target)
-    if not normalized_target or normalized_target.casefold() == "total" or normalized_target.casefold().startswith("match "):
+    if (
+        not normalized_target
+        or normalized_target.casefold() == "total"
+        or normalized_target.casefold() == "average of source groups"
+        or normalized_target.casefold().startswith("match ")
+        or normalized_target.casefold() == "custom percentages"
+    ):
         return pd.Series(True, index=df.index)
     return group_values.map(lambda value: normalize_text(value).casefold() == normalized_target.casefold()).fillna(False)
 
@@ -121,6 +127,66 @@ def _distribution_for_mask(combo_values: pd.Series, mask: pd.Series) -> dict[str
     return {normalize_text(key): float(count) / total for key, count in counts.items()}
 
 
+def _average_distribution_for_groups(
+    combo_values: pd.Series,
+    group_values: pd.Series,
+    mask: pd.Series,
+) -> dict[str, float]:
+    """Return an equal-weight average distribution across source groups."""
+    aligned_mask = mask.reindex(combo_values.index, fill_value=False).astype(bool)
+    distributions: list[dict[str, float]] = []
+    combo_order = [
+        normalize_text(value)
+        for value in combo_values.loc[aligned_mask].dropna().tolist()
+        if normalize_text(value)
+    ]
+    combo_keys = list(dict.fromkeys(combo_order))
+    for group_value in group_values.loc[aligned_mask].dropna().unique().tolist():
+        group_mask = aligned_mask & (group_values == group_value)
+        distribution = _distribution_for_mask(combo_values, group_mask)
+        if distribution:
+            distributions.append(distribution)
+            combo_keys.extend(key for key in distribution if key not in combo_keys)
+    if not distributions:
+        return {}
+    averaged = {
+        key: sum(distribution.get(key, 0.0) for distribution in distributions) / len(distributions)
+        for key in combo_keys
+    }
+    total = sum(averaged.values())
+    if total <= 0:
+        return {}
+    return {key: value / total for key, value in averaged.items()}
+
+
+def _custom_target_distribution(custom_targets: dict[str, Any] | None) -> tuple[dict[str, float], list[str]]:
+    """Return normalized custom target shares keyed by weighting cell."""
+    issues: list[str] = []
+    if not isinstance(custom_targets, dict) or not custom_targets:
+        return {}, ["Custom target percentages were not provided; using the observed target distribution."]
+
+    raw_targets: dict[str, float] = {}
+    for key, value in custom_targets.items():
+        target_key = normalize_text(key)
+        if not target_key:
+            continue
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            issues.append(f"Custom target `{target_key}` was not numeric and was ignored.")
+            continue
+        if numeric_value < 0:
+            issues.append(f"Custom target `{target_key}` was negative and was ignored.")
+            continue
+        raw_targets[target_key] = numeric_value
+
+    total = sum(raw_targets.values())
+    if total <= 0:
+        issues.append("Custom target percentages totaled 0; using the observed target distribution.")
+        return {}, issues
+    return {key: value / total for key, value in raw_targets.items()}, issues
+
+
 def _compute_poststratification_factor(
     df: pd.DataFrame,
     variables: list[str],
@@ -128,6 +194,7 @@ def _compute_poststratification_factor(
     target: str,
     limit_variable: str | None = None,
     limit_values: list[str] | None = None,
+    custom_targets: dict[str, Any] | None = None,
 ) -> tuple[pd.Series, list[str]]:
     """Calculate one weight row as target cell share divided by source group share."""
     issues: list[str] = []
@@ -149,11 +216,22 @@ def _compute_poststratification_factor(
     if not bool(limit_mask.any()):
         return pd.Series(1.0, index=df.index), issues
 
-    target_mask = _target_mask_for_row(df, group_values, target) & limit_mask
-    if not bool(target_mask.any()):
-        issues.append(f"Weight target `{target}` did not match any respondents; using the limited subset as the target.")
-        target_mask = limit_mask.copy()
-    target_distribution = _distribution_for_mask(combo_values, target_mask)
+    normalized_target = normalize_text(target).casefold()
+    if normalized_target == "custom percentages":
+        target_distribution, custom_issues = _custom_target_distribution(custom_targets)
+        issues.extend(custom_issues)
+        if not target_distribution:
+            target_distribution = _distribution_for_mask(combo_values, limit_mask)
+    elif normalized_target == "average of source groups" or normalized_target.startswith("match "):
+        target_distribution = _average_distribution_for_groups(combo_values, group_values, limit_mask)
+        if not target_distribution:
+            target_distribution = _distribution_for_mask(combo_values, limit_mask)
+    else:
+        target_mask = _target_mask_for_row(df, group_values, target) & limit_mask
+        if not bool(target_mask.any()):
+            issues.append(f"Weight target `{target}` did not match any respondents; using the limited subset as the target.")
+            target_mask = limit_mask.copy()
+        target_distribution = _distribution_for_mask(combo_values, target_mask)
     if not target_distribution:
         return pd.Series(1.0, index=df.index), issues
 
@@ -217,6 +295,7 @@ def calculate_weight_factors(
             normalize_text(row.get("target")) or "Total",
             normalize_text(row.get("limit_variable")),
             [normalize_text(value) for value in row.get("limit_values", []) if normalize_text(value)],
+            row.get("custom_targets") if isinstance(row.get("custom_targets"), dict) else {},
         )
         weight_columns[column_name] = factors
         row_names[column_name] = name

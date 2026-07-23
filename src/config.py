@@ -194,6 +194,7 @@ def build_default_weight_row() -> dict[str, Any]:
         "variables": [],
         "limit_variable": "",
         "limit_values": [],
+        "custom_targets": {},
         "applies_to": [],
     }
 
@@ -251,6 +252,7 @@ def validate_analysis_config(
             variables = row.get("variables", [])
             limit_variable = normalize_text(row.get("limit_variable"))
             limit_values = row.get("limit_values", [])
+            custom_targets = row.get("custom_targets", {})
             applies_to = row.get("applies_to", [])
             if not name:
                 issues.append(f"Weight {index} needs a name.")
@@ -266,6 +268,18 @@ def validate_analysis_config(
                 issues.append(f"Weight {index} needs at least one limit value, or clear the limit variable.")
             if limit_values and not limit_variable:
                 issues.append(f"Weight {index} has limit values but no limit variable.")
+            if target.casefold() == "custom percentages":
+                if not isinstance(custom_targets, dict) or not custom_targets:
+                    issues.append(f"Weight {index} needs custom target percentages.")
+                else:
+                    custom_total = 0.0
+                    for value in custom_targets.values():
+                        try:
+                            custom_total += float(value or 0)
+                        except (TypeError, ValueError):
+                            continue
+                    if custom_total <= 0:
+                        issues.append(f"Weight {index} custom target percentages must total more than 0.")
             if not applies_to:
                 issues.append(f"Weight {index} needs at least one apply target.")
     if not isinstance(banner_config.get("banner_variables", []), list):

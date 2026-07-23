@@ -3516,6 +3516,10 @@ def render_step_9() -> None:
     weight_targets = ["Total"]
     if comparison_label:
         weight_targets.append(f"Match {comparison_label} groups")
+    else:
+        weight_targets.append("Average of source groups")
+    weight_targets.append("Custom percentages")
+    if comparison_label:
         for group_name in st.session_state.comparison_group_order.keys():
             if group_name != "Total":
                 weight_targets.append(group_name)
@@ -3550,16 +3554,37 @@ def render_step_9() -> None:
             options=weight_targets,
             index=(weight_targets.index(row.get("target", "Total")) if row.get("target", "Total") in weight_targets else 0),
             key=f"weight_target_{index}",
-            help="Choose what this weight should match against.",
+            format_func=lambda value: (
+                "Combined eligible respondents"
+                if value == "Total"
+                else "Average of balance groups"
+                if normalize_text(value).casefold() == "average of source groups"
+                or normalize_text(value).casefold().startswith("match ")
+                else "Custom percentages"
+                if value == "Custom percentages"
+                else f"One balance group: {value}"
+            ),
+            help=(
+                "`Combined eligible respondents` uses the gender mix across all rows that pass the limit. "
+                "`Average of balance groups` gives each balance group, like Control and Test, equal influence. "
+                "`Custom percentages` uses manually entered targets."
+            ),
         )
-        source_options = ["", *[value for value in variable_options if value != st.session_state.get("comparison_col")]]
+        source_options = ["", *variable_options]
+        comparison_default_label = variable_labels.get(comparison_label, comparison_label) if comparison_label else ""
         source = col2.selectbox(
-            "Source Variable",
+            "Balance Groups",
             options=source_options,
             index=(source_options.index(row.get("source", "")) if row.get("source", "") in source_options else 0),
-            format_func=lambda value: variable_labels.get(value, value) if value else "Optional source variable",
+            format_func=lambda value: (
+                variable_labels.get(value, value)
+                if value
+                else f"{comparison_default_label} (comparison default)"
+                if comparison_default_label
+                else "Single total group"
+            ),
             key=f"weight_source_{index}",
-            help="Optional source variable or metric you want to weight on.",
+            help="The groups to make comparable, usually Cell for Control/Test balancing.",
         )
         variables = safe_multiselect(
             "Weighting Variables",
@@ -3568,8 +3593,56 @@ def render_step_9() -> None:
             format_func=lambda value: variable_labels.get(value, value),
             key=f"weight_variables_{index}",
             reset_invalid_to_default=True,
-            help="Select one or more variables to use in the weighting scheme.",
+            help="The respondent attribute(s) to balance within each balance group, like Gender.",
         )
+        effective_source = normalize_text(source) or normalize_text(st.session_state.get("comparison_col"))
+        if effective_source and effective_source in [normalize_text(value) for value in variables]:
+            st.warning(
+                "Balance Groups and Weighting Variables are set to the same field. "
+                "For TL Control/Test gender weighting, Balance Groups should be Cell and Weighting Variables should be Gender."
+            )
+        custom_targets: dict[str, float] = {}
+        if target == "Custom percentages":
+            if len(variables) != 1:
+                st.warning("Custom percentage targets currently need exactly one Weighting Variable.")
+            else:
+                custom_variable = variables[0]
+                custom_choices = _build_filter_value_options(
+                    custom_variable,
+                    limit_value_lookup,
+                    st.session_state.custom_variables,
+                    comparison_col=st.session_state.get("comparison_col"),
+                    comparison_groups=st.session_state.get("comparison_group_order", {}),
+                )
+                if not custom_choices:
+                    custom_choices = list(row.get("custom_targets", {}).keys())
+                custom_value_display_labels = _build_filter_value_display_labels(
+                    custom_variable,
+                    custom_choices,
+                    st.session_state.get("comparison_col"),
+                    st.session_state.get("comparison_group_labels", {}),
+                )
+                saved_custom_targets = row.get("custom_targets", {}) if isinstance(row.get("custom_targets"), dict) else {}
+                default_percent = round(100.0 / len(custom_choices), 2) if custom_choices else 0.0
+                st.caption(f"Custom target percentages for {variable_labels.get(custom_variable, custom_variable)}")
+                custom_columns = st.columns(min(max(len(custom_choices), 1), 4))
+                for choice_index, choice in enumerate(custom_choices):
+                    try:
+                        saved_value = float(saved_custom_targets.get(choice, default_percent))
+                    except (TypeError, ValueError):
+                        saved_value = default_percent
+                    with custom_columns[choice_index % len(custom_columns)]:
+                        custom_targets[choice] = st.number_input(
+                            custom_value_display_labels.get(choice, choice),
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(saved_value),
+                            step=0.1,
+                            key=f"weight_custom_target_{index}_{_widget_key_token(custom_variable)}_{_widget_key_token(choice)}",
+                        )
+                custom_total = sum(custom_targets.values())
+                if custom_choices and abs(custom_total - 100.0) > 0.05:
+                    st.warning(f"Custom targets total {custom_total:.1f}%. They will be normalized to 100% during weighting.")
         limit_col1, limit_col2 = st.columns([1, 2])
         limit_options = ["", *limit_variable_options]
         saved_limit_variable = normalize_text(row.get("limit_variable"))
@@ -3621,6 +3694,25 @@ def render_step_9() -> None:
         )
         if "All Tables" in applies_to and len(applies_to) > 1:
             applies_to = ["All Tables"]
+        source_summary = variable_labels.get(effective_source, effective_source) if effective_source else "the full sample"
+        weighted_variables_summary = ", ".join(variable_labels.get(value, value) for value in variables) or "no weighting variable"
+        if normalize_text(target).casefold() == "custom percentages":
+            target_summary = "your custom percentages"
+        elif normalize_text(target).casefold() == "average of source groups" or normalize_text(target).casefold().startswith("match "):
+            target_summary = f"the equal average distribution across {source_summary}"
+        elif normalize_text(target).casefold() == "total":
+            target_summary = "the combined eligible respondent distribution"
+        else:
+            target_summary = f"the distribution from {target}"
+        limit_summary = (
+            f"where {variable_labels.get(limit_variable, limit_variable)} is {', '.join(limit_values)}"
+            if limit_variable and limit_values
+            else "for all respondents"
+        )
+        st.caption(
+            f"This weight adjusts {weighted_variables_summary} within each {source_summary} group "
+            f"to match {target_summary}, {limit_summary}."
+        )
         rendered_weights.append(
             {
                 "name": name.strip(),
@@ -3629,6 +3721,7 @@ def render_step_9() -> None:
                 "variables": variables,
                 "limit_variable": limit_variable,
                 "limit_values": limit_values,
+                "custom_targets": custom_targets,
                 "applies_to": applies_to,
             }
         )

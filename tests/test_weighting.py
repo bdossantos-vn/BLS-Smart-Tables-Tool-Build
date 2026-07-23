@@ -20,6 +20,16 @@ def _weighted_dataframe() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _unequal_weighted_dataframe() -> pd.DataFrame:
+    """Return imbalanced comparison groups where equal-group averaging matters."""
+    rows = []
+    rows.extend({"cell": "Control", "gender": "M", "Outcome": "Yes"} for _ in range(90))
+    rows.extend({"cell": "Control", "gender": "F", "Outcome": "No"} for _ in range(10))
+    rows.append({"cell": "Test", "gender": "M", "Outcome": "Yes"})
+    rows.extend({"cell": "Test", "gender": "F", "Outcome": "No"} for _ in range(9))
+    return pd.DataFrame(rows)
+
+
 def _micro_community_dataframe() -> pd.DataFrame:
     """Return a micro-community dataset where only TL should receive weights."""
     rows = []
@@ -115,10 +125,54 @@ def _tl_limited_weighting_config() -> dict[str, object]:
     }
 
 
+def _tl_custom_weighting_config() -> dict[str, object]:
+    """Return a config that balances TL cell groups to custom gender percentages."""
+    return {
+        "weights": [
+            {
+                "name": "TL Custom Gender balance",
+                "target": "Custom percentages",
+                "source": "",
+                "variables": ["gender"],
+                "limit_variable": "micro_community",
+                "limit_values": ["TL"],
+                "custom_targets": {"M": 25.0, "F": 75.0},
+                "applies_to": ["All Tables"],
+            }
+        ]
+    }
+
+
 def _package(weighting_config: dict[str, object]) -> dict[str, object]:
     """Generate a workbook package for the weighting scenario."""
     return generate_workbook_package(
         cleaned_df=_weighted_dataframe(),
+        question_metadata=_question_metadata(),
+        custom_variables=[],
+        banner_config={
+            "banners": [{"name": "Cells", "level_1": "cell", "level_2": "", "level_3": ""}],
+            "include_total": True,
+            "export_style": "one_per_sheet",
+        },
+        adhoc_crosstabs_config={"tables": []},
+        net_definitions={},
+        scale_mappings={},
+        banner_stat_config=_stat_config(),
+        adhoc_stat_config=_stat_config(),
+        comparison_col="cell",
+        comparison_group_order={},
+        comparison_group_labels={},
+        comparison_scheme={},
+        global_filters={"rows": []},
+        weighting_config=weighting_config,
+        topline_config={"configured": False},
+    )
+
+
+def _unequal_package(weighting_config: dict[str, object]) -> dict[str, object]:
+    """Generate a workbook package where source groups have different sizes."""
+    return generate_workbook_package(
+        cleaned_df=_unequal_weighted_dataframe(),
         question_metadata=_question_metadata(),
         custom_variables=[],
         banner_config={
@@ -200,6 +254,12 @@ class WeightingTest(unittest.TestCase):
         self.assertAlmostEqual(weighted["Test"], 0.5)
         self.assertIn("Weighting applied: Gender balance", weighted_package["sheets"][0].footnotes)
 
+    def test_match_groups_target_uses_equal_average_across_source_groups(self) -> None:
+        weighted = _yes_percentages(_unequal_package(_weighting_config()))
+
+        self.assertAlmostEqual(weighted["Control"], 0.5)
+        self.assertAlmostEqual(weighted["Test"], 0.5)
+
     def test_weight_audit_dataframe_exports_per_respondent_factors(self) -> None:
         audit_df = build_weighted_respondent_export_dataframe(
             _weighted_dataframe(),
@@ -256,6 +316,14 @@ class WeightingTest(unittest.TestCase):
         self.assertAlmostEqual(_table_percentages_for_group(unweighted, "TL | 1"), 0.1)
         self.assertAlmostEqual(_table_percentages_for_group(weighted, "TL | 0"), 0.5)
         self.assertAlmostEqual(_table_percentages_for_group(weighted, "TL | 1"), 0.5)
+        self.assertAlmostEqual(_table_percentages_for_group(weighted, "AO | 0"), 1.0)
+        self.assertAlmostEqual(_table_percentages_for_group(weighted, "AO | 1"), 0.0)
+
+    def test_custom_percentage_target_balances_limited_groups(self) -> None:
+        weighted = _micro_package(_tl_custom_weighting_config())
+
+        self.assertAlmostEqual(_table_percentages_for_group(weighted, "TL | 0"), 0.25)
+        self.assertAlmostEqual(_table_percentages_for_group(weighted, "TL | 1"), 0.25)
         self.assertAlmostEqual(_table_percentages_for_group(weighted, "AO | 0"), 1.0)
         self.assertAlmostEqual(_table_percentages_for_group(weighted, "AO | 1"), 0.0)
 
