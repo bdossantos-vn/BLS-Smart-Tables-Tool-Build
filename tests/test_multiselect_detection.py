@@ -104,6 +104,21 @@ class MultiselectDetectionTest(unittest.TestCase):
         self.assertEqual(metadata["detected_type"], "Open-End Text")
         self.assertEqual(metadata["answer_choices_list"], [])
 
+    def test_high_cardinality_short_values_are_open_end_text(self) -> None:
+        df = pd.DataFrame(
+            {
+                "column_44": [
+                    f"response-{index:03d}"
+                    for index in range(140)
+                ]
+            }
+        )
+
+        metadata = build_question_metadata(df, {"column_44": "column_44"})[0]
+
+        self.assertEqual(metadata["detected_type"], "Open-End Text")
+        self.assertEqual(metadata["answer_choices_list"], [])
+
     def test_comfort_scale_is_detected_and_ordered_positive_to_negative(self) -> None:
         df = pd.DataFrame(
             {

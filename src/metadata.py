@@ -389,10 +389,16 @@ def _is_numeric(series: pd.Series) -> bool:
 
 def _is_open_text(series: pd.Series) -> bool:
     values = series.dropna().astype(str).str.strip()
+    values = values[values != ""]
     if values.empty:
         return False
-    unique_ratio = values.nunique() / max(len(values), 1)
+    unique_count = values.nunique()
+    unique_ratio = unique_count / max(len(values), 1)
     avg_length = values.map(len).mean()
+    if int(unique_count) >= 100:
+        return True
+    if int(unique_count) >= 50 and float(unique_ratio) >= 0.15:
+        return True
     return float(unique_ratio) >= 0.5 and float(avg_length) >= 15
 
 
