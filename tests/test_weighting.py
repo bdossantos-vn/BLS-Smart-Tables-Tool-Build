@@ -143,6 +143,33 @@ def _tl_custom_weighting_config() -> dict[str, object]:
     }
 
 
+def _tl_stacked_weighting_config() -> dict[str, object]:
+    """Return a config with two TL-limited weight rows that should stack."""
+    return {
+        "weights": [
+            {
+                "name": "TL Gender balance",
+                "target": "Match cell groups",
+                "source": "",
+                "variables": ["gender"],
+                "limit_variable": "micro_community",
+                "limit_values": ["TL"],
+                "applies_to": ["All Tables"],
+            },
+            {
+                "name": "TL Outcome balance",
+                "target": "Custom percentages",
+                "source": "",
+                "variables": ["Outcome"],
+                "limit_variable": "micro_community",
+                "limit_values": ["TL"],
+                "custom_targets": {"Yes": 40.0, "No": 60.0},
+                "applies_to": ["All Tables"],
+            },
+        ]
+    }
+
+
 def _package(weighting_config: dict[str, object]) -> dict[str, object]:
     """Generate a workbook package for the weighting scenario."""
     return generate_workbook_package(
@@ -307,6 +334,22 @@ class WeightingTest(unittest.TestCase):
         ].iloc[0]
         self.assertAlmostEqual(tl_control_m["BLS_Weight_TL_Gender_balance"], 0.555556)
         self.assertAlmostEqual(tl_control_f["BLS_Weight_TL_Gender_balance"], 5.0)
+
+    def test_multiple_weight_rows_stack_into_final_weight(self) -> None:
+        audit_df = build_weighted_respondent_export_dataframe(
+            _micro_community_dataframe(),
+            _question_metadata(),
+            custom_variables=[],
+            net_definitions={},
+            scale_mappings={},
+            weighting_config=_tl_stacked_weighting_config(),
+            comparison_col="cell",
+        )
+
+        self.assertIn("BLS_Weight_TL_Gender_balance", audit_df.columns)
+        self.assertIn("BLS_Weight_TL_Outcome_balance", audit_df.columns)
+        expected_final_weight = audit_df["BLS_Weight_TL_Gender_balance"] * audit_df["BLS_Weight_TL_Outcome_balance"]
+        self.assertTrue(((audit_df[FINAL_WEIGHT_COLUMN] - expected_final_weight).abs() < 0.00001).all())
 
     def test_weighting_limit_balances_only_tl_table_groups(self) -> None:
         unweighted = _micro_package({"weights": []})

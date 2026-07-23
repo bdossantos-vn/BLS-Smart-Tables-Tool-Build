@@ -3534,6 +3534,11 @@ def render_step_9() -> None:
             key="weight_row_count",
         )
     )
+    st.caption(
+        "Use multiple Weight rows to stack separate weights; rows that apply to the same table multiply together. "
+        "Use multiple Weighting Variables inside one row for joint weighting, like Gender x Age. "
+        "Custom percentages currently support one Weighting Variable per row."
+    )
     existing_weights = list(st.session_state.weighting_config.get("weights", []))
     while len(existing_weights) < weight_count:
         existing_weights.append(build_default_weight_row())
@@ -3600,6 +3605,10 @@ def render_step_9() -> None:
             st.warning(
                 "Balance Groups and Weighting Variables are set to the same field. "
                 "For TL Control/Test gender weighting, Balance Groups should be Cell and Weighting Variables should be Gender."
+            )
+        if len(variables) > 1:
+            st.caption(
+                "Multiple Weighting Variables in one row are treated as joint cells, so every combination needs enough respondents."
             )
         custom_targets: dict[str, float] = {}
         if target == "Custom percentages":
