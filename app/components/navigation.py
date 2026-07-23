@@ -22,17 +22,18 @@ STEPS: list[dict[str, str]] = [
     {"id": "banner_config", "label": "7. Banner Configuration"},
     {"id": "adhoc_crosstabs", "label": "8. Custom AdHoc Crosstabs"},
     {"id": "filter_config", "label": "9. Filter Configuration"},
-    {"id": "stat_setup", "label": "10. Statistical Setup"},
-    {"id": "topline_config", "label": "11. Topline Configuration"},
-    {"id": "export", "label": "12. Export"},
+    {"id": "weighting", "label": "10. Weighting"},
+    {"id": "stat_setup", "label": "11. Statistical Setup"},
+    {"id": "topline_config", "label": "12. Topline Configuration"},
+    {"id": "export", "label": "13. Export"},
 ]
 
 LEGACY_LABEL_REDIRECTS = {
     "8. Filter Configuration": "9. Filter Configuration",
-    "9. Weighting": "10. Statistical Setup",
-    "10. Statistical Setup": "10. Statistical Setup",
-    "11. Topline Configuration": "11. Topline Configuration",
-    "12. Export": "12. Export",
+    "9. Weighting": "10. Weighting",
+    "10. Statistical Setup": "11. Statistical Setup",
+    "11. Topline Configuration": "12. Topline Configuration",
+    "12. Export": "13. Export",
 }
 
 

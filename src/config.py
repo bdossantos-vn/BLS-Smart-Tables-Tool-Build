@@ -192,6 +192,8 @@ def build_default_weight_row() -> dict[str, Any]:
         "target": "Total",
         "source": "",
         "variables": [],
+        "limit_variable": "",
+        "limit_values": [],
         "applies_to": [],
     }
 
@@ -247,6 +249,8 @@ def validate_analysis_config(
             name = normalize_text(row.get("name"))
             target = normalize_text(row.get("target"))
             variables = row.get("variables", [])
+            limit_variable = normalize_text(row.get("limit_variable"))
+            limit_values = row.get("limit_values", [])
             applies_to = row.get("applies_to", [])
             if not name:
                 issues.append(f"Weight {index} needs a name.")
@@ -258,6 +262,10 @@ def validate_analysis_config(
                 issues.append(f"Weight {index} needs a target definition.")
             if not variables:
                 issues.append(f"Weight {index} needs at least one weighting variable.")
+            if limit_variable and not limit_values:
+                issues.append(f"Weight {index} needs at least one limit value, or clear the limit variable.")
+            if limit_values and not limit_variable:
+                issues.append(f"Weight {index} has limit values but no limit variable.")
             if not applies_to:
                 issues.append(f"Weight {index} needs at least one apply target.")
     if not isinstance(banner_config.get("banner_variables", []), list):

@@ -1,0 +1,293 @@
+From e7489d9f0f09904ab9c24f2ae1c9ea9cbb2aaf2a Mon Sep 17 00:00:00 2001
+From: bdossantos-vn <bdossantos@viralnation.com>
+Date: Fri, 3 Jul 2026 13:54:49 -0400
+Subject: [PATCH] Align app with Cloud Run live test deployment
+
+---
+ .dockerignore          | 24 ++++++++++++++
+ .gitignore             |  2 ++
+ .streamlit/config.toml | 11 +++++++
+ Dockerfile             | 21 +++++++++++++
+ README.md              |  4 +++
+ app.py                 |  2 ++
+ cloudflare_auth.py     | 56 +++++++++++++++++++++++++++++++++
+ streamlit_app.py       | 71 ++++++++++++++++++++++++++++++++++++++++++
+ 8 files changed, 191 insertions(+)
+ create mode 100644 .dockerignore
+ create mode 100644 Dockerfile
+ create mode 100644 cloudflare_auth.py
+ create mode 100644 streamlit_app.py
+
+diff --git a/.dockerignore b/.dockerignore
+new file mode 100644
+index 0000000..6fb01b2
+--- /dev/null
++++ b/.dockerignore
+@@ -0,0 +1,24 @@
++.git
++.gitignore
++.DS_Store
++.claude
++.github
++.vscode
++__pycache__
++*.pyc
++*.pyo
++.env
++.env.*
++.streamlit/secrets.toml
++venv
++.venv
++env
++README.md
++GUIDE.md
++PLAN.md
++STATUS.md
++Dockerfile
++.dockerignore
++docs
++scripts
++exports/local_testing
+diff --git a/.gitignore b/.gitignore
+index d863584..1b3c482 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,6 +8,8 @@ __pycache__/
+ .venv/
+ venv/
+ env/
++.env
++.env.*
+ 
+ # Streamlit
+ .streamlit/secrets.toml
+diff --git a/.streamlit/config.toml b/.streamlit/config.toml
+index 1fd3659..540a35d 100644
+--- a/.streamlit/config.toml
++++ b/.streamlit/config.toml
+@@ -1,3 +1,14 @@
++[server]
++port = 8501
++address = "0.0.0.0"
++headless = true
++enableCORS = false
++enableXsrfProtection = false
++maxUploadSize = 200
++
++[browser]
++gatherUsageStats = false
++
+ [theme]
+ base = "light"
+ primaryColor = "#FF005C"
+diff --git a/Dockerfile b/Dockerfile
+new file mode 100644
+index 0000000..67c10c2
+--- /dev/null
++++ b/Dockerfile
+@@ -0,0 +1,21 @@
++FROM python:3.11-slim
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++    build-essential curl \
++    && rm -rf /var/lib/apt/lists/*
++
++WORKDIR /app
++
++COPY requirements.txt .
++RUN pip install --no-cache-dir -r requirements.txt
++
++COPY . .
++
++EXPOSE 8501
++
++HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
++
++CMD streamlit run streamlit_app.py \
++    --server.port=${PORT:-8501} \
++    --server.address=0.0.0.0 \
++    --server.headless=true
+diff --git a/README.md b/README.md
+index 9777804..79d9664 100644
+--- a/README.md
++++ b/README.md
+@@ -72,6 +72,8 @@ streamlit run app.py
+ 
+ Data Intake can load survey response data from Snowflake when the app can create a Snowpark session. Configure `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, and `SNOWFLAKE_ROLE`, plus either `SNOWFLAKE_PASSWORD` or `SNOWFLAKE_PRIVATE_KEY` / `SNOWFLAKE_PRIVATE_KEY_PATH`.
+ 
++For Streamlit Community Cloud, configure those values in the app's Secrets panel. For Cloud Run, set `GCP_PROJECT` on the service and create matching secrets in GCP Secret Manager; the app will read them through the Cloud Run service account. Browser-based SSO is only suitable for local interactive use, not hosted/headless deployments.
++
+ ## Project Resume Support
+ 
+ The app supports a configuration-only project settings workflow:
+@@ -89,6 +91,8 @@ The app is ready for [Streamlit Community Cloud](https://streamlit.io/cloud):
+ 3. Set the entrypoint to `app.py`.
+ 4. Streamlit Cloud will install packages from `requirements.txt` automatically.
+ 
++The repository also includes a `Dockerfile` for deploying the same app to Cloud Run. The container entrypoint is `streamlit_app.py` so this project matches the legacy Cloud Run deployment shape. When using Cloud Run behind Cloudflare Access, set `CLOUDFLARE_TEAM_DOMAIN` and `CLOUDFLARE_AUD`; if either is missing, the Cloudflare validator is skipped for local development.
++
+ ## Notes
+ 
+ - Existing analyst-tested steps remain preserved while the architecture is being upgraded.
+diff --git a/app.py b/app.py
+index 28e505c..8250782 100644
+--- a/app.py
++++ b/app.py
+@@ -13,6 +13,7 @@ import streamlit as st
+ from app.components.branding import render_page_brand_header
+ from app.components.navigation import render_page_navigation, render_sidebar
+ from app.components.theme import apply_theme
++from cloudflare_auth import validate_cloudflare_jwt
+ from app.pages import (
+     page_10_stat_setup,
+     page_11_topline_config,
+@@ -35,6 +36,7 @@ st.set_page_config(
+     layout="wide",
+     initial_sidebar_state="expanded",
+ )
++validate_cloudflare_jwt()
+ 
+ 
+ PAGE_REGISTRY = {
+diff --git a/cloudflare_auth.py b/cloudflare_auth.py
+new file mode 100644
+index 0000000..07101a7
+--- /dev/null
++++ b/cloudflare_auth.py
+@@ -0,0 +1,56 @@
++"""Optional Cloudflare Access JWT validation for Streamlit."""
++
++from __future__ import annotations
++
++import json
++import os
++import urllib.request
++
++import streamlit as st
++
++_TEAM_DOMAIN = os.environ.get("CLOUDFLARE_TEAM_DOMAIN", "")
++_AUD = os.environ.get("CLOUDFLARE_AUD", "")
++
++
++@st.cache_data(ttl=3600, show_spinner=False)
++def _fetch_public_keys(team_domain: str) -> list:
++    """Fetch and cache Cloudflare Access JWKS for one hour."""
++    url = f"https://{team_domain}/cdn-cgi/access/certs"
++    with urllib.request.urlopen(url, timeout=5) as response:
++        jwks = json.loads(response.read())
++    return jwks.get("keys", [])
++
++
++def validate_cloudflare_jwt() -> None:
++    """Stop the app when Cloudflare Access is configured and the request is invalid."""
++    if not _AUD or not _TEAM_DOMAIN:
++        return
++
++    try:
++        import jwt
++    except ModuleNotFoundError:
++        st.error("403 - Cloudflare Access validation requires PyJWT to be installed.")
++        st.stop()
++
++    token = st.context.headers.get("Cf-Access-Jwt-Assertion", "")
++    if not token:
++        st.error("403 - Access denied: no Cloudflare Access token present.")
++        st.stop()
++
++    keys = _fetch_public_keys(_TEAM_DOMAIN)
++    for key_data in keys:
++        try:
++            public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key_data))
++            jwt.decode(token, public_key, algorithms=["RS256"], audience=_AUD)
++            return
++        except jwt.ExpiredSignatureError:
++            st.error("403 - Your Cloudflare Access session has expired. Please log in again.")
++            st.stop()
++        except jwt.InvalidAudienceError:
++            st.error("403 - Access denied: token audience mismatch.")
++            st.stop()
++        except jwt.InvalidSignatureError:
++            continue
++
++    st.error("403 - Access denied: invalid Cloudflare Access token.")
++    st.stop()
+diff --git a/streamlit_app.py b/streamlit_app.py
+new file mode 100644
+index 0000000..8250782
+--- /dev/null
++++ b/streamlit_app.py
+@@ -0,0 +1,71 @@
++"""Streamlit entrypoint for the refactored BLS Smart Tables Tool.
++
++This file now focuses on three responsibilities only:
++1. Set up the Streamlit application shell.
++2. Initialize central session state.
++3. Route the user to the correct page module.
++"""
++
++from __future__ import annotations
++
++import streamlit as st
++
++from app.components.branding import render_page_brand_header
++from app.components.navigation import render_page_navigation, render_sidebar
++from app.components.theme import apply_theme
++from cloudflare_auth import validate_cloudflare_jwt
++from app.pages import (
++    page_10_stat_setup,
++    page_11_topline_config,
++    page_12_export,
++    page_1_project_setup,
++    page_2_data_intake,
++    page_3_question_audit,
++    page_4_scale_mapping,
++    page_5_net_definitions,
++    page_6_custom_variables,
++    page_7_banner_config,
++    page_8_adhoc_crosstabs,
++    page_9_filter_config,
++)
++from app.state.manager import init_app_state, sync_project_config_from_session
++
++st.set_page_config(
++    page_title="BLS Smart Tables Tool",
++    page_icon="📊",
++    layout="wide",
++    initial_sidebar_state="expanded",
++)
++validate_cloudflare_jwt()
++
++
++PAGE_REGISTRY = {
++    "project_setup": page_1_project_setup.render,
++    "data_intake": page_2_data_intake.render,
++    "question_audit": page_3_question_audit.render,
++    "scale_mapping": page_4_scale_mapping.render,
++    "net_definitions": page_5_net_definitions.render,
++    "custom_variables": page_6_custom_variables.render,
++    "banner_config": page_7_banner_config.render,
++    "adhoc_crosstabs": page_8_adhoc_crosstabs.render,
++    "filter_config": page_9_filter_config.render,
++    "stat_setup": page_10_stat_setup.render,
++    "topline_config": page_11_topline_config.render,
++    "export": page_12_export.render,
++}
++
++
++def main() -> None:
++    """Run the Streamlit app through the new modular page registry."""
++    init_app_state()
++    apply_theme()
++    current_step_id = render_sidebar()
++    page_renderer = PAGE_REGISTRY.get(current_step_id, page_1_project_setup.render)
++    render_page_brand_header()
++    page_renderer()
++    sync_project_config_from_session()
++    render_page_navigation(current_step_id)
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.50.1 (Apple Git-155)
+

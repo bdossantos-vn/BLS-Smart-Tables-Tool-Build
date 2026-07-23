@@ -124,12 +124,14 @@ class SavIngestionTest(unittest.TestCase):
         )
         self.assertEqual(result.question_labels["Content_Recall"], question)
         self.assertEqual(result.source_answer_choices["Content_Recall"], ["Cooking", "Fitness"])
+        self.assertEqual(result.source_question_types["Content_Recall"], "Multi-Select")
 
         question_metadata = build_question_metadata(
             result.cleaned_df,
             result.question_labels,
             result.cell_column,
             result.source_answer_choices,
+            result.source_question_types,
         )
         content_row = next(row for row in question_metadata if row["variable"] == "Content_Recall")
         self.assertEqual(content_row["detected_type"], "Multi-Select")
@@ -177,12 +179,14 @@ class SavIngestionTest(unittest.TestCase):
         )
         self.assertEqual(result.question_labels["Media_Consumption"], question)
         self.assertEqual(result.source_answer_choices["Media_Consumption"], ["Social Media", "Podcasts"])
+        self.assertEqual(result.source_question_types["Media_Consumption"], "Multi-Select")
 
         question_metadata = build_question_metadata(
             result.cleaned_df,
             result.question_labels,
             result.cell_column,
             result.source_answer_choices,
+            result.source_question_types,
         )
         media_row = next(row for row in question_metadata if row["variable"] == "Media_Consumption")
         self.assertEqual(media_row["detected_type"], "Multi-Select")
@@ -229,6 +233,137 @@ class SavIngestionTest(unittest.TestCase):
             ["ChatGPT", "None of these", "ChatGPT; None of these"],
         )
         self.assertEqual(result.source_answer_choices["Brand_Usage"], ["None of these", "ChatGPT"])
+        self.assertEqual(result.source_question_types["Brand_Usage"], "Multi-Select")
+
+    def test_sav_shared_checkbox_prompt_collapse_without_select_all_hint(self) -> None:
+        option_1 = (
+            'I\'m navigating a lot of big "firsts" right now: first job, '
+            "first apartment, first time managing money on my own"
+        )
+        option_2 = (
+            "I'm usually one of the first in my group to know what's trending "
+            "in pop culture, music, or shows"
+        )
+        option_3 = (
+            "I'm always optimizing my routine with tech: the right apps, gadgets, "
+            "or tools to make life easier"
+        )
+        none_option = "None of these really describe me"
+        question = "Which of these describes you right now?"
+        dataframe = pd.DataFrame(
+            {
+                "ResponseId": ["R_1", "R_2", "R_3"],
+                "SELF_DESCRIPTION_1": [option_1, "", ""],
+                "SELF_DESCRIPTION_2": ["", option_2, ""],
+                "SELF_DESCRIPTION_3": ["", "", ""],
+                "SELF_DESCRIPTION_4": ["", "", none_option],
+                "cell": ["Control", "Test", "Test"],
+            }
+        )
+        metadata = SimpleNamespace(
+            column_names=[
+                "ResponseId",
+                "SELF_DESCRIPTION_1",
+                "SELF_DESCRIPTION_2",
+                "SELF_DESCRIPTION_3",
+                "SELF_DESCRIPTION_4",
+                "cell",
+            ],
+            column_labels=[
+                "Response ID",
+                f"{question} {option_1}",
+                f"{question} {option_2}",
+                f"{question} {option_3}",
+                f"{question} {none_option}",
+                "Cell",
+            ],
+            variable_value_labels={
+                "SELF_DESCRIPTION_1": {1: option_1},
+                "SELF_DESCRIPTION_2": {1: option_2},
+                "SELF_DESCRIPTION_3": {1: option_3},
+                "SELF_DESCRIPTION_4": {1: none_option},
+                "cell": {1: "Control", 2: "Test"},
+            },
+            mr_sets={},
+        )
+
+        def fake_read_sav(path: str, **kwargs: object) -> tuple[pd.DataFrame, SimpleNamespace]:
+            self.assertTrue(path.endswith(".sav"))
+            self.assertTrue(kwargs["apply_value_formats"])
+            return dataframe, metadata
+
+        fake_pyreadstat = SimpleNamespace(read_sav=fake_read_sav)
+        with patch.dict(sys.modules, {"pyreadstat": fake_pyreadstat}):
+            result = ingest_qualtrics_sav(_UploadedFile())
+
+        self.assertEqual(list(result.cleaned_df.columns), ["SELF_DESCRIPTION", "cell"])
+        self.assertEqual(
+            result.cleaned_df["SELF_DESCRIPTION"].tolist(),
+            [option_1, option_2, none_option],
+        )
+        self.assertEqual(result.question_labels["SELF_DESCRIPTION"], question)
+        self.assertEqual(
+            result.source_answer_choices["SELF_DESCRIPTION"],
+            [option_1, option_2, option_3, none_option],
+        )
+        self.assertEqual(result.source_question_types["SELF_DESCRIPTION"], "Multi-Select")
+
+        question_metadata = build_question_metadata(
+            result.cleaned_df,
+            result.question_labels,
+            result.cell_column,
+            result.source_answer_choices,
+            result.source_question_types,
+        )
+        self_description_row = next(row for row in question_metadata if row["variable"] == "SELF_DESCRIPTION")
+        self.assertEqual(self_description_row["detected_type"], "Multi-Select")
+
+    def test_sav_likert_statement_grid_does_not_collapse_as_checkbox_group(self) -> None:
+        dataframe = pd.DataFrame(
+            {
+                "ResponseId": ["R_1", "R_2"],
+                "Brand_Perceptions_1": ["Strongly agree", "Somewhat agree"],
+                "Brand_Perceptions_2": ["Strongly disagree", "Neither agree nor disagree"],
+                "cell": ["Control", "Test"],
+            }
+        )
+        question = "To what extent do you agree or disagree with the following statements?"
+        value_labels = {
+            1: "Strongly agree",
+            2: "Somewhat agree",
+            3: "Neither agree nor disagree",
+            4: "Somewhat disagree",
+            5: "Strongly disagree",
+        }
+        metadata = SimpleNamespace(
+            column_names=["ResponseId", "Brand_Perceptions_1", "Brand_Perceptions_2", "cell"],
+            column_labels=[
+                "Response ID",
+                f"{question} - Yahoo Scout is a brand I feel good about using",
+                f"{question} - Yahoo Scout is a brand I trust",
+                "Cell",
+            ],
+            variable_value_labels={
+                "Brand_Perceptions_1": value_labels,
+                "Brand_Perceptions_2": value_labels,
+                "cell": {1: "Control", 2: "Test"},
+            },
+            mr_sets={},
+        )
+
+        def fake_read_sav(path: str, **kwargs: object) -> tuple[pd.DataFrame, SimpleNamespace]:
+            self.assertTrue(path.endswith(".sav"))
+            self.assertTrue(kwargs["apply_value_formats"])
+            return dataframe, metadata
+
+        fake_pyreadstat = SimpleNamespace(read_sav=fake_read_sav)
+        with patch.dict(sys.modules, {"pyreadstat": fake_pyreadstat}):
+            result = ingest_qualtrics_sav(_UploadedFile())
+
+        self.assertEqual(
+            list(result.cleaned_df.columns),
+            ["Brand_Perceptions_1", "Brand_Perceptions_2", "cell"],
+        )
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ def _render_stat_section(title: str, session_key: str) -> None:
 
 def render() -> None:
     """Render the split statistical setup page."""
-    st.header("10. Statistical Setup")
+    st.header("11. Statistical Setup")
     _render_stat_section("Banner Settings", "banner_stat_config")
     st.divider()
     _render_stat_section("Custom AdHoc Crosstab Settings", "adhoc_stat_config")

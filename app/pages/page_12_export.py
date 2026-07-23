@@ -15,7 +15,13 @@ import streamlit as st
 
 from app.state.manager import export_project_template
 from src.exporter import export_workbook_to_excel_bytes
-from src.tables import build_workbook_preview, describe_generation_readiness, generate_workbook_package
+from src.tables import (
+    build_weighted_respondent_export_dataframe,
+    build_workbook_preview,
+    describe_generation_readiness,
+    generate_workbook_package,
+)
+from src.weighting import has_active_weighting
 
 
 PROGRESS_THRESHOLD_SECONDS = 0.85
@@ -28,6 +34,7 @@ PROGRESS_STAGE_WEIGHTS = {
 }
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 JSON_MIME = "application/json"
+CSV_MIME = "text/csv"
 LOCAL_TEST_DOWNLOAD_DIR = Path("exports") / "local_testing"
 CODEX_LOCAL_ENV_KEYS = (
     "CODEX_THREAD_ID",
@@ -60,6 +67,12 @@ def _build_project_settings_filename(uploaded_filename: str | None) -> str:
         for character in stem
     ).strip("_")
     return f"{safe_stem or 'BLS_Smart_Tables'}_project_settings.json"
+
+
+def _build_weighted_data_filename(uploaded_filename: str | None) -> str:
+    """Build the respondent-level weight audit filename."""
+    stem = _safe_download_stem(uploaded_filename)
+    return f"{stem}_Respondent_Weights_{datetime.now().strftime('%Y%m%d')}.csv"
 
 
 def _is_local_codex_testing() -> bool:
@@ -234,6 +247,36 @@ def _prepare_excel_download(
     return excel_bytes, export_filename
 
 
+def _prepare_weighted_data_download(export_signature: str) -> tuple[bytes | None, str]:
+    """Build and store the respondent-level weight audit CSV when weights are active."""
+    weighting_config = st.session_state.get("weighting_config", {}) or {}
+    if not has_active_weighting(weighting_config):
+        st.session_state.generated_weighted_data_bytes = None
+        st.session_state.generated_weighted_data_filename = ""
+        st.session_state.generated_weighted_data_signature = ""
+        return None, ""
+    audit_df = build_weighted_respondent_export_dataframe(
+        st.session_state.get("cleaned_df"),
+        st.session_state.get("question_metadata", []),
+        st.session_state.get("custom_variables", []),
+        st.session_state.get("net_definitions", {}) or {},
+        st.session_state.get("scale_mappings", {}) or {},
+        weighting_config,
+        st.session_state.get("comparison_col"),
+    )
+    if audit_df.empty:
+        st.session_state.generated_weighted_data_bytes = None
+        st.session_state.generated_weighted_data_filename = ""
+        st.session_state.generated_weighted_data_signature = ""
+        return None, ""
+    csv_bytes = audit_df.to_csv(index=False).encode("utf-8")
+    filename = _build_weighted_data_filename(st.session_state.get("uploaded_filename"))
+    st.session_state.generated_weighted_data_bytes = csv_bytes
+    st.session_state.generated_weighted_data_filename = filename
+    st.session_state.generated_weighted_data_signature = export_signature
+    return csv_bytes, filename
+
+
 def _is_generated_workbook_stale(generated_tables_signature: str, current_export_signature: str) -> bool:
     """Return whether the visible workbook preview is older than the current settings."""
     return bool(generated_tables_signature and generated_tables_signature != current_export_signature)
@@ -277,7 +320,7 @@ def _project_settings_download_key(prefix: str, template_json: str) -> str:
 
 def render() -> None:
     """Render the export page and generate the final workbook."""
-    st.header("12. Table Generator & Excel Export")
+    st.header("13. Table Generator & Excel Export")
 
     readiness = describe_generation_readiness({}, st.session_state)
     for line in readiness:
@@ -294,6 +337,9 @@ def render() -> None:
             st.session_state.generated_excel_bytes = None
             st.session_state.generated_excel_filename = ""
             st.session_state.generated_excel_signature = ""
+            st.session_state.generated_weighted_data_bytes = None
+            st.session_state.generated_weighted_data_filename = ""
+            st.session_state.generated_weighted_data_signature = ""
             progress_callback, elapsed, progress_was_visible = _build_progress_callback()
             workbook_package = generate_workbook_package(
                 cleaned_df=st.session_state.cleaned_df,
@@ -324,10 +370,13 @@ def render() -> None:
                 current_export_signature,
                 progress_callback=progress_callback,
             )
+            _prepare_weighted_data_download(current_export_signature)
             progress_callback("Finalizing download", 2, 2, "Download ready")
             st.success("Tables generated successfully.")
             if workbook_package.get("export_summary", {}).get("topline_notes_warning"):
                 st.warning(workbook_package["export_summary"]["topline_notes_warning"])
+            for issue in workbook_package.get("export_summary", {}).get("weighting_issues", []):
+                st.warning(issue)
             _render_completion_summary(workbook_package, elapsed())
 
     workbook_package = st.session_state.get("generated_tables", {})
@@ -348,6 +397,9 @@ def render() -> None:
         excel_bytes = st.session_state.get("generated_excel_bytes")
         export_filename = st.session_state.get("generated_excel_filename")
         excel_signature = st.session_state.get("generated_excel_signature", "")
+        weighted_data_bytes = st.session_state.get("generated_weighted_data_bytes")
+        weighted_data_filename = st.session_state.get("generated_weighted_data_filename", "")
+        weighted_data_signature = st.session_state.get("generated_weighted_data_signature", "")
         workbook_download_signature = _download_signature_for_generated_workbook(
             generated_tables_signature,
             current_export_signature,
@@ -384,6 +436,31 @@ def render() -> None:
                 excel_bytes,
                 _download_button_key("local_testing_excel_download", workbook_download_signature, excel_bytes),
             )
+            weighted_project = has_active_weighting(st.session_state.get("weighting_config", {}) or {})
+            can_use_cached_weighted_data = bool(
+                weighted_project
+                and weighted_data_bytes
+                and weighted_data_filename
+                and weighted_data_signature == workbook_download_signature
+            )
+            if weighted_project and not can_use_cached_weighted_data:
+                weighted_data_bytes, weighted_data_filename = _prepare_weighted_data_download(workbook_download_signature)
+                can_use_cached_weighted_data = bool(weighted_data_bytes and weighted_data_filename)
+            if can_use_cached_weighted_data:
+                st.download_button(
+                    "Download Respondent Weight Data",
+                    data=weighted_data_bytes,
+                    file_name=weighted_data_filename,
+                    mime=CSV_MIME,
+                    key=_download_button_key("weighted_data_download", workbook_download_signature, weighted_data_bytes),
+                    on_click="ignore",
+                )
+                _render_local_testing_download_button(
+                    "Local Testing Download - Respondent Weight Data",
+                    weighted_data_filename,
+                    weighted_data_bytes,
+                    _download_button_key("local_testing_weighted_data_download", workbook_download_signature, weighted_data_bytes),
+                )
 
     st.divider()
     st.subheader("Project Settings Export")

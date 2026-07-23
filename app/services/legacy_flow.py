@@ -656,6 +656,7 @@ def _apply_comparison_selection(comparison_col: str | None) -> None:
         question_text_labels,
         comparison_col,
         st.session_state.get("source_answer_choices", {}),
+        st.session_state.get("source_question_types", {}),
     )
     if st.session_state.get("data_source_type") == "snowflake":
         _apply_snowflake_display_variable_names(st.session_state.question_metadata, st.session_state.question_labels)
@@ -1689,6 +1690,7 @@ def _apply_intake_result(result) -> None:
     st.session_state.question_labels = result.question_labels
     st.session_state.question_text_labels = question_text_labels
     st.session_state.source_answer_choices = result.source_answer_choices
+    st.session_state.source_question_types = result.source_question_types
     st.session_state.cell_col = result.cell_column
     st.session_state.comparison_col = result.cell_column
     st.session_state.comparison_options = available_columns
@@ -1723,6 +1725,7 @@ def _apply_intake_result(result) -> None:
         metadata_question_labels,
         result.cell_column,
         result.source_answer_choices,
+        result.source_question_types,
     )
     if st.session_state.get("data_source_type") == "snowflake":
         _apply_snowflake_display_variable_names(st.session_state.question_metadata, result.question_labels)
@@ -2450,6 +2453,7 @@ def render_step_3() -> None:
             question_text_labels,
             cell_col,
             st.session_state.get("source_answer_choices", {}),
+            st.session_state.get("source_question_types", {}),
         )
         if st.session_state.get("data_source_type") == "snowflake":
             _apply_snowflake_display_variable_names(st.session_state.question_metadata, question_labels)
@@ -2528,6 +2532,7 @@ def render_step_3() -> None:
                 question_text_labels,
                 cell_col,
                 st.session_state.get("source_answer_choices", {}),
+                st.session_state.get("source_question_types", {}),
             )
             if st.session_state.get("data_source_type") == "snowflake":
                 _apply_snowflake_display_variable_names(st.session_state.question_metadata, question_labels)
@@ -3460,7 +3465,7 @@ def render_step_8() -> None:
 
 def render_step_9() -> None:
     """Render the weighting configuration page."""
-    st.header("8. Weighting Configuration")
+    st.header("10. Weighting Configuration")
 
     if not st.session_state.weighting_config:
         st.session_state.weighting_config = build_default_weighting_config()
@@ -3475,6 +3480,29 @@ def render_step_9() -> None:
     variable_options = [item["id"] for item in variable_catalog]
     variable_labels = {item["id"]: item["label"] for item in variable_catalog}
     weight_variable_options = build_weight_variable_options(st.session_state.question_metadata)
+    question_lookup = build_question_lookup(
+        st.session_state.question_metadata,
+        st.session_state.net_definitions,
+        st.session_state.scale_mappings,
+    )
+    limit_variable_options = []
+    limit_question_lookup: dict[str, dict[str, Any]] = {}
+    for metadata_row in st.session_state.question_metadata:
+        variable = normalize_text(metadata_row.get("variable"))
+        if not variable or variable in limit_variable_options:
+            continue
+        if normalize_text(metadata_row.get("detected_type")) == "Open-End Text":
+            continue
+        limit_variable_options.append(variable)
+        variable_labels.setdefault(variable, get_display_variable_name(metadata_row) or variable)
+        limit_question_lookup[variable] = {
+            "answer_choices_list": list(metadata_row.get("answer_choices_list", [])),
+            "detected_type": normalize_text(metadata_row.get("detected_type")),
+        }
+    for variable in variable_options:
+        if variable not in limit_variable_options:
+            limit_variable_options.append(variable)
+    limit_value_lookup = {**question_lookup, **limit_question_lookup}
 
     apply_targets = ["All Tables"]
     comparison_label = st.session_state.get("comparison_col")
@@ -3542,6 +3570,44 @@ def render_step_9() -> None:
             reset_invalid_to_default=True,
             help="Select one or more variables to use in the weighting scheme.",
         )
+        limit_col1, limit_col2 = st.columns([1, 2])
+        limit_options = ["", *limit_variable_options]
+        saved_limit_variable = normalize_text(row.get("limit_variable"))
+        limit_variable = limit_col1.selectbox(
+            "Only Weight Rows Where",
+            options=limit_options,
+            index=(
+                limit_options.index(saved_limit_variable)
+                if saved_limit_variable in limit_options
+                else 0
+            ),
+            format_func=lambda value: variable_labels.get(value, value) if value else "No respondent limit",
+            key=f"weight_limit_variable_{index}",
+            help="Optional respondent subset for this weight. Rows outside the subset keep weight 1.0.",
+        )
+        limit_value_options = _build_filter_value_options(
+            limit_variable,
+            limit_value_lookup,
+            st.session_state.custom_variables,
+            comparison_col=st.session_state.get("comparison_col"),
+            comparison_groups=st.session_state.get("comparison_group_order", {}),
+        )
+        limit_value_display_labels = _build_filter_value_display_labels(
+            limit_variable,
+            limit_value_options,
+            st.session_state.get("comparison_col"),
+            st.session_state.get("comparison_group_labels", {}),
+        )
+        with limit_col2:
+            limit_values = safe_multiselect(
+                "Limit Values",
+                options=limit_value_options,
+                default=_valid_multiselect_values(list(row.get("limit_values", [])), limit_value_options),
+                key=f"weight_limit_values_{index}_{_widget_key_token(limit_variable)}",
+                reset_invalid_to_default=True,
+                format_func=lambda value, labels=limit_value_display_labels: labels.get(value, value),
+                help="Select the respondent value(s) that should receive calculated weight factors.",
+            )
         default_targets = [target_value for target_value in row.get("applies_to", []) if target_value in apply_targets]
         if "All Tables" in default_targets and len(default_targets) > 1:
             default_targets = ["All Tables"]
@@ -3561,6 +3627,8 @@ def render_step_9() -> None:
                 "target": target,
                 "source": source,
                 "variables": variables,
+                "limit_variable": limit_variable,
+                "limit_values": limit_values,
                 "applies_to": applies_to,
             }
         )
@@ -3585,7 +3653,7 @@ def render_step_9() -> None:
 
 def render_step_10() -> None:
     """Render the statistical setup scaffold."""
-    st.header("10. Statistical Setup")
+    st.header("11. Statistical Setup")
     if not st.session_state.stat_config:
         st.session_state.stat_config = build_default_stat_config()
 

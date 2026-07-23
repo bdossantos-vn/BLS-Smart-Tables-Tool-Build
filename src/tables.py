@@ -23,6 +23,12 @@ from src.nets import build_enabled_net_choice_map
 from src.respondents import respondent_count
 from src.stats import normalize_confidence_intervals
 from src.utils import alpha_letter_sequence, multi_select_value_contains_choice, normalize_text
+from src.weighting import (
+    build_weight_audit_dataframe,
+    calculate_weight_factors,
+    effective_weight_series,
+    has_active_weighting,
+)
 
 
 ProgressCallback = Callable[[str, int, int, str | None], None]
@@ -134,6 +140,23 @@ def describe_generation_readiness(default_state: dict, current_state: dict) -> l
     if adhoc_count:
         messages.append(f"{adhoc_count} AdHoc Crosstab(s) are configured.")
     return messages
+
+
+def build_weighted_respondent_export_dataframe(
+    cleaned_df: pd.DataFrame,
+    question_metadata: list[dict[str, Any]],
+    custom_variables: list[dict[str, Any]],
+    net_definitions: dict[str, dict[str, bool]],
+    scale_mappings: dict[str, dict[str, Any]],
+    weighting_config: dict[str, Any] | None,
+    comparison_col: str | None,
+) -> pd.DataFrame:
+    """Build a respondent-level audit dataframe with actual weight factors."""
+    if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty or not has_active_weighting(weighting_config):
+        return pd.DataFrame()
+    question_lookup = build_question_lookup(question_metadata, net_definitions, scale_mappings)
+    analysis_df = _materialize_custom_variables(cleaned_df, custom_variables, question_lookup)
+    return build_weight_audit_dataframe(analysis_df, weighting_config, comparison_col)
 
 
 def _include_percentage(stat_config: dict[str, Any]) -> bool:
@@ -866,7 +889,7 @@ def _resolve_weighting_footnotes(weighting_config: dict[str, Any], target_names:
         if not _target_matches(list(row.get("applies_to", [])), target_names):
             continue
         weight_name = normalize_text(row.get("name")) or "Unnamed Weight"
-        notes.append(f"Weighting configured: {weight_name}")
+        notes.append(f"Weighting applied: {weight_name}")
     return notes
 
 
@@ -916,6 +939,15 @@ def _compute_choice_count(series: pd.Series, choice: str) -> pd.Series:
     """Return a boolean mask for respondents who selected one choice."""
     normalized_choice = normalize_text(choice)
     return series.map(lambda value: _value_matches_selected_choices(value, [normalized_choice])).fillna(False)
+
+
+def _weighted_count(df: pd.DataFrame, mask: pd.Series, weight_series: pd.Series | None = None) -> float | int:
+    """Count respondents, summing weights when a weight series is active."""
+    if weight_series is None:
+        return respondent_count(df, mask)
+    aligned_mask = mask.reindex(df.index, fill_value=False).astype(bool)
+    aligned_weights = weight_series.reindex(df.index, fill_value=1.0).astype(float)
+    return float(aligned_weights.loc[aligned_mask].sum())
 
 
 def _get_question_rows(
@@ -1002,10 +1034,10 @@ def _pooled_two_sample_z_test(
 
 
 def _pooled_two_sample_z_p_value(
-    numerator_a: int,
-    denominator_a: int,
-    numerator_b: int,
-    denominator_b: int,
+    numerator_a: float,
+    denominator_a: float,
+    numerator_b: float,
+    denominator_b: float,
 ) -> float | None:
     """Return a two-sided pooled z-test p-value for independent proportions."""
     if denominator_a <= 0 or denominator_b <= 0:
@@ -1079,8 +1111,8 @@ def _infer_comparison_pairs_for_sig(
 
 
 def _build_sig_letters(
-    counts_by_group: list[int],
-    denominators_by_group: list[int],
+    counts_by_group: list[float | int],
+    denominators_by_group: list[float | int],
     group_labels: list[str],
     alpha: float,
     comparison_scope: str,
@@ -1089,6 +1121,7 @@ def _build_sig_letters(
     outcome_mask: pd.Series | None = None,
     comparison_pairs: list[dict[str, Any]] | None = None,
     sig_cache: dict[tuple[Any, ...], list[str]] | None = None,
+    weighted: bool = False,
 ) -> list[str]:
     """Build significance letters for one row across the visible banner groups."""
     if len(group_labels) <= 1 or comparison_scope == "none":
@@ -1140,7 +1173,7 @@ def _build_sig_letters(
         p_value = None
         # 2026-05-19 BD: Automatic significance testing switches to an
         # overlap-aware paired proportion test whenever the group masks overlap.
-        if overlaps and base_masks is not None and outcome_mask is not None:
+        if overlaps and not weighted and base_masks is not None and outcome_mask is not None:
             p_value = _overlap_aware_proportion_p_value(
                 base_masks[index_a],
                 base_masks[index_b],
@@ -1190,6 +1223,7 @@ def _build_question_table(
     notation_location: str = "appended_to_metric",
     optimize_significance: bool = False,
     sig_cache: dict[tuple[Any, ...], list[str]] | None = None,
+    weight_series: pd.Series | None = None,
 ) -> SheetTable:
     """Build one question table for all visible groups on a banner sheet."""
     variable = normalize_text(question_row.get("variable"))
@@ -1205,9 +1239,9 @@ def _build_question_table(
         comparison_group_labels=comparison_group_labels,
     )
 
-    total_base_denominators = [respondent_count(df, group["mask"]) for group in groups]
+    total_base_denominators = [_weighted_count(df, group["mask"], weight_series) for group in groups]
     answering_masks = question_series.map(lambda value: normalize_text(value) != "").fillna(False)
-    total_answering_denominators = [respondent_count(df, group["mask"] & answering_masks) for group in groups]
+    total_answering_denominators = [_weighted_count(df, group["mask"] & answering_masks, weight_series) for group in groups]
     if comparison_pairs is None:
         comparison_pairs = _build_pair_metadata_for_scope(groups, comparison_col, comparison_scope)
     active_sig_cache = sig_cache if optimize_significance else None
@@ -1219,7 +1253,7 @@ def _build_question_table(
     ]:
         rows: list[dict[str, Any]] = []
         for output_row in output_rows:
-            counts_by_group: list[int] = []
+            counts_by_group: list[float | int] = []
             percentages_by_group: list[float | None] = []
             if output_row.get("match_mode") == "not_selected":
                 matched_mask = question_series.map(
@@ -1236,7 +1270,7 @@ def _build_question_table(
                     )
                 ).fillna(False)
             for group_mask, denominator in zip(base_masks, denominators):
-                numerator = respondent_count(df, group_mask & matched_mask)
+                numerator = _weighted_count(df, group_mask & matched_mask, weight_series)
                 counts_by_group.append(numerator)
                 percentages_by_group.append((numerator / denominator) if denominator else None)
             sig_letters = _build_sig_letters(
@@ -1250,6 +1284,7 @@ def _build_question_table(
                 outcome_mask=matched_mask,
                 comparison_pairs=comparison_pairs,
                 sig_cache=active_sig_cache,
+                weighted=weight_series is not None,
             )
             rows.append(
                 {
@@ -1373,6 +1408,7 @@ def _build_question_tables(
     progress_callback: ProgressCallback | None = None,
     progress_state: dict[str, int] | None = None,
     progress_detail: str = "",
+    weight_series: pd.Series | None = None,
 ) -> list[SheetTable]:
     """Build question tables and emit generation progress per question."""
     tables: list[SheetTable] = []
@@ -1396,6 +1432,7 @@ def _build_question_tables(
                 notation_location=notation_location,
                 optimize_significance=optimize_significance,
                 sig_cache=sig_cache,
+                weight_series=weight_series,
             )
         )
         if progress_state is not None:
@@ -2007,6 +2044,7 @@ def generate_workbook_package(
     analysis_df = _materialize_custom_variables(cleaned_df, custom_variables, question_lookup)
     global_filters = global_filters or {"rows": []}
     weighting_config = weighting_config or {"weights": []}
+    weight_result = calculate_weight_factors(analysis_df, weighting_config, comparison_col)
     topline_config = topline_config or {}
     _emit_progress(progress_callback, "Preparing data", 1, 4, "Resolved questions and custom variables")
     # 2026-05-19 BD: A saved comparison_scheme replaces the old binary
@@ -2053,6 +2091,7 @@ def generate_workbook_package(
         "estimated_sig_tests": 0,
         "optimized_sig_sheets": [],
         "topline_notes_warning": "",
+        "weighting_issues": list(weight_result.issues),
     }
     _emit_progress(progress_callback, "Preparing data", 4, 4, "Prepared banner and significance settings")
     include_total = bool(banner_config.get("include_total", True))
@@ -2068,6 +2107,19 @@ def generate_workbook_package(
         if banner_include_stat_testing
         else "none"
     )
+
+    def _weights_for_target(frame: pd.DataFrame, target_names: list[str]) -> pd.Series | None:
+        """Return active weights for one export target, aligned to the target dataframe."""
+        if not weight_result.weight_columns:
+            return None
+        weights = effective_weight_series(
+            analysis_df,
+            weighting_config,
+            comparison_col,
+            target_names,
+            weight_result,
+        )
+        return weights.reindex(frame.index, fill_value=1.0).astype(float)
 
     sheet_specs: list[WorkbookSheet] = []
     total_comparison_sheet: WorkbookSheet | None = None
@@ -2144,6 +2196,7 @@ def generate_workbook_package(
             progress_callback,
             progress_state,
             "All Tables",
+            weight_series=_weights_for_target(analysis_df, ["All Tables"]),
         )
         only_sheet = WorkbookSheet(
             name="All Tables",
@@ -2208,6 +2261,7 @@ def generate_workbook_package(
                 progress_callback,
                 progress_state,
                 "Topline Comparison",
+                weight_series=_weights_for_target(analysis_df, ["All Tables"]),
             )
             total_comparison_sheet = WorkbookSheet(
                 name="Topline Comparison",
@@ -2272,6 +2326,7 @@ def generate_workbook_package(
                 progress_callback,
                 progress_state,
                 "Topline Comparison",
+                weight_series=_weights_for_target(analysis_df, ["All Tables"]),
             )
             total_comparison_sheet = WorkbookSheet(
                 name="Topline Comparison",
@@ -2340,6 +2395,7 @@ def generate_workbook_package(
                 progress_callback,
                 progress_state,
                 "Topline Comparison",
+                weight_series=_weights_for_target(analysis_df, ["All Tables"]),
             )
             total_comparison_sheet = WorkbookSheet(
                 name="Topline Comparison",
@@ -2447,6 +2503,7 @@ def generate_workbook_package(
                 progress_callback,
                 progress_state,
                 banner_name,
+                weight_series=_weights_for_target(filtered_banner_df, ["All Tables", banner_name]),
             )
             if banner_config.get("export_style") == "single_sheet":
                 if not sheet_specs or sheet_specs[-1].name != "All Banners":
@@ -2637,6 +2694,7 @@ def generate_workbook_package(
                 notation_location=adhoc_notation_location,
                 optimize_significance=optimize_significance,
                 sig_cache={} if optimize_significance else None,
+                weight_series=_weights_for_target(filtered_df, ["All Tables", table_name]),
             )
             progress_state["completed"] = int(progress_state.get("completed", 0)) + 1
             _emit_progress(

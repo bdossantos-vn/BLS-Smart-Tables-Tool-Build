@@ -27,6 +27,7 @@ from app.pages import (
     page_7_banner_config,
     page_8_adhoc_crosstabs,
     page_9_filter_config,
+    page_9_weighting,
 )
 from app.state.manager import init_app_state, sync_project_config_from_session
 
@@ -49,6 +50,7 @@ PAGE_REGISTRY = {
     "banner_config": page_7_banner_config.render,
     "adhoc_crosstabs": page_8_adhoc_crosstabs.render,
     "filter_config": page_9_filter_config.render,
+    "weighting": page_9_weighting.render,
     "stat_setup": page_10_stat_setup.render,
     "topline_config": page_11_topline_config.render,
     "export": page_12_export.render,

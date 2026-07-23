@@ -145,6 +145,20 @@ class MultiselectDetectionTest(unittest.TestCase):
         self.assertEqual(metadata["detected_type"], "Scale / Likert")
         self.assertEqual(metadata["answer_choices_list"], [active, open_to_use, unsure])
 
+    def test_duplicate_column_labels_do_not_crash_metadata_detection(self) -> None:
+        df = pd.DataFrame(
+            [
+                ["First", "Shadow first"],
+                ["Second", "Shadow second"],
+            ],
+            columns=["sorter", "sorter"],
+        )
+
+        metadata = build_question_metadata(df, {"sorter": "Sorter"})
+
+        self.assertEqual([row["variable"] for row in metadata], ["sorter"])
+        self.assertEqual(metadata[0]["answer_choices_list"], ["First", "Second"])
+
 
 if __name__ == "__main__":
     unittest.main()

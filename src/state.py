@@ -19,6 +19,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "question_labels": {},
     "question_text_labels": {},
     "source_answer_choices": {},
+    "source_question_types": {},
     "ingestion_log": [],
     "intake_change_log": [],
     "cell_col": None,
@@ -83,6 +84,9 @@ DEFAULT_STATE: dict[str, Any] = {
     "generated_excel_bytes": None,
     "generated_excel_filename": "",
     "generated_excel_signature": "",
+    "generated_weighted_data_bytes": None,
+    "generated_weighted_data_filename": "",
+    "generated_weighted_data_signature": "",
 }
 
 

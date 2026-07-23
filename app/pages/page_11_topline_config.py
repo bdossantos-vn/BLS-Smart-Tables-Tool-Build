@@ -308,7 +308,7 @@ def _set_all_selected_note_bases(rows: list[dict[str, object]], note_base: str) 
 
 def render() -> None:
     """Render the Topline Configuration page."""
-    st.header("11. Topline Configuration")
+    st.header("12. Topline Configuration")
 
     included_columns = list(st.session_state.get("included_columns", []))
     custom_variables = list(st.session_state.get("custom_variables", []))

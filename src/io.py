@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -28,6 +28,7 @@ class SavReadResult:
     dataframe: pd.DataFrame
     question_labels: dict[str, str]
     source_answer_choices: dict[str, list[str]]
+    source_question_types: dict[str, str] = field(default_factory=dict)
     sheet_name: str = "SAV data"
     collapsed_multi_response_groups: int = 0
 
@@ -113,6 +114,19 @@ MULTI_RESPONSE_LABEL_HINTS = [
     "multiple answer",
     "multiple answers",
     "multi-select",
+]
+
+CHECKBOX_GROUP_LABEL_HINTS = [
+    "which of these",
+    "which of the following",
+]
+
+MATRIX_GROUP_LABEL_HINTS = [
+    "agree or disagree",
+    "to what extent",
+    "rate each",
+    "rate the following",
+    "on a scale",
 ]
 
 GENERIC_DICHOTOMY_LABELS = {
@@ -212,6 +226,18 @@ def _has_multi_response_hint(label: str) -> bool:
     return any(hint in label_lower for hint in MULTI_RESPONSE_LABEL_HINTS)
 
 
+def _has_checkbox_group_hint(label: str) -> bool:
+    """Return whether label text looks like a shared checkbox prompt."""
+    label_lower = normalize_text(label).lower()
+    return any(hint in label_lower for hint in CHECKBOX_GROUP_LABEL_HINTS)
+
+
+def _has_matrix_group_hint(label: str) -> bool:
+    """Return whether label text looks like a scale/grid prompt."""
+    label_lower = normalize_text(label).lower()
+    return any(hint in label_lower for hint in MATRIX_GROUP_LABEL_HINTS)
+
+
 def _clean_question_stem(label: str) -> str:
     """Normalize a grouped question stem without dropping meaningful punctuation."""
     cleaned = re.sub(r"\s+", " ", normalize_text(label))
@@ -287,6 +313,34 @@ def _split_group_labels_by_common_prefix(labels: list[str]) -> tuple[str, list[s
     return stem, options
 
 
+def _split_group_labels_by_checkbox_prompt(labels: list[str]) -> tuple[str, list[str]] | None:
+    """Find checkbox groups whose SAV labels omit an explicit multi-select hint."""
+    normalized_labels = [normalize_text(label) for label in labels]
+    if len(normalized_labels) < 2 or not all(normalized_labels):
+        return None
+
+    prefix = _common_prefix(normalized_labels)
+    if len(prefix) < 12:
+        return None
+
+    split_at = -1
+    for delimiter in ["? ", ". ", ": ", " - "]:
+        index = prefix.rfind(delimiter)
+        if index > split_at:
+            split_at = index + len(delimiter)
+    if split_at <= 0:
+        return None
+
+    stem = _clean_question_stem(prefix[:split_at])
+    if not stem or not _has_checkbox_group_hint(stem) or _has_matrix_group_hint(stem):
+        return None
+
+    options = [_clean_option_label(label[split_at:]) for label in normalized_labels]
+    if any(not option for option in options):
+        return None
+    return stem, options
+
+
 def _split_numbered_multiselect_labels(labels: list[str]) -> tuple[str, list[str]] | None:
     """Return one question stem and option labels for a numbered checkbox group."""
     explicit_splits = [_split_multiselect_label(label) for label in labels]
@@ -296,7 +350,10 @@ def _split_numbered_multiselect_labels(labels: list[str]) -> tuple[str, list[str
         if len(set(stems)) == 1:
             return stems[0], options
 
-    return _split_group_labels_by_common_prefix(labels)
+    common_prefix_split = _split_group_labels_by_common_prefix(labels)
+    if common_prefix_split is not None:
+        return common_prefix_split
+    return _split_group_labels_by_checkbox_prompt(labels)
 
 
 def _selected_values_for_variable(
@@ -326,6 +383,99 @@ def _selected_values_for_variable(
         selected_values.update(POSITIVE_DICHOTOMY_LABELS)
 
     return {value for value in selected_values if value}
+
+
+def _is_checkbox_value_label(label: str, choice_label: str) -> bool:
+    """Return whether a SAV value label is compatible with a checkbox column."""
+    normalized_label = normalize_text(label)
+    label_lower = normalized_label.lower()
+    return (
+        not normalized_label
+        or normalized_label == normalize_text(choice_label)
+        or label_lower in GENERIC_DICHOTOMY_LABELS
+    )
+
+
+def _value_labels_match_checkbox_option(
+    variable: str,
+    choice_label: str,
+    value_labels_by_variable: dict[str, dict[Any, str]],
+) -> tuple[bool, bool]:
+    """Return whether SAV value labels fit a one-option checkbox variable."""
+    value_labels = value_labels_by_variable.get(variable, {})
+    labels = [normalize_text(label) for label in value_labels.values() if normalize_text(label)]
+    if not labels:
+        return True, False
+    if len(labels) <= 2 and all(_is_checkbox_value_label(label, choice_label) for label in labels):
+        return True, True
+    return False, True
+
+
+def _is_checkbox_observed_value(
+    value: str,
+    choice_label: str,
+    selected_values: set[str],
+) -> bool:
+    """Return whether one observed value can represent selected/not-selected."""
+    normalized_value = normalize_text(value)
+    value_lower = normalized_value.lower()
+    return (
+        normalized_value == normalize_text(choice_label)
+        or normalized_value in selected_values
+        or value_lower in GENERIC_DICHOTOMY_LABELS
+    )
+
+
+def _observed_values_match_checkbox_option(
+    series: pd.Series,
+    choice_label: str,
+    selected_values: set[str],
+) -> tuple[bool, bool]:
+    """Return whether observed SAV values fit a one-option checkbox variable."""
+    values = {
+        normalize_text(value)
+        for value in series.dropna().tolist()
+        if normalize_text(value)
+    }
+    if not values:
+        return True, False
+    if all(_is_checkbox_observed_value(value, choice_label, selected_values) for value in values):
+        return True, True
+    return False, True
+
+
+def _source_variables_look_like_checkbox_options(
+    dataframe: pd.DataFrame,
+    source_variables: list[str],
+    answer_choices: list[str],
+    value_labels_by_variable: dict[str, dict[Any, str]],
+) -> bool:
+    """Return whether grouped SAV variables behave like checkbox option columns."""
+    has_checkbox_evidence = False
+    for source_variable, choice_label in zip(source_variables, answer_choices):
+        labels_match, labels_have_evidence = _value_labels_match_checkbox_option(
+            source_variable,
+            choice_label,
+            value_labels_by_variable,
+        )
+        if not labels_match:
+            return False
+
+        selected_values = _selected_values_for_variable(
+            source_variable,
+            choice_label,
+            value_labels_by_variable,
+        )
+        values_match, values_have_evidence = _observed_values_match_checkbox_option(
+            dataframe[source_variable],
+            choice_label,
+            selected_values,
+        )
+        if not values_match:
+            return False
+        has_checkbox_evidence = has_checkbox_evidence or labels_have_evidence or values_have_evidence
+
+    return has_checkbox_evidence
 
 
 def _preferred_selected_value_label(
@@ -494,6 +644,13 @@ def _build_label_based_sav_multiselect_groups(
             continue
 
         question_label, answer_choices = split_labels
+        if not _has_multi_response_hint(question_label) and not _source_variables_look_like_checkbox_options(
+            dataframe,
+            source_variables,
+            answer_choices,
+            value_labels_by_variable,
+        ):
+            continue
         existing_columns = dataframe_columns.difference(source_variables)
         variable = _clean_group_variable_name(base, base, existing_columns)
         choice_by_source_variable = {
@@ -573,7 +730,7 @@ def _normalize_sav_multi_response_sets(
     metadata: Any,
     question_labels: dict[str, str],
     source_answer_choices: dict[str, list[str]],
-) -> tuple[pd.DataFrame, dict[str, str], dict[str, list[str]], int]:
+) -> tuple[pd.DataFrame, dict[str, str], dict[str, list[str]], dict[str, str], int]:
     """Collapse SAV checkbox sets into regular multi-select columns."""
     mr_set_groups = _build_sav_mr_set_groups(dataframe, metadata, question_labels)
     mr_set_variables = {
@@ -589,7 +746,7 @@ def _normalize_sav_multi_response_sets(
     )
     groups = mr_set_groups + label_groups
     if not groups:
-        return dataframe, question_labels, source_answer_choices, 0
+        return dataframe, question_labels, source_answer_choices, {}, 0
 
     collapsed_df = _collapse_sav_multi_response_groups(dataframe, groups)
     grouped_variables = {
@@ -608,8 +765,19 @@ def _normalize_sav_multi_response_sets(
         for column in collapsed_df.columns
         if column in group_lookup or source_answer_choices.get(column)
     }
+    normalized_source_question_types = {
+        column: "Multi-Select"
+        for column in collapsed_df.columns
+        if column in group_lookup
+    }
 
-    return collapsed_df, normalized_question_labels, normalized_source_choices, len(groups)
+    return (
+        collapsed_df,
+        normalized_question_labels,
+        normalized_source_choices,
+        normalized_source_question_types,
+        len(groups),
+    )
 
 
 def read_sav_upload(uploaded_file) -> SavReadResult:
@@ -638,6 +806,7 @@ def read_sav_upload(uploaded_file) -> SavReadResult:
         dataframe,
         question_labels,
         source_answer_choices,
+        source_question_types,
         collapsed_multi_response_groups,
     ) = _normalize_sav_multi_response_sets(
         dataframe,
@@ -649,5 +818,6 @@ def read_sav_upload(uploaded_file) -> SavReadResult:
         dataframe=dataframe,
         question_labels=question_labels,
         source_answer_choices=source_answer_choices,
+        source_question_types=source_question_types,
         collapsed_multi_response_groups=collapsed_multi_response_groups,
     )

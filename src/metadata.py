@@ -27,6 +27,21 @@ QUESTION_TYPES = [
 ]
 
 
+def _unique_dataframe_columns(df: pd.DataFrame) -> list[Any]:
+    """Return dataframe columns once, preserving display order."""
+    return list(dict.fromkeys(df.columns))
+
+
+def _metadata_series(df: pd.DataFrame, column: Any) -> pd.Series:
+    """Return one Series for a metadata variable, even if duplicate labels exist."""
+    values = df.loc[:, column]
+    if isinstance(values, pd.DataFrame):
+        if values.shape[1] == 0:
+            return pd.Series(dtype=object)
+        return values.iloc[:, 0]
+    return values
+
+
 def get_display_variable_name(metadata_row: dict[str, Any]) -> str:
     """Return the analyst-facing variable name, falling back to the raw variable."""
     # 2026-05-15 BD: Displayed variable names are a readability/export layer;
@@ -835,19 +850,25 @@ def detect_question_types(
     df: pd.DataFrame,
     question_labels: dict[str, str],
     cell_col: str | None = None,
+    source_question_types: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Detect default question types for all relevant variables."""
     detected: dict[str, str] = {}
-    for column in df.columns:
+    source_question_types = source_question_types or {}
+    for column in _unique_dataframe_columns(df):
         if is_internal_respondent_column(column):
             continue
         if column == cell_col:
             detected[column] = "Ignore"
             continue
+        source_question_type = normalize_text(source_question_types.get(column))
+        if source_question_type in QUESTION_TYPES:
+            detected[column] = source_question_type
+            continue
         if _is_open_end_text_variable(column, question_labels.get(column, "")):
             detected[column] = "Open-End Text"
             continue
-        detected[column] = guess_question_type(df[column], question_labels.get(column, ""))
+        detected[column] = guess_question_type(_metadata_series(df, column), question_labels.get(column, ""))
     return detected
 
 
@@ -856,15 +877,17 @@ def build_question_metadata(
     question_labels: dict[str, str],
     cell_col: str | None = None,
     source_answer_choices: dict[str, list[str]] | None = None,
+    source_question_types: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the default editable metadata package for the audit page."""
-    detected = detect_question_types(df, question_labels, cell_col)
+    detected = detect_question_types(df, question_labels, cell_col, source_question_types)
     source_answer_choices = source_answer_choices or {}
     metadata: list[dict[str, Any]] = []
-    for column in df.columns:
+    for column in _unique_dataframe_columns(df):
         if is_internal_respondent_column(column):
             continue
         question_type = detected[column]
+        series = _metadata_series(df, column)
         source_choices = [
             normalize_text(choice)
             for choice in source_answer_choices.get(column, [])
@@ -877,7 +900,7 @@ def build_question_metadata(
                 question_labels.get(column, column),
             )
         else:
-            answer_choices = extract_answer_choices(df[column], question_type, question_labels.get(column, column))
+            answer_choices = extract_answer_choices(series, question_type, question_labels.get(column, column))
         metadata.append(
             {
                 "variable": column,
@@ -976,7 +999,7 @@ def merge_metadata_editor_with_source(
                 )
             else:
                 recalculated_choices = extract_answer_choices(
-                    source_df[variable],
+                    _metadata_series(source_df, variable),
                     new_type,
                     row.get("question_label", variable),
                 )
@@ -994,9 +1017,10 @@ def restore_metadata_defaults(
     question_labels: dict[str, str],
     cell_col: str | None = None,
     source_answer_choices: dict[str, list[str]] | None = None,
+    source_question_types: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Rebuild question metadata using the default heuristics."""
-    return build_question_metadata(df, question_labels, cell_col, source_answer_choices)
+    return build_question_metadata(df, question_labels, cell_col, source_answer_choices, source_question_types)
 
 
 def build_metadata_change_log_entry(variable: str, old_type: str | None, new_type: str) -> str:

@@ -187,6 +187,17 @@ def _format_lift_display(left_pct: float | None, right_pct: float | None) -> str
     return f"{lift_points:+d} pts"
 
 
+def _format_count_value(value):
+    """Format weighted or unweighted base/count values without noisy decimals."""
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return value
+    if numeric_value.is_integer():
+        return int(numeric_value)
+    return round(numeric_value, 2)
+
+
 def _format_level_label(level_name: str, level_labels: dict[str, str] | None = None) -> str:
     """Return a human-friendly banner-level label for export headers."""
     normalized = normalize_text(level_name)
@@ -427,19 +438,19 @@ def _write_topline_sheet(workbook, topline_sheet) -> None:
         return
 
     if paired_columns:
-        base_cell = worksheet.cell(row=12, column=control_column, value=control_group.get("base"))
+        base_cell = worksheet.cell(row=12, column=control_column, value=_format_count_value(control_group.get("base")))
         _apply_body_style(base_cell)
         base_cell.alignment = Alignment(horizontal="center", vertical="top")
         for paired_column in paired_columns:
             pair = paired_column["pair"]
             right_group = group_lookup.get(pair.get("right_index"), {})
-            base_cell = worksheet.cell(row=12, column=paired_column["group_column"], value=right_group.get("base"))
+            base_cell = worksheet.cell(row=12, column=paired_column["group_column"], value=_format_count_value(right_group.get("base")))
             _apply_body_style(base_cell)
             base_cell.alignment = Alignment(horizontal="center", vertical="top")
     else:
         for group_column in group_columns:
             group = group_column["group"]
-            base_cell = worksheet.cell(row=12, column=group_column["column"], value=group.get("base"))
+            base_cell = worksheet.cell(row=12, column=group_column["column"], value=_format_count_value(group.get("base")))
             _apply_body_style(base_cell)
             base_cell.alignment = Alignment(horizontal="center", vertical="top")
     note_base_header = worksheet.cell(row=12, column=note_base_column, value="")
@@ -844,11 +855,11 @@ def _write_banner_sheet(
         count_label_cell = worksheet.cell(row=current_row, column=2, value="Base Sizes")
         _apply_body_style(count_label_cell, bold=True, fill_color=VN_LIGHT_GRAY)
         for column_index, denominator in zip(left_data_columns, total_base_section["base_denominators"]):
-            cell = worksheet.cell(row=current_row, column=column_index, value=denominator)
+            cell = worksheet.cell(row=current_row, column=column_index, value=_format_count_value(denominator))
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
         for column_index, denominator in zip(right_data_columns, answering_section["base_denominators"]):
-            cell = worksheet.cell(row=current_row, column=column_index, value=denominator)
+            cell = worksheet.cell(row=current_row, column=column_index, value=_format_count_value(denominator))
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
         for column_index, pair in zip(left_lift_columns, lift_pairs):
@@ -856,7 +867,7 @@ def _write_banner_sheet(
                 total_base_section["base_denominators"][pair["left_index"]]
                 + total_base_section["base_denominators"][pair["right_index"]]
             )
-            cell = worksheet.cell(row=current_row, column=column_index, value=lift_base_value)
+            cell = worksheet.cell(row=current_row, column=column_index, value=_format_count_value(lift_base_value))
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
         for column_index, pair in zip(right_lift_columns, lift_pairs):
@@ -864,7 +875,7 @@ def _write_banner_sheet(
                 answering_section["base_denominators"][pair["left_index"]]
                 + answering_section["base_denominators"][pair["right_index"]]
             )
-            cell = worksheet.cell(row=current_row, column=column_index, value=lift_base_value)
+            cell = worksheet.cell(row=current_row, column=column_index, value=_format_count_value(lift_base_value))
             _apply_body_style(cell, bold=True, fill_color=VN_LIGHT_GRAY)
             cell.alignment = Alignment(horizontal="center", vertical="center")
         current_row += 2
@@ -902,7 +913,7 @@ def _write_banner_sheet(
                             metric_cell.alignment = Alignment(horizontal="center", vertical="center")
                     elif row_kind == "n":
                         for column_index, count in zip(data_columns, section_row["counts"]):
-                            metric_cell = worksheet.cell(row=current_row, column=column_index, value=count)
+                            metric_cell = worksheet.cell(row=current_row, column=column_index, value=_format_count_value(count))
                             _apply_body_style(metric_cell, fill_color=label_fill)
                             metric_cell.alignment = Alignment(horizontal="center", vertical="center")
 

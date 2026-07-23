@@ -218,6 +218,7 @@ class IngestionResult:
     sheet_name: str
     completed_at: str
     source_answer_choices: dict[str, list[str]]
+    source_question_types: dict[str, str] = field(default_factory=dict)
     question_text_labels: dict[str, str] = field(default_factory=dict)
 
 
@@ -282,6 +283,60 @@ def _prepare_qualtrics_dataframe(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, di
 def _blacklist_match_key(value: object) -> str:
     """Normalize column names for default metadata matching."""
     return re.sub(r"[^a-z0-9]+", "", normalize_text(value).lower())
+
+
+def _dedupe_surviving_columns(
+    df: pd.DataFrame,
+    question_labels: dict[str, str],
+    question_text_labels: dict[str, str] | None = None,
+    source_answer_choices: dict[str, list[str]] | None = None,
+) -> tuple[pd.DataFrame, dict[str, str], dict[str, str], dict[str, list[str]], list[str]]:
+    """Rename duplicate columns that survive blacklist filtering."""
+    question_text_labels = question_text_labels or {}
+    source_answer_choices = source_answer_choices or {}
+    used_columns: set[str] = set()
+    base_columns = [
+        normalize_text(column) or f"column_{index}"
+        for index, column in enumerate(df.columns)
+    ]
+    reserved_columns = set(base_columns)
+    occurrence_counts: dict[str, int] = {}
+    deduped_columns: list[str] = []
+    renamed_columns: list[str] = []
+    deduped_labels: dict[str, str] = {}
+    deduped_text_labels: dict[str, str] = {}
+    deduped_answer_choices: dict[str, list[str]] = {}
+
+    for column, base_column in zip(df.columns, base_columns):
+        occurrence_counts[base_column] = occurrence_counts.get(base_column, 0) + 1
+        candidate = base_column
+        if candidate in used_columns:
+            suffix = occurrence_counts[base_column]
+            candidate = f"{base_column}_{suffix}"
+            while candidate in used_columns or candidate in reserved_columns:
+                suffix += 1
+                candidate = f"{base_column}_{suffix}"
+
+        used_columns.add(candidate)
+        deduped_columns.append(candidate)
+        if candidate != base_column:
+            renamed_columns.append(f"{base_column} -> {candidate}")
+
+        label = question_labels.get(column, question_labels.get(base_column, base_column))
+        deduped_labels[candidate] = label
+        text_label = question_text_labels.get(column, question_text_labels.get(base_column, label))
+        if text_label:
+            deduped_text_labels[candidate] = text_label
+        answer_choices = source_answer_choices.get(column, source_answer_choices.get(base_column, []))
+        if answer_choices:
+            deduped_answer_choices[candidate] = list(answer_choices)
+
+    if not renamed_columns:
+        return df, question_labels, question_text_labels, source_answer_choices, []
+
+    deduped_df = df.copy()
+    deduped_df.columns = deduped_columns
+    return deduped_df, deduped_labels, deduped_text_labels, deduped_answer_choices, renamed_columns
 
 
 def _remove_blacklisted_columns(
@@ -859,6 +914,12 @@ def ingest_qualtrics_dataframe(
         whitelist_columns,
     )
     log_lines.append(f"Removed {len(removed_columns)} blacklisted column(s).")
+    no_tech_df, question_labels, _, _, deduped_columns = _dedupe_surviving_columns(
+        no_tech_df,
+        question_labels,
+    )
+    if deduped_columns:
+        log_lines.append("Renamed duplicate column(s): " + ", ".join(deduped_columns) + ".")
 
     cell_column = _resolve_cell_column(list(no_tech_df.columns))
     if no_tech_df.empty:
@@ -925,6 +986,13 @@ def ingest_snowflake_dataframe(
         whitelist_columns,
     )
     log_lines.append(f"Removed {len(removed_columns)} blacklisted column(s).")
+    no_tech_df, question_labels, question_text_labels, _, deduped_columns = _dedupe_surviving_columns(
+        no_tech_df,
+        question_labels,
+        question_text_labels,
+    )
+    if deduped_columns:
+        log_lines.append("Renamed duplicate column(s): " + ", ".join(deduped_columns) + ".")
 
     cell_column = _resolve_cell_column(list(no_tech_df.columns))
     if no_tech_df.empty:
@@ -1015,6 +1083,23 @@ def ingest_qualtrics_sav(
         for column in no_tech_df.columns
         if read_result.source_answer_choices.get(column)
     }
+    source_question_types = {
+        column: read_result.source_question_types.get(column, "")
+        for column in no_tech_df.columns
+        if read_result.source_question_types.get(column)
+    }
+    no_tech_df, question_labels, _, source_answer_choices, deduped_columns = _dedupe_surviving_columns(
+        no_tech_df,
+        question_labels,
+        source_answer_choices=source_answer_choices,
+    )
+    source_question_types = {
+        column: source_question_types.get(column, "")
+        for column in no_tech_df.columns
+        if source_question_types.get(column)
+    }
+    if deduped_columns:
+        log_lines.append("Renamed duplicate column(s): " + ", ".join(deduped_columns) + ".")
     log_lines.append(
         f"Final dataset contains {len(no_tech_df):,} respondent rows and {len(no_tech_df.columns):,} columns."
     )
@@ -1031,4 +1116,5 @@ def ingest_qualtrics_sav(
         sheet_name=read_result.sheet_name,
         completed_at=completed_at,
         source_answer_choices=source_answer_choices,
+        source_question_types=source_question_types,
     )
