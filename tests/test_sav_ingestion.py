@@ -318,6 +318,67 @@ class SavIngestionTest(unittest.TestCase):
         self_description_row = next(row for row in question_metadata if row["variable"] == "SELF_DESCRIPTION")
         self.assertEqual(self_description_row["detected_type"], "Multi-Select")
 
+    def test_sav_truncated_checkbox_values_collapse_to_full_multiselect_choices(self) -> None:
+        self_option = (
+            "I'm usually one of the first in my group to know what's trending "
+            "in pop culture, music, or shows, and the one others come to for the backstory"
+        )
+        self_none = "None of these really describe me"
+        tech_option = (
+            "I dive into Reddit threads, fan accounts, or comment sections to understand "
+            "what's really going on with a story or moment"
+        )
+        tech_none = "None of the above"
+        self_question = "Which of these describes you right now?"
+        tech_question = "Which of these describe how you currently use tech in your daily life?"
+        dataframe = pd.DataFrame(
+            {
+                "ResponseId": ["R_1", "R_2"],
+                "SELF_DESCRIPTION_1": [self_option[:100], ""],
+                "SELF_DESCRIPTION_2": ["", self_none],
+                "DAILY_TECH_8": [tech_option[:100], ""],
+                "DAILY_TECH_18": ["", tech_none],
+                "cell": ["Control", "Test"],
+            }
+        )
+        metadata = SimpleNamespace(
+            column_names=[
+                "ResponseId",
+                "SELF_DESCRIPTION_1",
+                "SELF_DESCRIPTION_2",
+                "DAILY_TECH_8",
+                "DAILY_TECH_18",
+                "cell",
+            ],
+            column_labels=[
+                "Response ID",
+                f"{self_question} {self_option}",
+                f"{self_question} {self_none}",
+                f"{tech_question} {tech_option}",
+                f"{tech_question} {tech_none}",
+                "Cell",
+            ],
+            variable_value_labels={"cell": {1: "Control", 2: "Test"}},
+            mr_sets={},
+        )
+
+        def fake_read_sav(path: str, **kwargs: object) -> tuple[pd.DataFrame, SimpleNamespace]:
+            self.assertTrue(path.endswith(".sav"))
+            self.assertTrue(kwargs["apply_value_formats"])
+            return dataframe, metadata
+
+        fake_pyreadstat = SimpleNamespace(read_sav=fake_read_sav)
+        with patch.dict(sys.modules, {"pyreadstat": fake_pyreadstat}):
+            result = ingest_qualtrics_sav(_UploadedFile())
+
+        self.assertEqual(list(result.cleaned_df.columns), ["SELF_DESCRIPTION", "DAILY_TECH", "cell"])
+        self.assertEqual(result.cleaned_df["SELF_DESCRIPTION"].tolist(), [self_option, self_none])
+        self.assertEqual(result.cleaned_df["DAILY_TECH"].tolist(), [tech_option, tech_none])
+        self.assertEqual(result.source_question_types["SELF_DESCRIPTION"], "Multi-Select")
+        self.assertEqual(result.source_question_types["DAILY_TECH"], "Multi-Select")
+        self.assertEqual(result.source_answer_choices["SELF_DESCRIPTION"], [self_option, self_none])
+        self.assertEqual(result.source_answer_choices["DAILY_TECH"], [tech_option, tech_none])
+
     def test_sav_likert_statement_grid_does_not_collapse_as_checkbox_group(self) -> None:
         dataframe = pd.DataFrame(
             {

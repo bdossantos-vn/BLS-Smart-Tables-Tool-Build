@@ -392,8 +392,25 @@ def _is_checkbox_value_label(label: str, choice_label: str) -> bool:
     return (
         not normalized_label
         or normalized_label == normalize_text(choice_label)
+        or _matches_choice_allowing_truncation(normalized_label, choice_label)
         or label_lower in GENERIC_DICHOTOMY_LABELS
     )
+
+
+def _matches_choice_allowing_truncation(value: str, choice_label: str, min_prefix_length: int = 24) -> bool:
+    """Return whether one SAV value matches a choice, allowing export-width truncation."""
+    normalized_value = normalize_text(value)
+    normalized_choice = normalize_text(choice_label)
+    if not normalized_value or not normalized_choice:
+        return False
+    if normalized_value == normalized_choice:
+        return True
+    shorter, longer = (
+        (normalized_value, normalized_choice)
+        if len(normalized_value) < len(normalized_choice)
+        else (normalized_choice, normalized_value)
+    )
+    return len(shorter) >= min_prefix_length and longer.startswith(shorter)
 
 
 def _value_labels_match_checkbox_option(
@@ -421,7 +438,9 @@ def _is_checkbox_observed_value(
     value_lower = normalized_value.lower()
     return (
         normalized_value == normalize_text(choice_label)
+        or _matches_choice_allowing_truncation(normalized_value, choice_label)
         or normalized_value in selected_values
+        or any(_matches_choice_allowing_truncation(normalized_value, selected_value) for selected_value in selected_values)
         or value_lower in GENERIC_DICHOTOMY_LABELS
     )
 
@@ -532,6 +551,10 @@ def _is_selected_multiselect_value(
     if normalized_value in selected_values:
         return True
     if normalize_text(choice_label) and normalized_value == normalize_text(choice_label):
+        return True
+    if _matches_choice_allowing_truncation(normalized_value, choice_label):
+        return True
+    if any(_matches_choice_allowing_truncation(normalized_value, selected_value) for selected_value in selected_values):
         return True
     if value_lower in POSITIVE_DICHOTOMY_LABELS:
         return True
