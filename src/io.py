@@ -119,6 +119,8 @@ MULTI_RESPONSE_LABEL_HINTS = [
 CHECKBOX_GROUP_LABEL_HINTS = [
     "which of these",
     "which of the following",
+    "negative reasons",
+    "positive reasons",
 ]
 
 MATRIX_GROUP_LABEL_HINTS = [

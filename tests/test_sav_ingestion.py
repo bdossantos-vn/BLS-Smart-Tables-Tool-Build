@@ -379,6 +379,95 @@ class SavIngestionTest(unittest.TestCase):
         self.assertEqual(result.source_answer_choices["SELF_DESCRIPTION"], [self_option, self_none])
         self.assertEqual(result.source_answer_choices["DAILY_TECH"], [tech_option, tech_none])
 
+    def test_sav_reason_checkbox_labels_collapse_to_multiselect_groups(self) -> None:
+        negative_question = "Negative reasons"
+        positive_question = "Positive reasons"
+        dataframe = pd.DataFrame(
+            {
+                "ResponseId": ["R_1", "R_2", "R_3"],
+                "Post_Negative_1": ["Selected", "Not selected", "Not selected"],
+                "Post_Negative_4": ["Not selected", "Selected", "Not selected"],
+                "Post_Positive_1": ["Not selected", "Selected", "Selected"],
+                "Post_Positive_2": ["Selected", "Not selected", "Selected"],
+                "cell": ["Control", "Test", "Test"],
+            }
+        )
+        metadata = SimpleNamespace(
+            column_names=[
+                "ResponseId",
+                "Post_Negative_1",
+                "Post_Negative_4",
+                "Post_Positive_1",
+                "Post_Positive_2",
+                "cell",
+            ],
+            column_labels=[
+                "Response ID",
+                f"{negative_question}: It isn’t relevant to me",
+                f"{negative_question}: The message isn’t clear",
+                f"{positive_question}: It tells me what I need to know",
+                f"{positive_question}: It’s visually appealing",
+                "Cell",
+            ],
+            variable_value_labels={
+                "Post_Negative_1": {0: "Not selected", 1: "Selected"},
+                "Post_Negative_4": {0: "Not selected", 1: "Selected"},
+                "Post_Positive_1": {0: "Not selected", 1: "Selected"},
+                "Post_Positive_2": {0: "Not selected", 1: "Selected"},
+                "cell": {1: "Control", 2: "Test"},
+            },
+            mr_sets={},
+        )
+
+        def fake_read_sav(path: str, **kwargs: object) -> tuple[pd.DataFrame, SimpleNamespace]:
+            self.assertTrue(path.endswith(".sav"))
+            self.assertTrue(kwargs["apply_value_formats"])
+            return dataframe, metadata
+
+        fake_pyreadstat = SimpleNamespace(read_sav=fake_read_sav)
+        with patch.dict(sys.modules, {"pyreadstat": fake_pyreadstat}):
+            result = ingest_qualtrics_sav(_UploadedFile())
+
+        self.assertEqual(list(result.cleaned_df.columns), ["Post_Negative", "Post_Positive", "cell"])
+        self.assertEqual(
+            result.cleaned_df["Post_Negative"].tolist(),
+            ["It isn’t relevant to me", "The message isn’t clear", ""],
+        )
+        self.assertEqual(
+            result.cleaned_df["Post_Positive"].tolist(),
+            [
+                "It’s visually appealing",
+                "It tells me what I need to know",
+                "It tells me what I need to know; It’s visually appealing",
+            ],
+        )
+        self.assertEqual(result.question_labels["Post_Negative"], negative_question)
+        self.assertEqual(result.question_labels["Post_Positive"], positive_question)
+        self.assertEqual(
+            result.source_answer_choices["Post_Negative"],
+            ["It isn’t relevant to me", "The message isn’t clear"],
+        )
+        self.assertEqual(
+            result.source_answer_choices["Post_Positive"],
+            ["It tells me what I need to know", "It’s visually appealing"],
+        )
+        self.assertEqual(result.source_question_types["Post_Negative"], "Multi-Select")
+        self.assertEqual(result.source_question_types["Post_Positive"], "Multi-Select")
+
+        question_metadata = build_question_metadata(
+            result.cleaned_df,
+            result.question_labels,
+            result.cell_column,
+            result.source_answer_choices,
+            result.source_question_types,
+        )
+        type_by_variable = {
+            row["variable"]: row["detected_type"]
+            for row in question_metadata
+        }
+        self.assertEqual(type_by_variable["Post_Negative"], "Multi-Select")
+        self.assertEqual(type_by_variable["Post_Positive"], "Multi-Select")
+
     def test_sav_likert_statement_grid_does_not_collapse_as_checkbox_group(self) -> None:
         dataframe = pd.DataFrame(
             {
