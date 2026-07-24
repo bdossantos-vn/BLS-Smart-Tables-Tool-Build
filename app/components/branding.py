@@ -8,6 +8,7 @@ import streamlit as st
 
 
 LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "vn_logo.png"
+APP_VERSION_TEXT = "Build 2026.07.24.5 - checkbox repair"
 
 
 def render_sidebar_brand() -> None:
@@ -30,8 +31,11 @@ def render_sidebar_brand() -> None:
             <div style="font-size:1.25rem; font-weight:700; line-height:1.1;">
                 BLS Smart Tables Tool
             </div>
+            <div style="font-size:0.72rem; margin-top:0.35rem; opacity:0.65;">
+                {APP_VERSION_TEXT}
+            </div>
         </div>
-        """,
+        """.format(APP_VERSION_TEXT=APP_VERSION_TEXT),
         unsafe_allow_html=True,
     )
 
@@ -59,6 +63,7 @@ def render_page_brand_header() -> None:
             <div class="vn-brand-copy">
                 <div class="vn-brand-kicker">Viral Nation</div>
                 <div class="vn-brand-title">BLS Smart Tables Tool</div>
+                <div class="vn-brand-version">{APP_VERSION_TEXT}</div>
             </div>
         </div>
         """,

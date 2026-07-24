@@ -196,6 +196,12 @@ def apply_theme() -> None:
                 color: rgba(255, 255, 255, 0.72) !important;
             }
 
+            .vn-brand-version {
+                color: rgba(255, 255, 255, 0.68) !important;
+                font-size: 0.76rem;
+                line-height: 1.1;
+            }
+
             .stButton > button,
             .stDownloadButton > button {
                 border-radius: 14px;
