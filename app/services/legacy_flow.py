@@ -32,7 +32,7 @@ from src.cleaning import (
     ingest_qualtrics_sav,
     ingest_snowflake_dataframe,
 )
-from src.io import get_excel_sheet_names
+from src.io import get_excel_sheet_names, normalize_wide_checkbox_groups
 from src.respondents import is_internal_respondent_column, respondent_count
 from src.config import (
     build_analysis_variable_catalog,
@@ -1442,6 +1442,144 @@ def _sync_question_order_state(available_columns: list[str]) -> None:
     st.session_state.generated_excel_signature = ""
 
 
+def _replace_collapsed_columns_in_order(
+    ordered_columns: list[str],
+    old_columns: list[str],
+    new_columns: list[str],
+    collapsed_variables: list[str],
+) -> list[str]:
+    """Replace old checkbox option variables with their collapsed question variable."""
+    new_column_lookup = set(new_columns)
+    sources_by_collapsed = {
+        variable: [
+            column
+            for column in old_columns
+            if column.startswith(f"{variable}_")
+        ]
+        for variable in collapsed_variables
+    }
+    collapsed_by_source = {
+        source: variable
+        for variable, sources in sources_by_collapsed.items()
+        for source in sources
+    }
+
+    repaired: list[str] = []
+    emitted: set[str] = set()
+    for column in ordered_columns:
+        replacement = collapsed_by_source.get(column, column)
+        if replacement not in new_column_lookup or replacement in emitted:
+            continue
+        repaired.append(replacement)
+        emitted.add(replacement)
+
+    for variable, sources in sources_by_collapsed.items():
+        if variable in emitted or variable not in new_column_lookup:
+            continue
+        if any(source in ordered_columns for source in sources):
+            repaired.append(variable)
+            emitted.add(variable)
+
+    for column in new_columns:
+        if column not in emitted:
+            repaired.append(column)
+            emitted.add(column)
+    return repaired
+
+
+def _repair_wide_checkbox_groups_in_session() -> bool:
+    """Collapse stale checkbox option columns retained in Streamlit session state."""
+    cleaned_df = st.session_state.get("cleaned_df")
+    if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty:
+        return False
+
+    question_labels = dict(st.session_state.get("question_labels", {}))
+    source_answer_choices = dict(st.session_state.get("source_answer_choices", {}))
+    old_columns = list(cleaned_df.columns)
+    (
+        repaired_df,
+        repaired_labels,
+        repaired_choices,
+        repaired_types,
+        collapsed_group_count,
+    ) = normalize_wide_checkbox_groups(
+        cleaned_df,
+        question_labels,
+        source_answer_choices,
+        excluded_variables={
+            column
+            for column, question_type in st.session_state.get("source_question_types", {}).items()
+            if question_type == "Multi-Select"
+        },
+    )
+    if not collapsed_group_count:
+        return False
+
+    new_columns = list(repaired_df.columns)
+    collapsed_variables = list(repaired_types)
+    st.session_state.cleaned_df = repaired_df
+    st.session_state.question_labels = repaired_labels
+    st.session_state.source_answer_choices = repaired_choices
+    st.session_state.source_question_types = {
+        **{
+            column: question_type
+            for column, question_type in st.session_state.get("source_question_types", {}).items()
+            if column in new_columns
+        },
+        **repaired_types,
+    }
+    st.session_state.question_text_labels = {
+        column: repaired_labels.get(column, column)
+        for column in new_columns
+    }
+
+    survey_df = st.session_state.get("survey_df")
+    if isinstance(survey_df, pd.DataFrame) and not survey_df.empty:
+        repaired_survey_df, _, _, _, survey_group_count = normalize_wide_checkbox_groups(
+            survey_df,
+            question_labels,
+            source_answer_choices,
+            excluded_variables={
+                column
+                for column, question_type in st.session_state.get("source_question_types", {}).items()
+                if question_type == "Multi-Select"
+            },
+        )
+        if survey_group_count:
+            st.session_state.survey_df = repaired_survey_df
+            st.session_state.comparison_options = list(repaired_survey_df.columns)
+
+    st.session_state.included_columns = _replace_collapsed_columns_in_order(
+        st.session_state.get("included_columns", []),
+        old_columns,
+        new_columns,
+        collapsed_variables,
+    )
+    st.session_state.question_order = _replace_collapsed_columns_in_order(
+        st.session_state.get("question_order", []),
+        old_columns,
+        new_columns,
+        collapsed_variables,
+    )
+    st.session_state.question_metadata = []
+    st.session_state.scale_mappings = {}
+    st.session_state.net_definitions = {}
+    st.session_state.topline_editor = None
+    st.session_state.generated_tables = {}
+    st.session_state.generated_tables_signature = ""
+    st.session_state.generated_excel_bytes = None
+    st.session_state.generated_excel_signature = ""
+    st.session_state.ingestion_log = [
+        *st.session_state.get("ingestion_log", []),
+        (
+            "Collapsed "
+            f"{collapsed_group_count} retained checkbox question group(s) "
+            "into multi-select question columns."
+        ),
+    ]
+    return True
+
+
 def _editor_row_source_variables(
     row: dict[str, Any],
     source_map: dict[str, list[str]] | None = None,
@@ -2440,6 +2578,10 @@ def render_step_3() -> None:
     if not isinstance(cleaned_df, pd.DataFrame) or cleaned_df.empty:
         st.info("Upload and process a dataset in Step 1 before auditing questions.")
         return
+
+    if _repair_wide_checkbox_groups_in_session():
+        cleaned_df = st.session_state.cleaned_df
+        cell_col = st.session_state.cell_col
 
     if st.session_state.get("data_source_type") == "snowflake":
         _refresh_snowflake_label_maps_from_raw_data()
