@@ -9,7 +9,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from src.io import read_excel_upload, read_sav_upload
+from src.io import normalize_wide_checkbox_groups, read_excel_upload, read_sav_upload
 from src.respondents import RESPONDENT_ID_COLUMN, is_internal_respondent_column, respondent_count
 from src.utils import normalize_text, unique_preserving_order
 
@@ -906,6 +906,19 @@ def ingest_qualtrics_dataframe(
     log_lines = [f"Loaded sheet `{sheet_name}` from `{source_name}`."]
     prepared_df, question_labels, metadata_rows_removed = _prepare_qualtrics_dataframe(raw_df)
     log_lines.append(f"Preserved variable names and question labels. Removed {metadata_rows_removed} metadata row(s).")
+    (
+        prepared_df,
+        question_labels,
+        source_answer_choices,
+        source_question_types,
+        collapsed_multi_response_groups,
+    ) = normalize_wide_checkbox_groups(prepared_df, question_labels)
+    if collapsed_multi_response_groups:
+        log_lines.append(
+            "Collapsed "
+            f"{collapsed_multi_response_groups} checkbox question group(s) "
+            "into multi-select question columns."
+        )
 
     no_tech_df, removed_columns = _remove_blacklisted_columns(
         prepared_df,
@@ -914,10 +927,26 @@ def ingest_qualtrics_dataframe(
         whitelist_columns,
     )
     log_lines.append(f"Removed {len(removed_columns)} blacklisted column(s).")
-    no_tech_df, question_labels, _, _, deduped_columns = _dedupe_surviving_columns(
+    source_answer_choices = {
+        column: list(source_answer_choices.get(column, []))
+        for column in no_tech_df.columns
+        if source_answer_choices.get(column)
+    }
+    source_question_types = {
+        column: source_question_types.get(column, "")
+        for column in no_tech_df.columns
+        if source_question_types.get(column)
+    }
+    no_tech_df, question_labels, _, source_answer_choices, deduped_columns = _dedupe_surviving_columns(
         no_tech_df,
         question_labels,
+        source_answer_choices=source_answer_choices,
     )
+    source_question_types = {
+        column: source_question_types.get(column, "")
+        for column in no_tech_df.columns
+        if source_question_types.get(column)
+    }
     if deduped_columns:
         log_lines.append("Renamed duplicate column(s): " + ", ".join(deduped_columns) + ".")
 
@@ -945,7 +974,8 @@ def ingest_qualtrics_dataframe(
         removed_columns=removed_columns,
         sheet_name=sheet_name,
         completed_at=completed_at,
-        source_answer_choices={},
+        source_answer_choices=source_answer_choices,
+        source_question_types=source_question_types,
     )
 
 

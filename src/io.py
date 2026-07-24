@@ -805,6 +805,50 @@ def _normalize_sav_multi_response_sets(
     )
 
 
+def normalize_wide_checkbox_groups(
+    dataframe: pd.DataFrame,
+    question_labels: dict[str, str],
+    source_answer_choices: dict[str, list[str]] | None = None,
+    excluded_variables: set[str] | None = None,
+) -> tuple[pd.DataFrame, dict[str, str], dict[str, list[str]], dict[str, str], int]:
+    """Collapse already-wide checkbox option columns into multi-select questions."""
+    source_answer_choices = source_answer_choices or {}
+    groups = _build_label_based_sav_multiselect_groups(
+        dataframe,
+        object(),
+        question_labels,
+        excluded_variables=excluded_variables or set(),
+    )
+    if not groups:
+        return dataframe, question_labels, source_answer_choices, {}, 0
+
+    collapsed_df = _collapse_sav_multi_response_groups(dataframe, groups)
+    group_lookup = {group.variable: group for group in groups}
+
+    normalized_question_labels = {
+        column: group_lookup[column].question_label if column in group_lookup else question_labels.get(column, column)
+        for column in collapsed_df.columns
+    }
+    normalized_source_choices = {
+        column: group_lookup[column].answer_choices if column in group_lookup else list(source_answer_choices.get(column, []))
+        for column in collapsed_df.columns
+        if column in group_lookup or source_answer_choices.get(column)
+    }
+    normalized_source_question_types = {
+        column: "Multi-Select"
+        for column in collapsed_df.columns
+        if column in group_lookup
+    }
+
+    return (
+        collapsed_df,
+        normalized_question_labels,
+        normalized_source_choices,
+        normalized_source_question_types,
+        len(groups),
+    )
+
+
 def read_sav_upload(uploaded_file) -> SavReadResult:
     """Read an uploaded SPSS SAV file and preserve variable/value labels."""
     try:
